@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import string
 import struct
 from dataclasses import dataclass, field
 
@@ -186,6 +187,24 @@ def symbol_small(s: str) -> int:
     for c in s:
         body = (body << 6) | _sym_char_code(c)
     return (body << 8) | TAG_SYMBOL
+
+
+# Derived from _sym_char_code rather than written out a second time: the
+# encode/decode pair must never be able to disagree.
+_SYM_ALPHABET = "_" + string.digits + string.ascii_uppercase + string.ascii_lowercase
+_SYM_DECODE = {_sym_char_code(c): c for c in _SYM_ALPHABET}
+
+
+def symbol_small_text(val: int) -> str:
+    """Inverse of :func:`symbol_small`: unpack a ``SymbolSmall`` ``Val``."""
+    if val & 0xFF != TAG_SYMBOL:
+        raise ValueError(f"{val:#x} is not a SymbolSmall Val (tag {val & 0xFF})")
+    body = val >> 8
+    chars: list[str] = []
+    while body:
+        chars.append(_SYM_DECODE[body & 0x3F])
+        body >>= 6
+    return "".join(reversed(chars))
 
 
 def pack_u32val(x: int) -> int:

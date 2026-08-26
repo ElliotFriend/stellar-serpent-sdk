@@ -17,6 +17,7 @@ from emitter import (
     pack_u32val,
     protocol_floor,
     symbol_small,
+    symbol_small_text,
 )
 from frontend import ContractIR, parse_contract
 from sections import env_meta, spec_entries
@@ -34,6 +35,14 @@ def test_symbol_small_matches_rust_sdk_constant() -> None:
 def test_symbol_small_rejects_over_9() -> None:
     with pytest.raises(ValueError):
         symbol_small("counter_limit")  # 13 chars — must NOT silently overflow
+
+
+def test_symbol_small_round_trips() -> None:
+    """The decoder shares its alphabet with the encoder, so it cannot drift."""
+    for text in ("COUNTER", "SETTINGS", "COUNT", "a", "_", "z9Z_0", "abcdefghi"):
+        assert symbol_small_text(symbol_small(text)) == text
+    with pytest.raises(ValueError, match="not a SymbolSmall"):
+        symbol_small_text(pack_u32val(7))
 
 
 def test_error_val_encoding() -> None:
