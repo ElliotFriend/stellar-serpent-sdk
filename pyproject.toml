@@ -25,6 +25,14 @@ testpaths = ["tests"]
 line-length = 100
 src = ["src", "tests", "spikes"]
 
+[tool.ruff.lint.per-file-ignores]
+# Historical evidence copied verbatim from the original throwaway spike
+# compiler (Task 2, Step 1). Never edit its content to appease ruff.
+"spikes/spike1/reference/*" = ["ALL"]
+# Transcribed verbatim from the Spike 1 task brief, including the import
+# order; do not reorder to appease ruff's import-sort rule (I001).
+"spikes/spike1/contract_src.py" = ["I001"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
