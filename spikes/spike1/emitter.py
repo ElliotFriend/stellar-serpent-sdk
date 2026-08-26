@@ -452,8 +452,26 @@ class _Fn:
             )
 
     def ret(self) -> None:
-        """A real ``return`` (0x0F). Everything after it is unreachable."""
+        """A real ``return`` (0x0F). Everything after it is unreachable.
+
+        The balance check has to happen *here*, not at ``finish()``. ``return``
+        puts wasm's validator into its polymorphic-stack state, which happily
+        tolerates operands left dangling underneath the result -- so a body that
+        ends in ``return`` (every body this emitter produces) would sail past a
+        check at ``end``. Concretely: drop the ``drop`` after
+        ``put_contract_data`` and the leaked Void ``Val`` produces a module that
+        still validates. Catch it at the ``return`` instead, while the stack
+        still means something.
+        """
         self.pop("i64")
+        if not self.unreachable:
+            base = self.ctrl[-1].base if self.ctrl else 0
+            if len(self.stack) != base:
+                raise EmitError(
+                    f"{self.name}: operand stack is {self.stack} at return; "
+                    f"expected it emptied down to {base} once the result is "
+                    "popped (a value was pushed and never consumed)"
+                )
         self.op(RETURN)
         self.unreachable = True
 
@@ -723,6 +741,41 @@ class Compiler:
 
 # --------------------------------------------------------------- module layout
 
+# The export name the emitter builds its memory export from.
+MEMORY_EXPORT_NAME = "memory"
+
+
+def check_linear_memory_abi(
+    host_fn_names: set[str], n_memories: int, export_names: list[str]
+) -> None:
+    """Refuse to emit a module that calls ``*_linear_memory`` without a usable memory.
+
+    Soroban's host reaches a contract's linear memory through an export named
+    exactly ``memory``; every ``*_from_linear_memory`` host function reads or
+    writes through it. Right now the emitter always declares one memory and
+    always exports it, so this holds by construction -- which is precisely why
+    it is worth asserting: "by construction" is a property of today's code, and
+    the failure mode (a module that validates, deploys, and then traps on its
+    first host call) is expensive to find any later.
+
+    The required name is spelled out here rather than read from
+    :data:`MEMORY_EXPORT_NAME` on purpose: a check that shares its constant with
+    the code it checks cannot catch that constant being wrong.
+    """
+    if not any("linear_memory" in n for n in host_fn_names):
+        return
+    if n_memories != 1:
+        raise EmitError(
+            f"module imports *_linear_memory host functions but declares "
+            f"{n_memories} memories; Soroban requires exactly one"
+        )
+    if export_names.count("memory") != 1:
+        raise EmitError(
+            f"module imports *_linear_memory host functions but its exports are "
+            f'{export_names!r}; the host finds linear memory only under the exact '
+            f'export name "memory"'
+        )
+
 
 def _func_type(nparams: int, nresults: int) -> bytes:
     return (
@@ -743,9 +796,11 @@ def emit_module(
 ) -> bytes:
     """Compile ``ir`` to a complete Soroban wasm module.
 
-    Every function body is compiled -- and its operand stack checked -- before
-    a single byte of the module is laid out, so a codegen bug raises
-    ``EmitError`` instead of producing a plausible-looking file.
+    Every function body is compiled -- and its operand stack checked at each
+    ``return`` -- before a single byte of the module is laid out, so a codegen
+    bug raises ``EmitError`` instead of producing a plausible-looking file. The
+    memory/exports pairing is checked the same way, before the layout that
+    would bake it in.
     """
     comp = Compiler(ir, host_fns)
     bodies = [(f, comp.compile_function(f)) for f in ir.functions]
@@ -771,11 +826,14 @@ def emit_module(
     ]
     func_types = [uleb(type_index(len(f.params))) for f in ir.functions]
 
+    memories = [b"\x00" + uleb(1)]  # one page, no maximum
+    export_names = [f.name for f in ir.functions] + [MEMORY_EXPORT_NAME]
     exports = [
         wasm_name(f.name) + b"\x00" + uleb(comp.first_defined + i)
         for i, f in enumerate(ir.functions)
     ]
-    exports.append(wasm_name("memory") + b"\x02" + uleb(0))
+    exports.append(wasm_name(MEMORY_EXPORT_NAME) + b"\x02" + uleb(0))
+    check_linear_memory_abi(set(host_fns), len(memories), export_names)
 
     code_entries = []
     for _ir_fn, fn in bodies:
@@ -787,7 +845,7 @@ def emit_module(
     out += section(1, vec(types))
     out += section(2, vec(import_entries))
     out += section(3, vec(func_types))
-    out += section(5, vec([b"\x00" + uleb(1)]))  # one page, no maximum
+    out += section(5, vec(memories))
     out += section(7, vec(exports))
     out += section(10, vec(code_entries))
     if comp.mem.pool:

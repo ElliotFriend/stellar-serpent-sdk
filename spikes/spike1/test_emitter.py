@@ -1,13 +1,16 @@
 import pathlib
 import struct
 
+import emitter
 import pytest
 from build import validate
 from emitter import (
     HOST_FN_NAMES,
+    Compiler,
     EmitError,
     HostFn,
     _Fn,
+    check_linear_memory_abi,
     emit_module,
     error_val,
     load_host_fns,
@@ -172,6 +175,66 @@ def test_stack_imbalance_is_caught_before_bytes_exist() -> None:
     fn.i64_const(2)  # two results where the signature promises one
     with pytest.raises(EmitError, match="operand stack"):
         fn.finish()
+
+
+def test_leaked_operand_before_return_is_caught() -> None:
+    """A value pushed and never consumed must fail at the `return`, not at `end`.
+
+    `return` makes wasm's stack polymorphic, so a check at `end` never sees the
+    leak -- which is exactly how this bug hid.
+    """
+    fn = _Fn(name="leaky", nparams=0)
+    fn.i64_const(1)  # e.g. a put_contract_data result whose `drop` went missing
+    fn.i64_const(2)  # the actual return value
+    with pytest.raises(EmitError, match="operand stack"):
+        fn.ret()
+
+
+def test_missing_drop_after_a_storage_write_is_caught(
+    monkeypatch: pytest.MonkeyPatch, ir: ContractIR, host_fns: dict[str, HostFn]
+) -> None:
+    """The regression in full: omit one `drop` and the whole build must fail.
+
+    Before the balance check moved into `ret()`, this produced a module that
+    `wasm-tools validate` accepted.
+    """
+
+    def put_without_drop(
+        self: Compiler, fn: _Fn, key: object, value: object, storage: int
+    ) -> None:
+        self.expr(fn, key)  # type: ignore[arg-type]
+        self.expr(fn, value)  # type: ignore[arg-type]
+        fn.i64_const(storage)
+        self.call_host(fn, "put_contract_data")  # result deliberately not dropped
+
+    monkeypatch.setattr(Compiler, "put", put_without_drop)
+    with pytest.raises(EmitError, match="operand stack"):
+        emit_module(ir, host_fns, protocol=27, meta_pairs={})
+
+
+def test_memory_export_name_is_asserted_at_build_time(
+    monkeypatch: pytest.MonkeyPatch, ir: ContractIR, host_fns: dict[str, HostFn]
+) -> None:
+    """Renaming the memory export must fail the build, not ship a trapping module."""
+    monkeypatch.setattr(emitter, "MEMORY_EXPORT_NAME", "linear_mem")
+    with pytest.raises(EmitError, match='export name "memory"'):
+        emit_module(ir, host_fns, protocol=27, meta_pairs={})
+
+
+def test_linear_memory_abi_check_requires_exactly_one_memory() -> None:
+    users = {"symbol_new_from_linear_memory"}
+    check_linear_memory_abi(users, 1, ["setup", "memory"])  # the good case
+    with pytest.raises(EmitError, match="declares 0 memories"):
+        check_linear_memory_abi(users, 0, ["setup", "memory"])
+    with pytest.raises(EmitError, match="declares 2 memories"):
+        check_linear_memory_abi(users, 2, ["setup", "memory"])
+    with pytest.raises(EmitError, match='export name "memory"'):
+        check_linear_memory_abi(users, 1, ["setup"])
+
+
+def test_linear_memory_abi_check_is_scoped_to_memory_users() -> None:
+    """A module that never touches linear memory needs no memory export."""
+    check_linear_memory_abi({"put_contract_data", "map_get"}, 0, ["setup"])
 
 
 def test_unclosed_control_frame_is_caught() -> None:
