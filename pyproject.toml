@@ -1,0 +1,35 @@
+[project]
+name = "serpent"
+version = "0.0.1"
+description = "Write Soroban smart contracts in Python (experimental)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=7",
+    "hypothesis>=6",
+    "ruff>=0.16",
+    "mypy>=2,<3",
+    "stellar-sdk>=15,<16",
+    "wasmtime==48.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests", "spikes"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
