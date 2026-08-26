@@ -150,6 +150,9 @@ class FuncIR:
     params: list[tuple[str, str]]
     ret: str
     body: list[Stmt]
+    # The method's docstring, if any. Carried through to the contract spec's
+    # `doc` field rather than compiled -- it is documentation, not code.
+    doc: str = ""
 
 
 @dataclass
@@ -478,11 +481,12 @@ def _collect_function(
 
     ctx = _FuncCtx(env_name=env_arg.arg, param_index=param_index, locals=set())
     body: list[Stmt] = []
+    doc = ast.get_docstring(fn) or ""
     for i, stmt in enumerate(fn.body):
         if i == 0 and _is_docstring(stmt):
             continue
         body.append(_resolve_stmt(stmt, ctx, errors, structs))
-    return FuncIR(name=fn.name, params=params, ret=ret, body=body)
+    return FuncIR(name=fn.name, params=params, ret=ret, body=body, doc=doc)
 
 
 def parse_contract(path: str) -> ContractIR:
