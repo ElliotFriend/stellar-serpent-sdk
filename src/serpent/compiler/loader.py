@@ -54,18 +54,24 @@ Every diagnostic cites a code from the frozen `serpent.compiler.codes`
 registry; the loader invents none. Its `message` is the registry row's
 `message_intent` (optionally prefixed with the `Cls.member` the decorator
 named), so wording stays aligned with the code, and the decorator's own
-full-text explanation is preserved verbatim as a `note`. Three uses are worth
-naming because they reach past a registry row's literal `construct` text:
+full-text explanation is preserved verbatim as a `note`. Every message
+contains its code's registry intent; the uses worth naming are:
 
-* `SPT4015` carries the whole *top-level class shape* family: an undecorated
-  class, a serpent-decorated class with a base class other than `Event` on an
-  event (SS B.1's `ClassDef` row, D8), and the module-scope
-  "expected exactly one `@contract` class" fact (SS C.3), for which the
-  registry has no dedicated row.
+* `SPT4019` and `SPT4020` were appended to the registry for this loader by
+  controller ruling in Task 3's review round: the module-scope
+  "expected exactly one `@contract` class" fact (SS C.3), and the
+  decorated-class-body member-shape rule (SS C.3's "there are no class
+  attributes"). Both had been reusing a code whose wording did not fit.
+* `SPT4015` is now exactly the *top-level class decorator/base* shape: an
+  undecorated or multiply-decorated class, or a base class other than `Event`
+  on an event (SS B.1's `ClassDef` row, D8).
+* `SPT2004` ("name shadows an existing declaration") covers both a
+  module-level redeclaration and a duplicate member inside one class body.
 * `SPT1037` -- MJ-11's explicit exhaustive-dispatch catch-all -- is the
-  last resort: a Python `SyntaxError`, and any exec-time exception the bridge
-  table below does not recognize. The original text always rides along as a
-  note, so nothing is lost even in that case.
+  last resort: a Python `SyntaxError` (from `ast.parse` OR from `compile`,
+  which rejects a whole class of source that parses fine), and any exec-time
+  exception the bridge table below does not recognize. The original text
+  always rides along as a note, so nothing is lost even in that case.
 * `SPT5001`/`SPT3004`/`SPT2001` are owned by later tasks (9, 5, 5), which
   pre-empt them against the AST *before* exec. The bridge keeps entries for
   them anyway, as the backstop for the window where the decorator is the only
@@ -167,9 +173,19 @@ class Helper:
 class LoadedModule:
     """Everything later tasks need from a loaded contract module.
 
-    `contract_cls`/`contract_node` are `None` only when the module does not
-    have exactly one `@contract` class, or when executing it failed -- in
-    both cases `diagnostics` already carries the reason.
+    The two contract views are deliberately NOT symmetric, because they fail
+    at different phases and a located diagnostic is worth more than a uniform
+    `None`:
+
+    * `contract_node` is set whenever the module has exactly one shape-valid
+      `@contract` class -- even if *executing* it then failed. Later
+      diagnostics can still point at real source.
+    * `contract_cls`/`contract_decl` are set only when that class also
+      executed and carries `_serpent_type_` metadata.
+
+    So `contract_node is not None and contract_cls is None` means "the class
+    is there, its declaration is broken", and `diagnostics` says how. Both
+    are `None` when the module has no `@contract` class or more than one.
     """
 
     path: str
@@ -239,9 +255,10 @@ _HELP: dict[str, str] = {
     "SPT4014": "declare the event as `class Name(Event):`",
     "SPT4015": (
         "give every top-level class exactly one of @contract/@contracttype/"
-        "@contracterror/@contractevent, no base class other than `Event` on an "
-        "event, and declare exactly one @contract class per module"
+        "@contracterror/@contractevent, and no base class other than `Event` on an "
+        "event"
     ),
+    "SPT4019": "declare exactly one @contract class in the module",
     "SPT5001": "use at most 30 characters from [a-zA-Z0-9_]",
 }
 
@@ -353,12 +370,7 @@ def load_module(source: str, path: str) -> LoadedModule:
     try:
         tree = ast.parse(source, filename=path)
     except SyntaxError as exc:
-        sink.error(
-            _FALLBACK_CODE,
-            _loc_from_syntax_error(path, exc),
-            f"{_INTENT[_FALLBACK_CODE]}: invalid Python syntax ({exc.msg})",
-            help=_HELP[_FALLBACK_CODE],
-        )
+        _report_syntax_error(exc, path, sink)
         raise CompileError(sink.diagnostics) from exc
 
     plan = _validate_module_shape(tree, path, sink)
@@ -397,6 +409,26 @@ def load_module(source: str, path: str) -> LoadedModule:
             if id(node) not in failed_statements
         ),
         diagnostics=sink,
+    )
+
+
+def _report_syntax_error(
+    exc: SyntaxError, path: str, sink: Diagnostics, *, fallback: Loc | None = None
+) -> None:
+    """Report one `SyntaxError` -- from `ast.parse` or from `compile` -- located.
+
+    `fallback` is the statement's own `Loc`, used only if the exception
+    carries no line of its own (P2: a location is never fabricated, but a
+    real statement span is always better than `WHOLE_FILE`).
+    """
+    loc = _loc_from_syntax_error(path, exc)
+    if loc.kind is LocKind.WHOLE_FILE and fallback is not None:
+        loc = fallback
+    sink.error(
+        _FALLBACK_CODE,
+        loc,
+        f"{_INTENT[_FALLBACK_CODE]}: invalid Python syntax ({exc.msg})",
+        help=_HELP[_FALLBACK_CODE],
     )
 
 
@@ -601,6 +633,26 @@ def _check_import_from(
             bound,
         )
         return
+    if any(alias.name == "*" for alias in stmt.names):
+        # Error recovery: `from serpent import *` is refused, but every name it
+        # WOULD have bound is registered anyway -- in `alias_map` so decorator
+        # and `Event`-base recognition still work, and in `failed_names` so the
+        # NameErrors that follow are recognized as cascades. Without this, one
+        # star import produced a pile of misleading "undecorated class" and
+        # "no @contract class" diagnostics on top of the one true error.
+        for name in serpent.__all__:
+            plan.alias_map.setdefault(name, name)
+            plan.declared.setdefault(name, stmt)
+        _reject_statement(
+            stmt,
+            path,
+            plan,
+            sink,
+            "SPT2005",
+            ("import the names you use explicitly: `from serpent import U32, contract, ...`",),
+            set(serpent.__all__),
+        )
+        return
     unexported = [alias.name for alias in stmt.names if alias.name not in serpent.__all__]
     if unexported:
         _reject_statement(
@@ -687,79 +739,144 @@ def _check_class_def(stmt: ast.ClassDef, path: str, plan: _ShapePlan, sink: Diag
             {stmt.name},
         )
         return
-    if not _check_class_body(stmt, path, plan, sink):
+    if not _check_class_body(stmt, kind, path, plan, sink):
         return
     plan.classes.append((stmt, kind))
     plan.executable.append(stmt)
 
 
-def _check_class_body(stmt: ast.ClassDef, path: str, plan: _ShapePlan, sink: Diagnostics) -> bool:
-    """Allow only declaration forms in a decorated class body (SS C.3).
+#: Which declaration form each decorated class KIND admits in its body.
+#: `field` is `name: T`, `annotated_value` is `name: T = v` (a struct field
+#: default, or an annotated error-enum member), `assign` is `NAME = v`, and
+#: `method` is `def`/`async def`. A docstring and `pass` are always allowed.
+_ALLOWED_MEMBER_FORMS: dict[str, frozenset[str]] = {
+    "contract": frozenset({"method"}),
+    "struct": frozenset({"field", "annotated_value"}),
+    "event": frozenset({"field", "annotated_value"}),
+    "error_enum": frozenset({"assign", "annotated_value"}),
+}
 
-    A decorated class body declares fields (`AnnAssign`), error-enum members
-    (`Assign`) or methods (`FunctionDef`), plus a docstring and `pass`. This
-    is a shape rule in its own right -- SS C.3's "there are no class
-    attributes" -- and it is also what keeps the F.1.14 cross-check
-    unreachable from source: Python binds whatever a nested `if`/`for` in a
-    class body executes, while the AST view enumerates the body's top level,
-    so allowing them would let ordinary input trip an internal hard error.
+_BODY_HELP: dict[str, str] = {
+    "contract": (
+        "a @contract class body declares methods (`def name(self, env: Env) -> T`) and "
+        "nothing else -- contract state lives in storage, not on the class"
+    ),
+    "struct": "a @contracttype class body declares fields as `name: T`",
+    "event": "a @contractevent class body declares fields as `name: T`",
+    "error_enum": "a @contracterror class body declares members as `NAME = errorcode(N)`",
+}
 
-    Uses `SPT1037`, MJ-11's exhaustive-dispatch catch-all: the registry has no
-    class-body-shape row, and "this construct is not supported by the serpent
-    subset" is exactly the message.
+
+def _member_form(member: ast.stmt) -> tuple[str, str] | None:
+    """`(form, declared name)` for a class-body declaration, else `None`."""
+    if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef):
+        return "method", member.name
+    if isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name):
+        return ("annotated_value" if member.value is not None else "field"), member.target.id
+    if isinstance(member, ast.Assign) and _is_single_name_assign(member):
+        return "assign", _assign_target(member)
+    return None
+
+
+def _check_class_body(
+    stmt: ast.ClassDef, kind: str, path: str, plan: _ShapePlan, sink: Diagnostics
+) -> bool:
+    """Validate a decorated class body: kind-appropriate, uniquely named members.
+
+    Two rules, both shape rules in their own right (SS C.3: "Contract class:
+    method names only. There are no class attributes") and both also what
+    keeps the F.1.14 cross-check unreachable from ordinary source:
+
+    * **Kind-appropriate.** A member form the class's kind does not declare is
+      recorded by exactly one of the two views. A field in a `@contract` class
+      is invisible to `decorators.contract` but sits in the AST; `g = f` in a
+      `@contract` class is the reverse -- `inspect.isfunction` accepts it, so
+      the metadata gains a method the AST has no `def` for.
+    * **Uniquely named.** A duplicate field, error-enum member or method
+      leaves the executed view holding ONE binding (the last) while the AST
+      view has two, so the inventories cannot line up. It is a real authoring
+      bug too: the second declaration silently replaces the first.
+
+    Both were reachable from valid Python and raised `CompilerBugError` before
+    this check existed.
     """
-    offenders = [
-        member
-        for index, member in enumerate(stmt.body)
-        if not (
-            (index == 0 and _is_docstring(member))
-            or isinstance(member, ast.Pass | ast.FunctionDef | ast.AsyncFunctionDef)
-            or (isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name))
-            or (isinstance(member, ast.Assign) and _is_single_name_assign(member))
-        )
-    ]
-    for offender in offenders:
-        sink.error(
-            _FALLBACK_CODE,
-            Loc.from_node(path, offender),
-            _INTENT[_FALLBACK_CODE],
-            help=(
-                "a serpent-decorated class body declares fields (`name: T`), error-enum "
-                "members (`NAME = errorcode(N)`) or methods, and nothing else"
-            ),
-            notes=(f"`{type(offender).__name__}` is not a declaration",),
-        )
-    if offenders:
+    allowed = _ALLOWED_MEMBER_FORMS[kind]
+    declared: dict[str, ast.stmt] = {}
+    valid = True
+    for index, member in enumerate(stmt.body):
+        if (index == 0 and _is_docstring(member)) or isinstance(member, ast.Pass):
+            continue
+        form = _member_form(member)
+        if form is None or form[0] not in allowed:
+            sink.error(
+                "SPT4020",
+                Loc.from_node(path, member),
+                _INTENT["SPT4020"],
+                help=_BODY_HELP[kind],
+                notes=(
+                    (
+                        f"`{type(member).__name__}` declares nothing"
+                        if form is None
+                        else f"`{type(member).__name__}` is not how a {kind} declares a member"
+                    ),
+                ),
+            )
+            valid = False
+            continue
+        name = form[1]
+        previous = declared.get(name)
+        if previous is not None:
+            sink.error(
+                "SPT2004",
+                Loc.from_node(path, member),
+                _INTENT["SPT2004"],
+                help=_HELP["SPT2004"],
+                notes=(
+                    (
+                        f"`{stmt.name}.{name}` is already declared at line "
+                        f"{previous.lineno}; the later declaration would silently "
+                        "replace it"
+                    ),
+                ),
+            )
+            valid = False
+            continue
+        declared[name] = member
+    if not valid:
         plan.failed_names.add(stmt.name)
-        return False
-    return True
+    return valid
 
 
 def _check_contract_count(plan: _ShapePlan, path: str, sink: Diagnostics) -> None:
     """Exactly one `@contract` class per module (SS C.3, a module-scope fact).
 
-    NOTE: the frozen registry has no dedicated row for this fact, so it
-    reuses `SPT4015` -- the top-level-class-shape code -- with a message of
-    its own (see the module docstring).
+    Reported under `SPT4019`, the row added for exactly this fact in Task 3's
+    review round, so the message contains its own registry intent. Zero is a
+    `WHOLE_FILE` location (there is no node to point at); each class after
+    the first gets its own `Loc`.
     """
     contracts = [node for node, kind in plan.classes if kind == "contract"]
+    intent = _INTENT["SPT4019"]
     if not contracts:
         sink.error(
-            "SPT4015",
+            "SPT4019",
             Loc.whole_file(path),
-            "expected exactly one @contract class in this module; found none",
-            help=_HELP["SPT4015"],
+            f"{intent}; this module declares none",
+            help=_HELP["SPT4019"],
         )
         return
     plan.contract_node = contracts[0]
     for extra in contracts[1:]:
         sink.error(
-            "SPT4015",
+            "SPT4019",
             Loc.from_node(path, extra),
-            "expected exactly one @contract class in this module; this is an extra one",
-            help=_HELP["SPT4015"],
+            f"{intent}; this is an extra one",
+            help=_HELP["SPT4019"],
             notes=(
-                f"the first @contract class is `{contracts[0].name}` on line {contracts[0].lineno}",
+                (
+                    f"the first @contract class is `{contracts[0].name}` on line "
+                    f"{contracts[0].lineno}"
+                ),
             ),
         )
 
@@ -787,15 +904,27 @@ def _execute(plan: _ShapePlan, path: str, sink: Diagnostics) -> tuple[dict[str, 
     sys.modules[module_name] = module
     try:
         for stmt in plan.executable:
-            code_object = compile(
-                ast.Module(body=[stmt], type_ignores=[]),
-                path,
-                "exec",
-                flags=flags,
-                dont_inherit=True,
-            )
             try:
+                # `compile()` is INSIDE the try: `ast.parse` accepts a whole
+                # class of source that `compile` then rejects in its symtable
+                # and codegen phases -- `continue` outside a loop, `nonlocal`
+                # with no binding, a duplicate parameter name, `yield` outside
+                # a function, `from serpent import *` inside a function,
+                # assigning to `__debug__`. Those SyntaxErrors carry their own
+                # precise line, so they bridge through the same helper the
+                # parse-time path uses.
+                code_object = compile(
+                    ast.Module(body=[stmt], type_ignores=[]),
+                    path,
+                    "exec",
+                    flags=flags,
+                    dont_inherit=True,
+                )
                 exec(code_object, namespace)  # noqa: S102 -- E1: the hybrid design
+            except SyntaxError as exc:
+                failed.add(id(stmt))
+                failed_names |= _bound_names(stmt)
+                _report_syntax_error(exc, path, sink, fallback=Loc.from_node(path, stmt))
             except _BRIDGED_EXCEPTIONS as exc:
                 # The cascade test runs BEFORE this statement's own names are
                 # recorded: `LIMIT = LIMIT` raises a NameError for a name it
@@ -805,7 +934,10 @@ def _execute(plan: _ShapePlan, path: str, sink: Diagnostics) -> tuple[dict[str, 
                 failed_names |= _bound_names(stmt)
                 if not cascade:
                     _bridge(stmt, exc, path, sink)
-            except Exception as exc:  # noqa: BLE001 -- see _BRIDGED_EXCEPTIONS
+            # `SystemExit` is a BaseException, so `Exception` alone misses it:
+            # `X = exit()` at module level would otherwise tear down the
+            # compiler instead of producing a diagnostic.
+            except (Exception, SystemExit) as exc:  # noqa: BLE001 -- see above
                 failed.add(id(stmt))
                 failed_names |= _bound_names(stmt)
                 _bridge(stmt, exc, path, sink)
@@ -838,7 +970,7 @@ def _bound_names(stmt: ast.stmt) -> set[str]:
     return set()
 
 
-def _bridge(stmt: ast.stmt, exc: Exception, path: str, sink: Diagnostics) -> None:
+def _bridge(stmt: ast.stmt, exc: BaseException, path: str, sink: Diagnostics) -> None:
     """Re-report one exec-time exception as a located diagnostic."""
     code, loc, qualifier = _classify(stmt, exc, path)
     intent = _INTENT[code]
@@ -852,7 +984,7 @@ def _bridge(stmt: ast.stmt, exc: Exception, path: str, sink: Diagnostics) -> Non
     )
 
 
-def _classify(stmt: ast.stmt, exc: Exception, path: str) -> tuple[str, Loc, str]:
+def _classify(stmt: ast.stmt, exc: BaseException, path: str) -> tuple[str, Loc, str]:
     """Pick the code, the location and the `Cls.member` qualifier.
 
     Location narrowing, in order: the `Cls.member:` prefix decorators.py puts
@@ -900,7 +1032,7 @@ def _classify(stmt: ast.stmt, exc: Exception, path: str) -> tuple[str, Loc, str]
     return code, Loc.from_node(path, target if target is not None else stmt), qualifier
 
 
-def _match_rule(exc: Exception) -> _BridgeRule | None:
+def _match_rule(exc: BaseException) -> _BridgeRule | None:
     message = str(exc)
     for rule in _BRIDGE_RULES:
         if isinstance(exc, rule.exc_types) and rule.needle in message:
@@ -923,7 +1055,7 @@ def _class_members(stmt: ast.ClassDef) -> dict[str, ast.stmt]:
     return members
 
 
-def _missing_name(exc: Exception) -> str | None:
+def _missing_name(exc: BaseException) -> str | None:
     if isinstance(exc, NameError):
         name = getattr(exc, "name", None)
         if isinstance(name, str):

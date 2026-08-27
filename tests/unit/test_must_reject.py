@@ -12,7 +12,7 @@ one rejected construct, declared by a machine-readable `# serpent:` header
 1. Globs every fixture, parses its header (`_parse_fixture`) -- this does NOT
    need `compile_module` and so runs today.
 2. Meta-test A: every declared `# serpent:reject` code exists in
-   `serpent.compiler.codes.CODES` -- live now (the frozen 91-code registry
+   `serpent.compiler.codes.CODES` -- live now (the SPT code registry
    already exists; this is the review gate the task brief names).
 3. Meta-test B: every non-`NO_FIXTURE_ALLOWLIST` registry code has >= 1
    fixture -- `xfail(strict=False)` until Task 11b finishes the fixture set.
@@ -174,7 +174,7 @@ def test_meta_a_every_declared_code_is_registered() -> None:
     unregistered = sorted({f.code for f in FIXTURES} - codes.CODES)
     assert not unregistered, (
         f"fixture(s) declare unregistered code(s): {unregistered} -- every "
-        "`# serpent:reject` must cite a code from the frozen 91-code registry"
+        "`# serpent:reject` must cite a code from the SPT code registry"
     )
 
 

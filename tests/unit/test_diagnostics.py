@@ -264,7 +264,7 @@ _EXPECTED_CODES = frozenset(
         *(f"SPT1{n:03d}" for n in range(1, 38)),
         *(f"SPT2{n:03d}" for n in range(1, 7)),
         *(f"SPT3{n:03d}" for n in range(1, 20)),
-        *(f"SPT4{n:03d}" for n in range(1, 19)),
+        *(f"SPT4{n:03d}" for n in range(1, 21)),
         *(f"SPT5{n:03d}" for n in range(1, 6)),
         "SPT6001",
         *(f"SPT7{n:03d}" for n in range(1, 6)),
@@ -278,8 +278,13 @@ def test_registry_is_complete_not_a_sample() -> None:
     # settled at 91 rows after the Task 1 review round added four missing
     # rows (recursion/E8, event-topic-Symbol/S11, a declared-vs-actual type
     # mismatch family, and MJ-11's exhaustive-dispatch catch-all) -- see
-    # task-1-report.md for the row-by-row derivation.
-    assert len(codes.REGISTRY) == 91
+    # task-1-report.md for the row-by-row derivation. Task 3's review fix
+    # round then added two more by controller ruling: SPT4019 (SS C.3's
+    # "exactly one @contract class" module-scope fact, which had no row and
+    # was being reported under SPT4015 with a mismatched message) and
+    # SPT4020 (decorated-class-body member shape, which was falling to
+    # MJ-11's catch-all).
+    assert len(codes.REGISTRY) == 93
 
 
 def test_registry_code_set_matches_the_frozen_snapshot() -> None:

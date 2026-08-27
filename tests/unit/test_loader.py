@@ -274,6 +274,26 @@ def test_the_repos_only_complete_authored_contract_loads_clean() -> None:
     assert [c.name for c in loaded.module_consts] == ["ADMIN", "NAME_KEY"]
 
 
+def test_contract_node_survives_a_failed_contract_exec() -> None:
+    # The documented asymmetry (review item 6): the node is there so later
+    # diagnostics can point at real source; only the executed views are None.
+    src = source(
+        """
+@contract
+class D:
+    def go(self, env: Env, amount) -> U32:
+        return U32(0)
+""",
+        with_contract=False,
+    )
+    loaded = load(src)
+    assert loaded.contract_node is not None
+    assert loaded.contract_node.name == "D"
+    assert loaded.contract_cls is None
+    assert loaded.contract_decl is None
+    assert [d.code for d in loaded.diagnostics.diagnostics] == ["SPT4004"]
+
+
 def test_an_unimported_decorator_says_so_rather_than_undecorated() -> None:
     loaded = load_module("@contract\nclass C:\n    pass\n", PATH)
     notes = " ".join(note for d in loaded.diagnostics.diagnostics for note in d.notes)
@@ -371,6 +391,51 @@ def test_syntax_error_diagnostic_renders_the_offending_line() -> None:
     assert "def broken(:" in rendered
 
 
+#: Source that `ast.parse` accepts and `compile()` then rejects in its
+#: symtable/codegen phase. These SyntaxErrors are raised by the per-statement
+#: `compile()` call, NOT by the module parse, so they only become diagnostics
+#: if that call is inside the bridging `try` -- it was not, and they escaped
+#: as raw tracebacks (review item 1).
+COMPILE_TIME_SYNTAX_ERRORS = {
+    "continue_outside_a_loop": (
+        "@contract\nclass D:\n    def go(self, env: Env) -> None:\n        continue  # HERE"
+    ),
+    "nonlocal_with_no_binding": "def h(env: Env) -> None:\n    nonlocal missing  # HERE",
+    "duplicate_parameter_name": "def h(a: U32, a: U32) -> None:  # HERE\n    return None",
+    "yield_outside_a_function": "LIMIT = (yield U32(1))  # HERE",
+    "star_import_inside_a_helper": ("def h(env: Env) -> None:\n    from serpent import *  # HERE"),
+    "assignment_to_dunder_debug": "__debug__ = U32(1)  # HERE",
+}
+
+
+@pytest.mark.parametrize(
+    "body", COMPILE_TIME_SYNTAX_ERRORS.values(), ids=COMPILE_TIME_SYNTAX_ERRORS.keys()
+)
+def test_a_compile_time_syntax_error_becomes_a_located_diagnostic(body: str) -> None:
+    src = source(body)
+    diagnostic = expect_at_here(src, "SPT1037")
+    assert "invalid Python syntax" in diagnostic.message
+    assert diagnostic.help
+    # And it renders against the real source line, which is the whole point of
+    # reusing the parse-time helper: the location comes from the exception,
+    # not from the enclosing statement.
+    marked = src.splitlines()[_here_line(src) - 1]
+    assert marked in diagnostic.render(src.splitlines())
+
+
+def test_a_compile_time_syntax_error_does_not_stop_later_statements() -> None:
+    # Collect-all (E16) still holds: the bad statement is skipped, not fatal.
+    src = source("__debug__ = U32(1)\n\n\n@contracttype\nclass S:\n    amount: int")
+    assert sorted(d.code for d in diags(src)) == ["SPT1037", "SPT4012"]
+
+
+def test_system_exit_at_module_level_is_a_diagnostic_not_a_shutdown() -> None:
+    # `SystemExit` is a BaseException, so an `except Exception` handler alone
+    # would let it tear the compiler down (review item 4).
+    src = source("LIMIT = exit()  # HERE")
+    expect_at_here(src, "SPT1037")
+
+
 IMPORT_REJECTS = {
     "plain_import": "import os  # HERE",
     "from_other_module": "from os import path  # HERE",
@@ -386,6 +451,22 @@ IMPORT_REJECTS = {
 def test_rejected_imports_get_the_import_code(body: str) -> None:
     src = source(body)
     expect_at_here(src, "SPT2005")
+
+
+def test_a_star_import_collapses_to_one_diagnostic() -> None:
+    # Error recovery (review item 5): before it, one star import produced
+    # three diagnostics -- the true SPT2005 plus a bogus "undecorated class"
+    # and "no @contract class", because `alias_map` was empty so no decorator
+    # resolved. Now every name it would have bound is registered for
+    # recognition and marked failed for cascade suppression.
+    src = (
+        "from serpent import *  # HERE\n\n\n"
+        "@contracttype\nclass S:\n    amount: U32\n\n\n"
+        "@contract\nclass C:\n    def go(self, env: Env) -> U32:\n        return U32(0)\n"
+    )
+    found = diags(src)
+    assert [d.code for d in found] == ["SPT2005"]
+    assert found[0].loc.line == _here_line(src)
 
 
 def test_serpent_import_of_an_all_name_is_accepted() -> None:
@@ -451,10 +532,12 @@ def test_two_serpent_decorators_on_one_class_are_rejected() -> None:
 
 def test_zero_contract_classes_is_a_whole_file_diagnostic() -> None:
     src = source("@contracttype\nclass S:\n    x: U32", with_contract=False)
-    found = of_code(src, "SPT4015")
+    found = of_code(src, "SPT4019")
     assert len(found) == 1
     assert found[0].loc.kind is LocKind.WHOLE_FILE
-    assert "@contract" in found[0].message
+    # The message contains SPT4019's own registry intent (the review round
+    # added the row precisely so it could).
+    assert "expected exactly one @contract class per module" in found[0].message
 
 
 def test_two_contract_classes_report_the_extra_one() -> None:
@@ -473,8 +556,8 @@ class Second:  # HERE
 """,
         with_contract=False,
     )
-    diagnostic = expect_at_here(src, "SPT4015")
-    assert "@contract" in diagnostic.message
+    diagnostic = expect_at_here(src, "SPT4019")
+    assert "expected exactly one @contract class per module" in diagnostic.message
 
 
 def test_a_base_class_on_a_non_event_decorated_class_is_rejected() -> None:
@@ -489,23 +572,91 @@ def test_an_extra_base_class_on_an_event_is_rejected() -> None:
 
 
 CLASS_BODY_REJECTS = {
+    # Statements that declare nothing at all.
     "if_in_a_struct_body": "@contracttype\nclass S:\n    if True:  # HERE\n        a: U32",
     "for_in_a_contract_body": "@contract\nclass D:\n    for _ in ():  # HERE\n        pass",
     "bare_expression_in_a_class_body": "@contracttype\nclass S:\n    U32(1)  # HERE\n    a: U32",
     "second_string_in_a_class_body": (
         '@contracttype\nclass S:\n    """Doc."""\n\n    "not a doc"  # HERE\n    a: U32'
     ),
+    # Wrong-kind members: the form is a declaration, just not one this kind
+    # of class declares (review minor 7).
+    "field_in_a_contract_class": (
+        "@contract\nclass D:\n    x: U32  # HERE\n\n    def go(self, env: Env) -> None:\n"
+        "        return None"
+    ),
+    "method_alias_in_a_contract_class": (
+        "@contract\nclass D:\n    def f(self, env: Env) -> None:\n        return None\n\n"
+        "    g = f  # HERE"
+    ),
+    "method_in_a_struct": (
+        "@contracttype\nclass S:\n    a: U32\n\n    def go(self) -> None:  # HERE\n"
+        "        return None"
+    ),
+    "method_in_an_error_enum": (
+        "@contracterror\nclass E:\n    A = errorcode(1)\n\n    def go(self) -> None:  # HERE\n"
+        "        return None"
+    ),
+    "unvalued_annotation_in_an_error_enum": "@contracterror\nclass E:\n    A: U32  # HERE",
+    "plain_assign_in_a_struct": "@contracttype\nclass S:\n    a = U32(1)  # HERE",
 }
 
 
 @pytest.mark.parametrize("body", CLASS_BODY_REJECTS.values(), ids=CLASS_BODY_REJECTS.keys())
-def test_only_declarations_are_allowed_in_a_decorated_class_body(body: str) -> None:
-    # SS C.3 ("there are no class attributes") AND the guard that keeps the
-    # F.1.14 cross-check unreachable from source: Python binds whatever a
-    # nested `if`/`for` in a class body executes, while the AST view
-    # enumerates the body's top level.
-    diagnostic = expect_at_here(source(body), "SPT1037")
+def test_only_kind_appropriate_declarations_are_allowed_in_a_class_body(body: str) -> None:
+    # SS C.3 ("Contract class: method names only. There are no class
+    # attributes") AND the guard that keeps the F.1.14 cross-check
+    # unreachable from source: a member form the kind does not declare is
+    # recorded by exactly one of the two views, and a nested `if`/`for` binds
+    # names the AST view never enumerates.
+    diagnostic = expect_at_here(source(body), "SPT4020")
     assert diagnostic.help
+
+
+DUPLICATE_MEMBERS = {
+    "duplicate_struct_field": "@contracttype\nclass S:\n    a: U32\n    a: U32  # HERE",
+    "duplicate_error_member": (
+        "@contracterror\nclass E:\n    A = errorcode(1)\n    A = errorcode(2)  # HERE"
+    ),
+    "duplicate_method": (
+        "@contract\nclass D:\n    def go(self, env: Env) -> None:\n        return None\n\n"
+        "    def go(self, env: Env) -> None:  # HERE\n        return None"
+    ),
+}
+
+
+@pytest.mark.parametrize("body", DUPLICATE_MEMBERS.values(), ids=DUPLICATE_MEMBERS.keys())
+def test_a_duplicate_member_in_one_class_body_is_rejected(body: str) -> None:
+    # The executed view keeps only the last binding while the AST view has
+    # both, so the inventories cannot line up -- this raised
+    # CompilerBugError on valid Python before the check existed.
+    diagnostic = expect_at_here(source(body), "SPT2004")
+    assert any("already declared" in note for note in diagnostic.notes)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "@contracttype\nclass S:\n    a: U32\n    a: U32",
+        "@contracterror\nclass E:\n    A = errorcode(1)\n    A = errorcode(2)",
+        (
+            "@contract\nclass D:\n    def f(self, env: Env) -> None:\n        return None\n\n"
+            "    g = f"
+        ),
+        (
+            "@contract\nclass D:\n    def go(self, env: Env) -> None:\n        return None\n\n"
+            "    def go(self, env: Env) -> None:\n        return None"
+        ),
+    ],
+    ids=["dup_field", "dup_error_member", "method_alias", "dup_method"],
+)
+def test_class_body_shapes_never_reach_the_cross_check(body: str) -> None:
+    load(source(body))  # must not raise CompilerBugError
+
+
+def test_a_struct_field_default_is_still_accepted() -> None:
+    # `name: T = v` is a dataclass field default, a legitimate struct member.
+    assert diags(source("@contracttype\nclass S:\n    a: U32 = U32(1)")) == ()
 
 
 def test_an_async_method_does_not_trip_the_cross_check() -> None:
@@ -907,7 +1058,7 @@ def test_bridging_never_reports_a_whole_file_location_for_a_statement() -> None:
     # P2/MJ-4: a statement-scoped failure must never fall back to WHOLE_FILE.
     for _name, _code, body in BRIDGING_MATRIX:
         for diagnostic in diags(source(body)):
-            if diagnostic.code == "SPT4015":
+            if diagnostic.code == "SPT4019":
                 continue  # the module-scope "exactly one @contract" fact
             assert diagnostic.loc.kind is LocKind.NODE, diagnostic
 

@@ -662,6 +662,38 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "struct construction takes keyword arguments only",
         "Task 7b",
     ),
+    # Added in Task 3's review fix round (controller ruling): SS C.3 names
+    # "expected exactly one @contract class" as the worked example of a
+    # module-scope (WHOLE_FILE) fact, but the Task 1 derivation had no row
+    # for it, so the loader was reusing SPT4015 with a message that did not
+    # contain its own registry intent. This row fixes that mismatch.
+    CodeEntry(
+        "SPT4019",
+        "SPT4xxx",
+        "Module -- not exactly one @contract class (SS C.3's module-scope fact): zero "
+        "(WHOLE_FILE) or more than one (each extra class's Loc)",
+        "expected exactly one @contract class per module",
+        "Task 3",
+    ),
+    # Added in the same round: a serpent-decorated class body admits only the
+    # declaration form its KIND declares -- methods in a @contract class,
+    # `NAME = errorcode(N)` in an error enum, `name: T` fields in a struct or
+    # event -- per SS C.3 ("Contract class: method names only. There are no
+    # class attributes"). Both the wrong-kind member and a class-body
+    # statement that declares nothing at all land here. Without this row the
+    # loader had to reuse MJ-11's catch-all (SPT1037), whose "not supported
+    # by the serpent subset" wording is wrong for a construct that IS
+    # supported, just not in that body.
+    CodeEntry(
+        "SPT4020",
+        "SPT4xxx",
+        "Decorated class body -- a member that is not valid for the class's kind (a field "
+        "in a @contract class, a method in a struct/event/error enum, a bare `x: T` in an "
+        "error enum, a plain `x = y` in a struct), or a statement that declares nothing "
+        "at all (SS C.3)",
+        "this member is not valid in this kind of serpent-decorated class body",
+        "Task 3",
+    ),
 )
 
 # --- SPT5xxx: spec/XDR limits (dossier D.1; SS B.3) -------------------------
