@@ -378,6 +378,21 @@ def test_declaration_shape_intents_speak_for_every_contract_function() -> None:
     for code in ("SPT4002", "SPT4003", "SPT4005"):
         assert "exported method" not in intents[code], (code, intents[code])
         assert "contract function" in intents[code], (code, intents[code])
+
+
+def test_type_and_case_name_intents_also_cover_the_symbol_charset() -> None:
+    """Task 9 fix round 1 (sanctioned wording edit, no renumber): controller
+    review found `SPT5002`/`SPT5003` checking name LENGTH only, while
+    `sections._check_name` also enforces the Symbol charset on a type/case
+    name -- a non-ASCII, length-legal name was silently accepted by
+    `validate_limits` and then raised `SpecNameError` with no location.
+    `limits.py` now checks the charset too (matching `SPT5001`'s own
+    length-then-charset order); this pins that both intents describe it.
+    """
+    intents = {entry.code: entry.message_intent for entry in codes.REGISTRY}
+    for code in ("SPT5002", "SPT5003"):
+        assert "outside [a-zA-Z0-9_]" in intents[code], (code, intents[code])
+        assert "too long" in intents[code], (code, intents[code])
     # The same edit folded the keyword-only parameter into SPT4002's subject.
     assert "keyword-only" in intents["SPT4002"]
 

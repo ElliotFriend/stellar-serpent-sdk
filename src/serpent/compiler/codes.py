@@ -789,15 +789,18 @@ _SPT5XXX: tuple[CodeEntry, ...] = (
     CodeEntry(
         "SPT5002",
         "SPT5xxx",
-        "@contracttype/@contracterror type name -- length > 60",
-        "type name is too long (> 60)",
+        "@contracttype/@contracterror type name -- length > 60 or non-Symbol charset (Task 9 "
+        "fix round 1: a name outside [a-zA-Z0-9_] is representable as a Python identifier but "
+        "not as the Rust identifier every Soroban tool renders it as)",
+        "type name is too long (> 60) or uses characters outside [a-zA-Z0-9_]",
         "Task 9",
     ),
     CodeEntry(
         "SPT5003",
         "SPT5xxx",
-        "@contracterror case name -- length > 60",
-        "error case name is too long (> 60)",
+        "@contracterror case name -- length > 60 or non-Symbol charset (Task 9 fix round 1, "
+        "same reasoning as SPT5002)",
+        "error case name is too long (> 60) or uses characters outside [a-zA-Z0-9_]",
         "Task 9",
     ),
     CodeEntry(

@@ -8,9 +8,20 @@ multibyte character straddling the boundary; 30/31; 60/61; 32/33 params) is
 the heart of this file; a closing test ties the accepted boundary directly to
 `spec.sections.build_spec_entries` actually succeeding, which is the
 invariant this whole module exists to protect.
+
+**Fix round 1** (controller review): SPT5002/SPT5003 originally checked
+LENGTH only. A non-ASCII, length-legal type/case name was silently accepted
+here and then blew up in `sections._check_name` with no location -- the same
+class of gap SPT5001 already closes at the 30-character tier, three rows
+wide (struct type names, error-enum type names, error-case names). Both
+codes now check the Symbol charset too; the non-ASCII boundary tests and the
+extended invariant test below are what would have caught this the first
+time.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from serpent.compiler import codes
 from serpent.compiler.diagnostics import Diagnostic, Diagnostics
@@ -114,7 +125,7 @@ class C:
     _assert_reject(diag, "SPT5001", name)
 
 
-# --- SPT5002: struct / error-enum type names (length only) --------------------
+# --- SPT5002: struct / error-enum type names (length + Symbol charset) --------
 
 
 def _type_name_source(name: str) -> str:
@@ -169,7 +180,40 @@ class C:
     _assert_reject(diag, "SPT5002", name)
 
 
-# --- SPT5003: error-enum case names (length only) ------------------------------
+def test_a_non_ascii_struct_type_name_is_rejected_even_when_length_legal() -> None:
+    """Fix round 1: the exact bug class controller review caught -- a struct
+    name that is non-ASCII but LENGTH-legal (<= 60 encoded bytes) must still
+    be rejected, or `sections._check_name` would raise `SpecNameError` for
+    the SAME name later, with no location at all."""
+    name = "é" + "T" * (TYPE_NAME_LIMIT - 2)
+    assert len(name.encode("utf-8")) == TYPE_NAME_LIMIT
+    diag = _reject(_type_name_source(name))
+    _assert_reject(diag, "SPT5002", "outside [a-zA-Z0-9_]")
+
+
+def test_a_non_ascii_error_enum_type_name_is_rejected_even_when_length_legal() -> None:
+    """The same gap, the other decorated-type kind (`@contracterror`)."""
+    name = "é" + "E" * (TYPE_NAME_LIMIT - 2)
+    assert len(name.encode("utf-8")) == TYPE_NAME_LIMIT
+    source = f"""
+from serpent import Env, U32, contract, contracterror, errorcode
+
+
+@contracterror
+class {name}:
+    Bad = errorcode(1)
+
+
+@contract
+class C:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+"""
+    diag = _reject(source)
+    _assert_reject(diag, "SPT5002", "outside [a-zA-Z0-9_]")
+
+
+# --- SPT5003: error-enum case names (length + Symbol charset) ------------------
 
 
 def _case_name_source(case_name: str) -> str:
@@ -200,6 +244,15 @@ def test_a_case_name_one_over_the_cap_is_rejected() -> None:
     diag = _reject(_case_name_source(name))
     _assert_reject(diag, "SPT5003", name)
     assert str(CASE_NAME_LIMIT + 1) in diag.message
+
+
+def test_a_non_ascii_case_name_is_rejected_even_when_length_legal() -> None:
+    """Fix round 1: the third row of the same bug class -- a case name that
+    is non-ASCII but LENGTH-legal (<= 60 encoded bytes)."""
+    name = "é" + "C" * (CASE_NAME_LIMIT - 2)
+    assert len(name.encode("utf-8")) == CASE_NAME_LIMIT
+    diag = _reject(_case_name_source(name))
+    _assert_reject(diag, "SPT5003", "outside [a-zA-Z0-9_]")
 
 
 # --- SPT5004: docstrings, counted in encoded bytes (B12) -----------------------
@@ -323,16 +376,40 @@ def test_the_leading_env_parameter_does_not_count_toward_the_cap() -> None:
 # --- the invariant: an accepted boundary must never make sections.py raise -----
 
 
-def test_every_accepted_boundary_together_still_lets_sections_build() -> None:
+@pytest.mark.parametrize(
+    ("type_name", "case_name"),
+    [
+        pytest.param("T" * TYPE_NAME_LIMIT, "C" * CASE_NAME_LIMIT, id="all-ascii-at-cap"),
+        pytest.param(
+            "é" + "T" * (TYPE_NAME_LIMIT - 2), "C" * CASE_NAME_LIMIT, id="non-ascii-type-name"
+        ),
+        pytest.param(
+            "T" * TYPE_NAME_LIMIT, "é" + "C" * (CASE_NAME_LIMIT - 2), id="non-ascii-case-name"
+        ),
+    ],
+)
+def test_every_accepted_boundary_together_still_lets_sections_build(
+    type_name: str, case_name: str
+) -> None:
     """B12/S23's whole point: whatever `validate_limits` accepts here must
     never make `build_spec_entries` raise. Stacks every cap at its boundary
     -- name lengths, doc length, and parameter count -- in one module and
-    proves `sections.py` really does accept it."""
+    proves `sections.py` really does accept it.
+
+    Fix round 1 extends this with the two non-ASCII, LENGTH-legal probes: the
+    exact shape controller review caught silently passing `validate_limits`
+    before this fix and then raising `SpecNameError` out of
+    `sections._check_name` with no location. Each probe is still exactly at
+    the 60-BYTE boundary (`assert`ed below) -- only the charset is broken --
+    so this is a genuine regression test for the gap, not a length case in
+    disguise.
+    """
+    assert len(type_name.encode("utf-8")) == TYPE_NAME_LIMIT
+    assert len(case_name.encode("utf-8")) == CASE_NAME_LIMIT
+
     method_name = "m" * NAME_LIMIT
     param_name = "p" * NAME_LIMIT
     doc = "x" * DOC_LIMIT
-    type_name = "T" * TYPE_NAME_LIMIT
-    case_name = "C" * CASE_NAME_LIMIT
     ctor_params = ", ".join(f"a{i}: U32" for i in range(EXPORT_PARAM_LIMIT))
 
     source = f"""
@@ -363,8 +440,16 @@ class C:
     assert not loaded.diagnostics, [d.message for d in loaded.diagnostics.diagnostics]
     sink = Diagnostics()
     validate_limits(loaded, sink)
-    assert not sink, [(d.code, d.message) for d in sink.diagnostics]
 
+    non_ascii = any(ord(char) > 127 for char in type_name + case_name)
+    if non_ascii:
+        # This IS the invariant firing correctly: validate_limits must catch
+        # it here, so build_spec_entries never gets a chance to raise.
+        assert sink, "a non-ASCII, length-legal type/case name must be rejected here"
+        assert {d.code for d in sink.diagnostics} <= {"SPT5002", "SPT5003"}, sink.diagnostics
+        return
+
+    assert not sink, [(d.code, d.message) for d in sink.diagnostics]
     assert loaded.contract_cls is not None
     struct_cls = loaded.decorated_types_in_order[0].cls
     enum_cls = loaded.decorated_types_in_order[1].cls

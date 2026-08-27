@@ -23,31 +23,37 @@ every check is a name, a doc string or a count).
 
 An exported method's own name and a struct/event field name ARE already
 validated by `decorators.py` at class-decoration time. This module checks
-them again anyway (mirroring `sections.py`'s own "sections must not trust
-its input" posture -- see `tests/unit/test_sections.py`'s guard tests for the
-same rows). It costs nothing: real source can never reach a violation
-through this path. The loader compiles and execs one top-level statement at
-a time (MJ-4), so if `decorators.py` rejects a name, the WHOLE class
-statement fails to execute -- the class carries no `_serpent_type_` metadata
-and is therefore absent from `loaded.contract_decl` /
+export/type names again anyway (mirroring `sections.py`'s own "sections must
+not trust its input" posture -- see `tests/unit/test_sections.py`'s guard
+tests for the same rows). It costs nothing: real source can never reach a
+violation through this path. The loader compiles and execs one top-level
+statement at a time (MJ-4), so if `decorators.py` rejects a name, the WHOLE
+class statement fails to execute -- the class carries no `_serpent_type_`
+metadata and is therefore absent from `loaded.contract_decl` /
 `loaded.decorated_types_in_order` /`loaded.events` altogether (F.1.14). A
-struct/event field name is consequently never re-checked here at all: a
-declaration whose metadata exists has, by construction, already had every
-field name validated by `decorators._build_record` -- re-deriving that would
-be untestable dead code, not defense in depth.
+struct/event FIELD name is consequently never re-checked here at all, and the
+asymmetry with an export/type name is not incidental: this module already
+visits every export/type declaration for an independent reason (building its
+`Loc`, checking its length), so a charset check there is one more branch on
+code already running, whereas a field has no other reason for this module to
+visit it at all -- adding a field-name walk would be a wholly new path that,
+by the same MJ-4 argument, could never observe a failure (untestable dead
+code, not defense in depth).
 
-## What SPT5002/SPT5003 deliberately do NOT check
+## SPT5002/SPT5003 (Task 9 fix round 1: charset added)
 
-`SPT5002` (type name) and `SPT5003` (error-case name) check LENGTH only,
-matching their registry `message_intent` exactly ("type name is too long
-(> 60)" / "error case name is too long (> 60)" -- no charset clause, unlike
-`SPT5001`'s "... or uses characters outside [a-zA-Z0-9_]"). `sections.py`'s
-own `_check_name` also enforces the Symbol charset on a class/case name, but
-D10 ties the charset requirement to the 30-character function/field/param
-tier specifically. A Python class or enum-member name outside
-`val.SYMBOL_CHARS` (a non-ASCII identifier) is therefore an extant,
-un-pre-empted gap -- deliberately left alone rather than pairing a charset
-violation with a code whose registry intent does not name one.
+`SPT5002` (type name) and `SPT5003` (error-case name) originally checked
+LENGTH only. Controller review (fix round 1) caught the gap this left: a
+struct/error-enum/error-case name can be a non-ASCII Python identifier (e.g.
+`café`, valid Python, invalid `val.SYMBOL_CHARS`) that is well within the
+60-byte cap and therefore accepted here, only for `sections._check_name` to
+raise `SpecNameError` for the SAME name at emission -- exactly the
+no-location failure this whole module exists to pre-empt. Both codes now
+check length THEN charset, mirroring `SPT5001`'s own order exactly (an
+over-long name is a length problem, not a charset one) via the same shared
+`_check_symbol_name` helper D10 already governs for the 30-character tier;
+the registry's `message_intent` for both was widened to match (a sanctioned
+wording edit, no renumber -- `codes.py`'s only change for this fix round).
 
 ## Events are out of scope
 
@@ -141,7 +147,15 @@ def _check_contract(decl: DecoratedDecl, loaded: LoadedModule, sink: Diagnostics
         emitted = CONSTRUCTOR_NAME if name == "__init__" else name
         node = node_map.get(name)
         fn_loc = Loc.from_node(loaded.path, node) if node is not None else class_loc
-        _check_symbol_name(emitted, fn_loc, f"`{emitted}`", sink)
+        _check_symbol_name(
+            emitted,
+            fn_loc,
+            f"`{emitted}`",
+            sink,
+            code="SPT5001",
+            limit=NAME_LIMIT,
+            help_text=_NAME_HELP,
+        )
         _check_doc(_own_doc(vars(contract_cls).get(name)), fn_loc, emitted, sink)
 
         real_params = _drop_env(params)
@@ -155,7 +169,13 @@ def _check_contract(decl: DecoratedDecl, loaded: LoadedModule, sink: Diagnostics
         for param_name, _annotation in real_params:
             param_loc = _param_loc(loaded.path, node, param_name) if node is not None else fn_loc
             _check_symbol_name(
-                param_name, param_loc, f"parameter `{param_name}` of `{emitted}`", sink
+                param_name,
+                param_loc,
+                f"parameter `{param_name}` of `{emitted}`",
+                sink,
+                code="SPT5001",
+                limit=NAME_LIMIT,
+                help_text=_NAME_HELP,
             )
 
 
@@ -171,52 +191,63 @@ def _drop_env(params: Sequence[tuple[str, object]]) -> list[tuple[str, object]]:
 
 
 def _check_type_name(decl: DecoratedDecl, loaded: LoadedModule, sink: Diagnostics) -> None:
-    encoded = len(decl.name.encode("utf-8"))
-    if encoded > TYPE_NAME_LIMIT:
-        sink.error(
-            "SPT5002",
-            Loc.from_node(loaded.path, decl.node),
-            f"{_INTENT['SPT5002']}: `{decl.name}` is {encoded} bytes (max {TYPE_NAME_LIMIT})",
-            help=_TYPE_NAME_HELP,
-        )
+    _check_symbol_name(
+        decl.name,
+        Loc.from_node(loaded.path, decl.node),
+        f"type `{decl.name}`",
+        sink,
+        code="SPT5002",
+        limit=TYPE_NAME_LIMIT,
+        help_text=_TYPE_NAME_HELP,
+    )
 
 
 def _check_cases(decl: DecoratedDecl, loaded: LoadedModule, sink: Diagnostics) -> None:
     cases: Sequence[tuple[str, int]] = decl.metadata["cases"]
     for name, _code in cases:
-        encoded = len(name.encode("utf-8"))
-        if encoded > CASE_NAME_LIMIT:
-            sink.error(
-                "SPT5003",
-                _member_loc(loaded.path, decl.node, name),
-                f"{_INTENT['SPT5003']}: `{name}` is {encoded} bytes (max {CASE_NAME_LIMIT})",
-                help=_CASE_NAME_HELP,
-            )
+        _check_symbol_name(
+            name,
+            _member_loc(loaded.path, decl.node, name),
+            f"error case `{name}`",
+            sink,
+            code="SPT5003",
+            limit=CASE_NAME_LIMIT,
+            help_text=_CASE_NAME_HELP,
+        )
 
 
 # --- shared checks --------------------------------------------------------------
 
 
-def _check_symbol_name(name: str, loc: Loc, what: str, sink: Diagnostics) -> None:
-    """`SPT5001`: length (encoded bytes, matching `sections._check_name`)
-    first, then the Symbol charset -- mutually exclusive, matching both
+def _check_symbol_name(
+    name: str, loc: Loc, what: str, sink: Diagnostics, *, code: str, limit: int, help_text: str
+) -> None:
+    """Length (encoded UTF-8 bytes, matching `sections._check_name`) first,
+    then the Symbol charset -- mutually exclusive, matching both
     `decorators._check_name` and `sections._check_name`'s own "length first"
-    ordering (an over-long name is a length problem, not a charset one)."""
+    ordering (an over-long name is a length problem, not a charset one).
+
+    Shared by `SPT5001` (function/field/param, D10's 30-character tier) and,
+    since Task 9 fix round 1, `SPT5002`/`SPT5003` (type/case name, the
+    60-character tier): `val.SYMBOL_CHARS` is the SAME charset authority at
+    every tier -- only the length cap and the diagnostic code differ, which
+    is exactly what `code`/`limit`/`help_text` parameterize.
+    """
     encoded = len(name.encode("utf-8"))
-    if encoded > NAME_LIMIT:
+    if encoded > limit:
         sink.error(
-            "SPT5001",
+            code,
             loc,
-            f"{_INTENT['SPT5001']}: {what} is {encoded} characters (max {NAME_LIMIT})",
-            help=_NAME_HELP,
+            f"{_INTENT[code]}: {what} is {encoded} bytes (max {limit})",
+            help=help_text,
         )
         return
     if any(char not in SYMBOL_CHARS for char in name):
         sink.error(
-            "SPT5001",
+            code,
             loc,
-            f"{_INTENT['SPT5001']}: {what} uses a character outside [a-zA-Z0-9_]",
-            help=_NAME_HELP,
+            f"{_INTENT[code]}: {what} uses a character outside [a-zA-Z0-9_]",
+            help=help_text,
         )
 
 
