@@ -60,8 +60,6 @@ class Struct(Protocol):
 #:
 #: This is deliberately a closed union rather than `object`: a raw `str` or
 #: `int` key is a static error, which is the whole point of the chain types.
-#: Task 10 introduces the `ContractValue` alias for stored/returned values;
-#: until then `set()` and event `data` stay `object`.
 ChainValue: TypeAlias = _ChainValue[Any] | Vec[Any] | Map[Any, Any] | Struct
 
 
@@ -102,7 +100,7 @@ class _StorageBucket:
         """
         raise NotImplementedError("sub-plan E")
 
-    def set(self, key: ChainValue, value: object) -> None:
+    def set(self, key: ChainValue, value: ChainValue) -> None:
         """Write `value` under `key`."""
         raise NotImplementedError("sub-plan E")
 
@@ -195,7 +193,7 @@ class Events:
 
     __slots__ = ()
 
-    def publish(self, topics: tuple[ChainValue, ...], data: object) -> None:
+    def publish(self, topics: tuple[ChainValue, ...], data: ChainValue) -> None:
         """Emit an event.
 
         `topics` is a heterogeneous tuple, not a homogeneous `Vec`: the

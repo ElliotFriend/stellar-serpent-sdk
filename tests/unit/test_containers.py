@@ -451,6 +451,20 @@ def test_container_ranks_and_deferred_payload() -> None:
         Map(U32, U32)._cmp_payload()
 
 
+def test_vec_to_val_and_from_val_are_deferred_to_sub_plan_b() -> None:
+    with pytest.raises(NotImplementedError, match="host object form; sub-plan B"):
+        Vec(U32).to_val()
+    with pytest.raises(NotImplementedError, match="host object form; sub-plan B"):
+        Vec.from_val(0)
+
+
+def test_map_to_val_and_from_val_are_deferred_to_sub_plan_b() -> None:
+    with pytest.raises(NotImplementedError, match="host object form; sub-plan B"):
+        Map(U32, U32).to_val()
+    with pytest.raises(NotImplementedError, match="host object form; sub-plan B"):
+        Map.from_val(0)
+
+
 # --- properties ----------------------------------------------------------------
 
 

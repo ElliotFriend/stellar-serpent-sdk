@@ -47,7 +47,7 @@ independent containers (pickling is not modelled in M1-A).
 
 import copy as _copy
 from collections.abc import Iterable, Iterator
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, Self, TypeVar
 
 from serpent.types._ordering import ChainValue, require_chain_value, val_cmp
 from serpent.types.numeric import U32
@@ -193,6 +193,13 @@ class Vec(Generic[T]):
 
     def _cmp_payload(self) -> object:
         raise NotImplementedError(_DEFERRED)
+
+    def to_val(self) -> int:
+        raise NotImplementedError("host object form; sub-plan B")
+
+    @classmethod
+    def from_val(cls, v: int) -> Self:
+        raise NotImplementedError("host object form; sub-plan B")
 
     def __repr__(self) -> str:
         return f"Vec({self._element_type.__name__}, {self._items!r})"
@@ -356,6 +363,13 @@ class Map(Generic[K, V]):
 
     def _cmp_payload(self) -> object:
         raise NotImplementedError(_DEFERRED)
+
+    def to_val(self) -> int:
+        raise NotImplementedError("host object form; sub-plan B")
+
+    @classmethod
+    def from_val(cls, v: int) -> Self:
+        raise NotImplementedError("host object form; sub-plan B")
 
     def __repr__(self) -> str:
         return f"Map({self._key_type.__name__}, {self._value_type.__name__}, {self._pairs!r})"

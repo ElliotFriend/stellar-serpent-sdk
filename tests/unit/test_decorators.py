@@ -461,6 +461,10 @@ def _key_surface_probe(env: Env, address: Address) -> None:
     bucket.set("SYM", U32(1))  # type: ignore[arg-type]
     bucket.set(1, U32(1))  # type: ignore[arg-type]
     bucket.get(b"raw", U32)  # type: ignore[arg-type]
+    # ...and the same closed union applies to the value being written, not
+    # just the key: a raw `str`/`int` value is also a static error.
+    bucket.set(Symbol("SYM"), "raw string")  # type: ignore[arg-type]
+    bucket.set(Symbol("SYM"), 1)  # type: ignore[arg-type]
 
 
 def _event_surface_probe(env: Env, address: Address) -> None:
@@ -470,6 +474,8 @@ def _event_surface_probe(env: Env, address: Address) -> None:
     # (c) topics are heterogeneous; a bare Python value is still rejected.
     env.events().publish((Symbol("transfer"), address, address), U32(1))
     env.events().publish(("transfer",), U32(1))  # type: ignore[arg-type]
+    # `data` is a `ChainValue` too, so a raw Python value is rejected there.
+    env.events().publish((Symbol("transfer"), address, address), 42)  # type: ignore[arg-type]
 
 
 def test_contractevent_requires_the_event_base() -> None:

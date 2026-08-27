@@ -55,7 +55,7 @@ vector.** `Symbol._order_key()` orders by raw UTF-8 bytes (ASCII), so under
 the *current* model `Symbol("A") < Symbol("_")` (`ord("A")==65 <
 ord("_")==95`). The host's `SymbolSmall` Val instead packs each character
 through a 6-bit alphabet code (`serpent.val.SYMBOL_CHARS`, where `"_"` is
-code 1 and `"A"` is code 13) -- if the host compares packed *codes* rather
+code 1 and `"A"` is code 12) -- if the host compares packed *codes* rather
 than original bytes, `Symbol("_") < Symbol("A")` would hold there instead,
 the opposite answer. This table pins the ASCII model tier 1 implements today;
 sub-plan D/F's differential harness is exactly what must confirm or refute it
@@ -103,6 +103,10 @@ class SemCase:
     expect: object | None = None  # chain-type instance, for kind == "value"
     code: int | None = None  # contract error code, for kind == "contract_error"
     trap: type[BaseException] | None = None  # tier-1 builtin, for kind == "trap"
+    # Cases marked tier1_only are observable only in tier-1 Python execution --
+    # sub-plan D skips them by construction, because the compiler tier
+    # statically rejects their source.
+    tier1_only: bool = False
 
 
 CASES: list[SemCase] = [
@@ -267,10 +271,12 @@ CASES: list[SemCase] = [
     SemCase(
         # The documented bool-leak: Python bool is int, so it is accepted
         # wherever int is on a numeric chain type (2026-08-26 decision log).
+        # Tier-1-only: the compiler tier statically rejects bool-as-int-operand.
         name="bool_leaks_as_int_operand",
         source="U32(5) + True",
         kind="value",
         expect=U32(6),
+        tier1_only=True,
     ),
     # --- division/modulo by zero: host trap, not a contract error ------------
     SemCase(
@@ -367,17 +373,21 @@ CASES: list[SemCase] = [
         expect=Bool(True),
     ),
     # --- no implicit str/bytes coercion into chain payload types -------------
+    # Tier-1-only: the tier-2 answer is undecided until sub-plan C settles
+    # raw-operand coercion.
     SemCase(
         name="symbol_does_not_coerce_from_str",
         source='Bool(Symbol("abc") == "abc")',
         kind="value",
         expect=Bool(False),
+        tier1_only=True,
     ),
     SemCase(
         name="bytes_does_not_coerce_from_raw_bytes",
         source='Bool(Bytes(b"abc") == b"abc")',
         kind="value",
         expect=Bool(False),
+        tier1_only=True,
     ),
     # --- Map/rank ordering observables (val_cmp is not public API itself) ---
     SemCase(
@@ -405,7 +415,7 @@ CASES: list[SemCase] = [
     SemCase(
         # Top sub-plan D/F differential vector: ASCII order says Symbol("A")
         # sorts first (ord("A")=65 < ord("_")=95). The host's SymbolSmall
-        # 6-bit alphabet codes "_" as 1 and "A" as 13 -- if the host compares
+        # 6-bit alphabet codes "_" as 1 and "A" as 12 -- if the host compares
         # packed codes rather than raw bytes, this answer flips. See the
         # module docstring.
         name="symbol_underscore_vs_A_ascii_order",
@@ -414,11 +424,14 @@ CASES: list[SemCase] = [
         expect=Bool(False),
     ),
     # --- indexing: chain-faithful everywhere, no negative-index sugar --------
+    # Tier-1-only: negative-index literals are compile-rejected per the
+    # no-negative-indexing ruling.
     SemCase(
         name="bytes_negative_index_traps",
         source='Bytes(b"ab")[-1]',
         kind="trap",
         trap=IndexError,
+        tier1_only=True,
     ),
     SemCase(
         name="bytes_positive_out_of_range_traps",

@@ -8,6 +8,8 @@ and a second, independent proof (alongside `test_public_api.py` and the
 authoring surface.
 """
 
+import re
+
 import pytest
 
 import serpent
@@ -49,3 +51,37 @@ def test_semantics_case(case: SemCase) -> None:
             _eval_case(case.source)
     else:  # pragma: no cover - Literal exhausts the real cases
         pytest.fail(f"unknown SemCase kind: {case.kind!r}")
+
+
+# --- meta-test: tier1_only accounting matches the decision log ----------------
+
+# Simple, regex-based stand-ins for the constructs the decision log declares
+# compile-rejected. This is deliberately crude -- sub-plan C's real frontend
+# checks are what will actually enforce these; until then this regex sweep is
+# a tripwire against a case silently drifting onto compile-rejected ground
+# without being marked `tier1_only`.
+_BOOL_AS_INT_OPERAND = re.compile(r"[+\-*/%]\s*(True|False)\b|\b(True|False)\s*[+\-*/%]")
+_NEGATIVE_INDEX_LITERAL = re.compile(r"\[-")
+_RAW_LITERAL_COMPARED_VIA_EQ = re.compile(r"==\s*b?['\"]|b?['\"][^'\"]*['\"]\s*==")
+
+
+_NON_TIER1_ONLY_CASES = [case for case in CASES if not case.tier1_only]
+
+
+@pytest.mark.parametrize(
+    "case", _NON_TIER1_ONLY_CASES, ids=[case.name for case in _NON_TIER1_ONLY_CASES]
+)
+def test_non_tier1_only_cases_avoid_compile_rejected_constructs(case: SemCase) -> None:
+    assert not _BOOL_AS_INT_OPERAND.search(case.source), (
+        f"{case.name}: bool used as an int operand, but the compiler tier "
+        "statically rejects that -- mark this case tier1_only"
+    )
+    assert not _NEGATIVE_INDEX_LITERAL.search(case.source), (
+        f"{case.name}: negative index literal, but the compiler tier "
+        "statically rejects that -- mark this case tier1_only"
+    )
+    assert not _RAW_LITERAL_COMPARED_VIA_EQ.search(case.source), (
+        f"{case.name}: raw str/bytes literal compared to a chain type via "
+        "==, but that coercion answer is undecided until sub-plan C settles "
+        "raw-operand coercion -- mark this case tier1_only"
+    )
