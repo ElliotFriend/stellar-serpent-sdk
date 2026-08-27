@@ -27,6 +27,7 @@ than the host's permissiveness.
 from __future__ import annotations
 
 import ast
+import inspect
 
 import pytest
 
@@ -46,7 +47,12 @@ from serpent.compiler.ir import (
     ParamRef,
 )
 from serpent.compiler.loader import LoadedModule, load_module
+
+# The method-shape table is module-private (it is an implementation detail of
+# the rows, not part of the surface), but the differential assertions below are
+# ABOUT that table, so the test reads it directly.
 from serpent.compiler.recognize import (
+    _METHOD_SHAPES,
     BYTES_METHODS,
     CONTAINER_HOST_FN_TARGETS,
     MAP_METHODS,
@@ -54,6 +60,7 @@ from serpent.compiler.recognize import (
     UNREACHED_CONTAINER_HOST_FNS,
     VEC_METHODS,
     SurfaceKind,
+    duplicate_static_key,
     recognize_attribute,
     recognize_call,
     static_map_order,
@@ -412,6 +419,28 @@ def test_bytes_slice_row_awaits_task_8() -> None:
     assert callable(getattr(Bytes, "slice", None))
 
 
+@pytest.mark.parametrize(
+    ("method", "row"),
+    sorted(
+        [(name, row) for name, row in VEC_METHODS.items()]
+        + [(name, row) for name, row in MAP_METHODS.items()]
+    ),
+)
+def test_every_method_row_pins_the_tier1_parameter_names(method: str, row: str) -> None:
+    """The row's `params` ARE the tier-1 parameter names -- that is what makes
+    `v.get(index=...)` accepted under the name the real API uses (minor 8). A
+    tier-1 rename would otherwise silently turn a supported keyword into an
+    `SPT1035` reject, so the names are pinned against `inspect.signature`.
+
+    (`bytes.slice` is excluded with the rest of the `Bytes` rows: the method
+    lands in Task 8.)
+    """
+    cls = _TIER1_CLASSES[row.split(".")[0]]
+    parameters = list(inspect.signature(getattr(cls, method)).parameters)
+    assert parameters[0] == "self", (cls.__name__, method)
+    assert tuple(parameters[1:]) == _METHOD_SHAPES[row].params, (cls.__name__, method)
+
+
 def test_reader_rows_match_the_host_arity() -> None:
     """Every emitted `HostCall` must pass exactly the host function's arity --
     the receiver plus the row's own arguments. (The mutator rows' arities are
@@ -583,6 +612,63 @@ def test_static_map_order_declines_un_orderable_keys() -> None:
     assert static_map_order((literal,)) == (0,)
     assert static_map_order((struct_key,)) is None
     assert static_map_order((literal, param_key)) is None
+
+
+def test_map_literal_with_duplicate_keys_is_rejected() -> None:
+    """Controller ruling (fix round 1): tier 1 keeps the last value silently
+    and `map_new_from_linear_memory` cannot represent the repeat at all, so a
+    repeated literal key is a compile reject -- stricter than tier 1, which a
+    REJECT is allowed to be."""
+    diag = _reject_call("Map(U32, U32, [(U32(1), U32(10)), (U32(1), U32(20))])")
+    _assert_reject(diag, "SPT1039", "appears more than once")
+    assert "last" in (diag.help or "").lower()
+
+
+def test_duplicate_key_detection_uses_the_bytes_family_payload_equality() -> None:
+    """D5: `Bytes32(p)` and `Bytes(p)` are ONE key -- `val_cmp` answers 0 for
+    them (same rank 13, same payload), and the check asks `val_cmp`, not
+    Python class identity."""
+    source = f'Map(Bytes, U32, [(Bytes(b"a" * 32), U32(1)), ({_BYTES32_LITERAL}, U32(2))])'
+    _assert_reject(_reject_call(source), "SPT1039", "appears more than once")
+
+
+def test_distinct_keys_of_the_same_type_are_not_duplicates() -> None:
+    node = _ok_call('Map(Symbol, U32, [(Symbol("a"), U32(1)), (Symbol("b"), U32(2))])')
+    assert isinstance(node, MakeMap)
+    assert node.all_static is True
+
+
+def test_runtime_keys_are_not_subject_to_the_duplicate_check() -> None:
+    """A non-literal key pair cannot be decided at compile time, and the
+    fallback lowering (`map_new` + `map_put`) reproduces tier 1's last-wins
+    exactly -- so this compiles, as it must."""
+    node = _ok_call("Map(Symbol, U32, [(sym, U32(1)), (sym, U32(2))])")
+    assert isinstance(node, MakeMap)
+    assert node.all_static is False
+
+
+def test_struct_keys_are_not_subject_to_the_duplicate_check() -> None:
+    """Same reason, one step further: struct keys take the `all_static=False`
+    path (E3 -- tier 1 cannot order them), where the host's `map_put` decides
+    both order and last-wins."""
+    node = _ok_call(
+        "Map(BalanceKey, U32, [(BalanceKey(owner=addr), U32(1)), (BalanceKey(owner=addr), U32(2))])"
+    )
+    assert isinstance(node, MakeMap)
+    assert node.all_static is False
+    assert len(node.pairs) == 2
+
+
+def test_duplicate_static_key_helper() -> None:
+    loc = Loc.whole_file(PATH)
+    first = Const(loc=loc, ty=Ty.U32, py_value=1)
+    same = Const(loc=loc, ty=Ty.U32, py_value=1)
+    other = Const(loc=loc, ty=Ty.U32, py_value=2)
+    assert duplicate_static_key((first, same)) is same
+    assert duplicate_static_key((first, other)) is None
+    # Not decidable at compile time -> not this check's business.
+    param = ParamRef(loc=loc, ty=Ty.U32, index=0, name="amt")
+    assert duplicate_static_key((first, param)) is None
 
 
 def test_map_rejects_a_key_of_the_wrong_type() -> None:

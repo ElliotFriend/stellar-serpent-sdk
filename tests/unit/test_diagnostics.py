@@ -261,7 +261,7 @@ def test_registry_rows_name_a_construct_and_message_intent() -> None:
 #: any registry change, never to make a test pass without reading the diff.
 _EXPECTED_CODES = frozenset(
     {
-        *(f"SPT1{n:03d}" for n in range(1, 39)),
+        *(f"SPT1{n:03d}" for n in range(1, 40)),
         *(f"SPT2{n:03d}" for n in range(1, 7)),
         *(f"SPT3{n:03d}" for n in range(1, 21)),
         *(f"SPT4{n:03d}" for n in range(1, 21)),
@@ -291,7 +291,11 @@ def test_registry_is_complete_not_a_sample() -> None:
     # recognized call that is neither an arity nor a type mismatch), and
     # widened SPT3020 to cover general recognized-call arity mistakes, not
     # just chain-type constructors (controller ruling, task-7a-fix-round-1).
-    assert len(codes.REGISTRY) == 95
+    # Task 7b's review fix round added the last one, SPT1039 (a map literal
+    # repeating a key -- which tier 1 silently swallows and the on-chain
+    # literal form cannot represent at all), and fixed SPT1034's wording
+    # (controller ruling, task-7b-fix-round-1).
+    assert len(codes.REGISTRY) == 96
 
 
 def test_registry_code_set_matches_the_frozen_snapshot() -> None:

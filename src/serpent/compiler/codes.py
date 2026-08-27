@@ -308,12 +308,20 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "this Env surface is recognized but not yet supported; it lands in M2",
         "Task 7a",
     ),
+    # Wording fixed in Task 7b's review fix round (sanctioned, wording only --
+    # no renumber, no meaning change): the example used to read
+    # `x = x.push_back(v)`, which reads as a VALUE-position mutation. That is
+    # itself a reject under this same code (an expression has no binding to
+    # rewrite, and tier 1's mutators return None), so the example contradicted
+    # the rule. E11's real shape is the mutation as a STATEMENT, with C
+    # supplying the rebind.
     CodeEntry(
         "SPT1034",
         "SPT1xxx",
         "Container mutation through an aliased binding or a temporary receiver",
         "host container operations are functional; mutate only a local this method owns, "
-        "then rebind it -- x = x.push_back(v)",
+        "on a statement of its own -- `v.push_back(x)` -- and C rebinds it "
+        "(v = vec_push_back(v, x))",
         "Task 7b",
     ),
     CodeEntry(
@@ -357,6 +365,25 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "error (e.g. an empty event-topics tuple)",
         "env API used with an unsupported call shape",
         "Task 7a",
+    ),
+    # Added in Task 7b's review fix round (controller ruling). A `Map(K, V,
+    # [...])` literal with two keys that compare EQUAL under `val_cmp` had no
+    # row: tier 1 silently keeps the last one, while the on-chain literal form
+    # (`map_new_from_linear_memory`, `m.9`) requires strictly-ascending UNIQUE
+    # keys and traps otherwise -- so an accept here would either trap on chain
+    # or silently differ from the oracle. It is an authoring bug either way,
+    # and "reject rather than approximate" (S1) makes the reject the honest
+    # answer; a reject is allowed to be STRICTER than tier 1 (only ACCEPTS
+    # must be oracle-runnable). SPT1xxx and not SPT3018/SPT3020: nothing about
+    # it is a type disagreement or a call-arity mistake -- the map literal's
+    # SHAPE is not one the subset supports.
+    CodeEntry(
+        "SPT1039",
+        "SPT1xxx",
+        "Map literal with duplicate keys (two literal keys equal under val_cmp, the Bytes "
+        "family's payload equality included -- D5)",
+        "a map literal may not repeat a key",
+        "Task 7b",
     ),
 )
 

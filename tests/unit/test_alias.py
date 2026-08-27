@@ -50,6 +50,7 @@ from serpent.compiler.loader import LoadedModule, load_module
 from serpent.compiler.recognize import (
     BindingSource,
     classify_binding,
+    note_escapes,
     note_local_binding,
     recognize_call,
     recognize_mutation,
@@ -104,6 +105,9 @@ _LOCALS: list[tuple[str, Ty, Ownership | None]] = [
     ("aliased", Ty.Vec(Ty.U32), Ownership.ALIASED),
     ("unowned", Ty.Vec(Ty.U32), None),
     ("ownmap", Ty.Map(Ty.Symbol, Ty.U32), Ownership.OWNED),
+    # The two embedding receivers Critical 1's repros need.
+    ("nest", Ty.Vec(Ty.Vec(Ty.U32)), Ownership.OWNED),
+    ("mapofvec", Ty.Map(Ty.Symbol, Ty.Vec(Ty.U32)), Ownership.OWNED),
 ]
 
 
@@ -376,6 +380,89 @@ def test_popped_value_position_names_the_read_first_rewrite() -> None:
     diag = ctx.sink.diagnostics[0]
     _assert_reject(diag, "SPT1034", "statement")
     assert ".get(" in (diag.help or "")
+
+
+# --- alias by EMBEDDING (fix round 1, Critical 1) ---------------------------
+
+#: The three shapes the reviewer verified against tier 1: after each, tier 1
+#: sees a later `own.push_back(...)` through the container that now holds the
+#: same object, and the chain cannot (the rebind touches only `own`).
+_EMBEDDING_ESCAPES: list[tuple[str, str]] = [
+    ("into a struct field", "Holder(items=own)"),
+    ("into another Vec", "nest.push_back(own)"),
+    ("into a Map value", "mapofvec.set(sym, own)"),
+]
+
+
+@pytest.mark.parametrize(("label", "escape"), _EMBEDDING_ESCAPES)
+def test_embedding_a_local_costs_it_ownership(label: str, escape: str) -> None:
+    del label
+    ctx = _ctx()
+    slot = _slot(ctx, "own")
+    assert ctx.alias_sets.ownership_of(slot) is Ownership.OWNED
+
+    # The escaping statement itself is legal.
+    node = _parse_call(escape)
+    if recognize_mutation(node, ctx) is None:
+        assert recognize_call(node, ctx) is not None
+    assert not ctx.sink, [d.message for d in ctx.sink.diagnostics]
+    assert ctx.alias_sets.ownership_of(slot) is Ownership.ALIASED
+
+    # The mutation AFTER it is not.
+    stmt = recognize_mutation(_parse_call("own.push_back(amt)"), ctx)
+    assert isinstance(stmt, Nop)
+    assert len(ctx.sink) == 1, [(d.code, d.message) for d in ctx.sink.diagnostics]
+    diag = ctx.sink.diagnostics[0]
+    _assert_reject(diag, "SPT1034", "own")
+    assert any("functional" in note for note in diag.notes), diag.notes
+
+
+def test_embedding_a_copy_does_not_cost_ownership() -> None:
+    """`slice` builds a NEW Vec on both tiers, so what escapes is the copy."""
+    ctx = _ctx()
+    assert recognize_call(_parse_call("Holder(items=own.slice(amt, amt))"), ctx) is not None
+    assert not ctx.sink, [d.message for d in ctx.sink.diagnostics]
+    assert ctx.alias_sets.ownership_of(_slot(ctx, "own")) is Ownership.OWNED
+    assert isinstance(recognize_mutation(_parse_call("own.push_back(amt)"), ctx), SetLocal)
+
+
+def test_embedding_an_element_of_a_local_does_not_cost_ownership() -> None:
+    """Only the local's OWN handle escaping counts: copying an element out
+    (`own.get(i)`) leaves the container exclusively C's, and both tiers
+    agree."""
+    ctx = _ctx()
+    assert recognize_call(_parse_call("Vec(U32, [own.get(amt)])"), ctx) is not None
+    assert not ctx.sink, [d.message for d in ctx.sink.diagnostics]
+    assert ctx.alias_sets.ownership_of(_slot(ctx, "own")) is Ownership.OWNED
+
+
+def test_note_escapes_marks_both_arms_of_a_conditional() -> None:
+    """An `IfExp` can BE either local, so both lose ownership."""
+    ctx = _ctx()
+    own = LocalRef(loc=_LOC, ty=Ty.Vec(Ty.U32), slot=_slot(ctx, "own"), name="own")
+    other = LocalRef(loc=_LOC, ty=Ty.Vec(Ty.U32), slot=_slot(ctx, "unowned"), name="unowned")
+    note_escapes(
+        [
+            IfExp(
+                loc=_LOC,
+                ty=Ty.Vec(Ty.U32),
+                cond=Const(loc=_LOC, ty=Ty.Bool, py_value=True),
+                then=own,
+                orelse=other,
+            )
+        ],
+        ctx,
+    )
+    assert ctx.alias_sets.ownership_of(own.slot) is Ownership.ALIASED
+    assert ctx.alias_sets.ownership_of(other.slot) is Ownership.ALIASED
+
+
+def test_note_escapes_ignores_non_container_locals() -> None:
+    ctx = _ctx()
+    scalar_slot = ctx.locals.declare("count", Ty.U32, _LOC, ctx.sink)
+    assert scalar_slot is not None
+    note_escapes([LocalRef(loc=_LOC, ty=Ty.U32, slot=scalar_slot.slot, name="count")], ctx)
+    assert ctx.alias_sets.ownership_of(scalar_slot.slot) is None
 
 
 def test_reader_through_an_aliased_receiver_is_fine() -> None:

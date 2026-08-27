@@ -103,8 +103,12 @@ Two decisions C owns outright live in the container half:
   `SPT1034`, carrying the functional-host-op explanation as a note and a
   rewrite in `help`. A mutator reached in a VALUE position is the same reject:
   an expression has no binding to rewrite (and tier 1's mutators return
-  `None`, so `x = v.push_back(y)` is not valid there either).
-* **`MakeMap`'s literal-key order** (MJ-15). When every key AND value is a
+  `None`, so `x = v.push_back(y)` is not valid there either). Ownership is also
+  lost by EMBEDDING (`note_escapes`): once a local's handle is stored in
+  another container or a struct, tier 1 can see a later mutation of it through
+  that container and the chain cannot -- the mirror image of the element-read
+  reject.
+* **`MakeMap`'s literal keys** (MJ-15). When every key AND value is a
   compile-time literal and the ORACLE can totally order the keys
   (`static_map_order`, which delegates to tier 1's own `val_cmp` -- rank, then
   payload), C hands D the pairs already in the host's key order and sets
@@ -113,7 +117,11 @@ Two decisions C owns outright live in the container half:
   any C-side reordering of a `Map` literal is observable on chain, and the
   value expressions' evaluation order is observable too), and D falls back to
   `map_new` + `map_put`, letting the host order them. C never invents an order
-  the oracle cannot check (A15/E3 -- struct keys are exactly that case).
+  the oracle cannot check (A15/E3 -- struct keys are exactly that case). On the
+  static path C additionally proves the keys UNIQUE (`duplicate_static_key`,
+  the same `val_cmp` relation): the linear-memory form cannot represent a
+  repeated key, and tier 1 silently keeps the last one, so a repeat is
+  `SPT1039` rather than either surprise.
 
 ## What this module deliberately does NOT decide
 
@@ -134,7 +142,7 @@ IR shape the frozen SS C.2 node inventory has no node for (there is no
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import cmp_to_key
@@ -189,6 +197,8 @@ __all__ = [
     "HostCallSpec",
     "SurfaceKind",
     "classify_binding",
+    "duplicate_static_key",
+    "note_escapes",
     "note_local_binding",
     "recognize_attribute",
     "recognize_call",
@@ -1502,6 +1512,7 @@ def _vec_construction(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
             return _invalid(loc)
         items.append(item)
 
+    note_escapes(items, ctx)
     return MakeVec(
         loc=loc,
         ty=Ty.Vec(elem_ty),
@@ -1554,7 +1565,29 @@ def _map_construction(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
             return _invalid(loc)
         pairs.append((key, value))
 
+    note_escapes([side for pair in pairs for side in pair], ctx)
     ordered, all_static = _order_map_pairs(tuple(pairs))
+    if all_static:
+        # The static path is the only one that needs the uniqueness check: it
+        # is what lets D emit `map_new_from_linear_memory` (`m.9`), which
+        # requires strictly-ascending UNIQUE keys. The fallback path lowers to
+        # `map_new` + `map_put`, whose last-write-wins is exactly what tier 1's
+        # `Map.set` does, so a runtime-keyed map needs no compile-time check
+        # (and could not have one -- the keys are not known yet).
+        duplicate = duplicate_static_key(tuple(key for key, _ in ordered))
+        if duplicate is not None:
+            _error(
+                ctx,
+                "SPT1039",
+                loc,
+                f"the key {_short_literal(duplicate)} appears more than once",
+                help=(
+                    "remove the repeated entry: tier 1 keeps the LAST value silently, but a "
+                    "map literal on chain is laid out with unique keys and cannot represent "
+                    "the repeat at all"
+                ),
+            )
+            return _invalid(loc)
     return MakeMap(
         loc=loc,
         ty=Ty.Map(key_ty, value_ty),
@@ -1563,6 +1596,19 @@ def _map_construction(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
         pairs=ordered,
         all_static=all_static,
     )
+
+
+#: Cap on a literal quoted back inside a diagnostic (`expr.py` keeps the same
+#: discipline): a contract may hold a 100 KB Bytes literal, and quoting it in
+#: full would be a 100 KB error message.
+_MAX_LITERAL_CHARS = 60
+
+
+def _short_literal(node: IRExpr) -> str:
+    if not isinstance(node, Const):
+        return node.ty.render()
+    text = repr(node.py_value)
+    return text if len(text) <= _MAX_LITERAL_CHARS else f"{text[:_MAX_LITERAL_CHARS]}..."
 
 
 def _all_static(nodes: Sequence[IRExpr]) -> bool:
@@ -1574,6 +1620,32 @@ def _all_static(nodes: Sequence[IRExpr]) -> bool:
     layout decision C has not proven, and the fallback path is always sound.
     """
     return bool(nodes) and all(isinstance(item, Const) for item in nodes)
+
+
+def _tier1_key_values(keys: Sequence[IRExpr]) -> list[Any] | None:
+    """The tier-1 chain value of every LITERAL key, or `None` when C cannot
+    build them all -- a key that is not a literal, or a key type with no
+    tier-1 literal form (a struct: E3's "not modelled in tier 1").
+
+    Rebuilding the oracle's own value (through the same `Ty -> class` map
+    `expr.py` validates literals with) is what keeps both key questions MJ-15
+    asks -- the order, and now uniqueness -- answered by tier 1 rather than by
+    a second model of `val_cmp` living here (A15).
+    """
+    values: list[Any] = []
+    for key in keys:
+        if not isinstance(key, Const):
+            return None
+        cls = oracle_class(key.ty)
+        if cls is None:
+            return None
+        try:
+            values.append(cls(key.py_value))
+        except Exception:  # noqa: BLE001 -- the literal was already validated;
+            # a constructor that refuses it here is a reason to decline the
+            # pre-sort, never a second diagnostic (or a traceback, F.2.5).
+            return None
+    return values
 
 
 def static_map_order(keys: Sequence[IRExpr]) -> tuple[int, ...] | None:
@@ -1589,19 +1661,9 @@ def static_map_order(keys: Sequence[IRExpr]) -> tuple[int, ...] | None:
     ordering tier 1 leaves deferred). A15 forbids inventing an order the
     oracle cannot check, so the caller must then leave the map to the host.
     """
-    values: list[Any] = []
-    for key in keys:
-        if not isinstance(key, Const):
-            return None
-        cls = oracle_class(key.ty)
-        if cls is None:
-            return None
-        try:
-            values.append(cls(key.py_value))
-        except Exception:  # noqa: BLE001 -- the literal was already validated;
-            # a constructor that refuses it here is a reason to decline the
-            # pre-sort, never a second diagnostic (or a traceback, F.2.5).
-            return None
+    values = _tier1_key_values(keys)
+    if values is None:
+        return None
 
     def compare(left: int, right: int) -> int:
         return val_cmp(values[left], values[right])
@@ -1610,6 +1672,30 @@ def static_map_order(keys: Sequence[IRExpr]) -> tuple[int, ...] | None:
         return tuple(sorted(range(len(values)), key=cmp_to_key(compare)))
     except (TypeError, NotImplementedError):
         return None
+
+
+def duplicate_static_key(keys: Sequence[IRExpr]) -> IRExpr | None:
+    """The first literal key that repeats an earlier one, or `None`.
+
+    "Repeats" is `val_cmp(a, b) == 0` -- the SAME oracle relation the pre-sort
+    uses -- so the `Bytes` family's payload equality counts (D5:
+    `Bytes32(p)` and `Bytes(p)` are one key on chain, and tier 1 agrees), and
+    no separate notion of key identity is invented here. `None` also comes back
+    when C cannot build the keys at all, which is the same condition
+    `static_map_order` declines on: the caller only asks about a map it already
+    knows is fully static.
+    """
+    values = _tier1_key_values(keys)
+    if values is None:
+        return None
+    try:
+        for index in range(1, len(values)):
+            for earlier in range(index):
+                if val_cmp(values[earlier], values[index]) == 0:
+                    return keys[index]
+    except (TypeError, NotImplementedError):
+        return None
+    return None
 
 
 def _order_map_pairs(
@@ -1726,6 +1812,7 @@ def _struct_construction(
             return _invalid(loc)
         built.append((field_name, value))
 
+    note_escapes([value for _, value in built], ctx)
     built.sort(key=lambda item: item[0].encode())
     return MakeStruct(loc=loc, ty=Ty.Struct(name), struct_name=name, fields=tuple(built))
 
@@ -1907,6 +1994,51 @@ def classify_binding(value: IRExpr) -> BindingSource:
     return BindingSource.OTHER
 
 
+def _escaping_locals(value: IRExpr) -> Iterator[LocalRef]:
+    """Every local whose own handle `value` can BE.
+
+    A `LocalRef` is the local itself; an `IfExp` can be either arm. Everything
+    else -- a `HostCall`, a `Make*` node, a `FieldGet` -- produces a NEW value
+    from its operands, so a local mentioned inside one of those does not escape
+    through it. That precision matters: treating any nested mention as an
+    escape would reject `w = Vec(U32, [v.get(U32(0))]); v.push_back(x)`, where
+    only an ELEMENT of `v` was copied out and both tiers agree.
+    """
+    if isinstance(value, LocalRef):
+        yield value
+    elif isinstance(value, IfExp):
+        yield from _escaping_locals(value.then)
+        yield from _escaping_locals(value.orelse)
+
+
+def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx) -> None:
+    """Mark every container local whose handle ESCAPES into `values` as
+    `ALIASED` (E11, review fix round 1's Critical 1).
+
+    A local stops being exclusively C's the moment its handle is stored
+    somewhere else -- an item of a `Vec`, a key or value of a `Map`, a field of
+    a struct, or an argument of a MUTATION (`nest.push_back(own)`,
+    `mapofvec.set(k, own)`, `Holder(items=own)`). After any of those, tier 1
+    sees a later `own.push_back(x)` through the container that now holds the
+    same object, and on chain it cannot: the rebind touches only `own`. That is
+    E11's divergence with the containers swapped, and it is the exact MIRROR of
+    the element-read reject in `_mutation_slot` (`m.get(k).push_back(x)`) --
+    one direction is "the container holds my object", the other is "I hold the
+    container's object", and both have to be refused.
+
+    Two positions deliberately do NOT count as escapes: `<bucket>.set(k, v)`
+    and `events().publish(topics, data)`. Both serialize their argument out to
+    the host rather than storing a handle, and tier 1 has no shared-object
+    model to diverge from there at all (every `env.py` body raises
+    `NotImplementedError`, sub-plan E). If sub-plan E gives those surfaces real
+    tier-1 behaviour, they become escapes and belong in this hook.
+    """
+    for value in values:
+        for ref in _escaping_locals(value):
+            if ref.ty.tag in _MUTABLE_TAGS:
+                ctx.alias_sets.mark_aliased(ref.slot)
+
+
 def note_local_binding(slot: int, value: IRExpr, ctx: FuncCtx) -> Ownership | None:
     """Record what binding `slot` to `value` means for E11, and return the
     `Ownership` recorded (`None` when `value` is not a mutable container type,
@@ -1987,6 +2119,9 @@ def _mutation_slot(recv: IRExpr, ctx: FuncCtx, loc: Loc, surface: str) -> int | 
     elif source is BindingSource.FIELD:
         detail = "the receiver is a struct field read, which is a copy C does not own"
     elif source is BindingSource.ELEMENT:
+        # The MIRROR of `note_escapes`: there, a local's handle went INTO a
+        # container; here, the receiver came OUT of one. Both leave two names
+        # for one tier-1 object and one handle on chain, so both are refused.
         detail = (
             "the receiver is an element read, which hands back the value the container "
             "itself still holds"
@@ -2063,13 +2198,31 @@ def recognize_mutation(node: ast.Call, ctx: FuncCtx) -> IRStmt | None:
     ordinary assignment to the slot C already owns, so there is no way for a
     consumer to receive the mutation and miss the rebind.
 
-    **Hand-off note for the task that wires the statement checker to this
-    module:** the guard passes only for a slot whose `Ownership` is `OWNED`,
-    and nothing sets that but `note_local_binding`. So the statement checker
-    must call `note_local_binding(slot, value, ctx)` at EVERY local binding
-    (`Assign`, `AnnAssign`, and a desugared `for` target) before a mutation
-    can be accepted. An unclassified slot is a reject, so a missing call
-    shows up as a loud, located diagnostic rather than an unsound rebind.
+    **Hand-off contract for the task that wires the statement checker to this
+    module.** The guard passes only for a slot whose `Ownership` is `OWNED`,
+    and the only things that ever set an `Ownership` are `note_local_binding`
+    (a local's binding) and `note_escapes` (a local's handle stored elsewhere).
+    Calling them LAZILY, as the checker reaches each statement, is NOT
+    sufficient -- classification would then be order-dependent, and a loop body
+    makes that unsound:
+
+        while cond:
+            own.push_back(U32(1))   # checked FIRST, while `own` still reads OWNED
+            w = own                 # aliases it -- for every later iteration
+
+    On the second iteration the mutation runs with `own` aliased, so a
+    statement-order walk accepts exactly the divergence E11 exists to reject.
+    The wiring task must therefore run a SYNTACTIC PRE-PASS over the whole
+    function body before checking any statement, collecting every alias and
+    escape fact -- `a = b` aliases (including tuple targets and `for` targets)
+    and the embedding escapes `note_escapes` documents (a local passed as a
+    `Vec`/`Map` item, a struct field value, or a mutation argument) -- so the
+    classification is flow-insensitive-conservative rather than dependent on
+    where the checker happens to be. Per-statement calls then only ever narrow
+    from a state that was already conservative.
+
+    An unclassified slot is a reject, so a missing call shows up as a loud,
+    located diagnostic rather than an unsound rebind.
     """
     func = node.func
     if not isinstance(func, ast.Attribute) or func.attr not in _CONTAINER_METHOD_NAMES:
@@ -2089,6 +2242,11 @@ def recognize_mutation(node: ast.Call, ctx: FuncCtx) -> IRStmt | None:
     args = _bound_args(node, ctx, loc, row, recv)
     if args is None:
         return Nop(loc=loc)
+    # Every argument PAST the receiver is an embedding position:
+    # `nest.push_back(own)` and `mapofvec.set(k, own)` store `own`'s handle
+    # inside the receiver. Marked before the guard runs, so the conservative
+    # answer wins even when a single statement both embeds and mutates.
+    note_escapes(args, ctx)
     slot = _mutation_slot(recv, ctx, loc, spec.surface)
     if slot is None:
         return Nop(loc=loc)

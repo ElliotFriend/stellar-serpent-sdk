@@ -346,7 +346,16 @@ class FieldGet(IRExpr):
 class MakeVec(IRExpr):
     """`Vec(T, [items])` (D2/A13). `all_static` records whether every item is
     a compile-time constant, which is what lets D choose
-    `vec_new_from_linear_memory` (`v.g`) over `vec_new` + `vec_push_back`."""
+    `vec_new_from_linear_memory` (`v.g`) over `vec_new` + `vec_push_back`.
+
+    **`all_static` is a fact about the ITEMS, not a licence to lay them out.**
+    It says "every item is a literal C validated at compile time"; whether
+    those literals can go in the data section as raw `Val`s is a separate
+    question D answers from `Ty.repr_form` (A3). A HOST_OBJECT-repr element
+    (`Bytes`, `String`, a nested container, a struct) has no inline Val form at
+    all, so its object has to be built first and the linear-memory shortcut
+    does not apply to it however static the item is.
+    """
 
     elem_ty: Ty
     items: tuple[IRExpr, ...]
@@ -358,11 +367,15 @@ class MakeMap(IRExpr):
     """`Map(K, V, [(k, v), ...])` (D2/A13).
 
     When `all_static` is `True`, `pairs` is already in the host's key order
-    (rank then `val_cmp`, A8/A14) so D can emit
+    (rank then `val_cmp`, A8/A14) AND the keys are proven unique, so D can emit
     `map_new_from_linear_memory` (`m.9`) directly. MJ-15: when C cannot
     TOTALLY order the literal keys (heterogeneous keys, or struct keys whose
     ordering tier 1 does not model, E3), `all_static` is `False` and D falls
     back to `map_new` + `map_put`, letting the host order them.
+
+    `MakeVec`'s note on `all_static` vs `Ty.repr_form` applies here too: a
+    HOST_OBJECT-repr key or value cannot be laid out in the data section from
+    the flag alone.
     """
 
     key_ty: Ty
