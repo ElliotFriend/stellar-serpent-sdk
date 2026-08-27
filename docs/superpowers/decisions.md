@@ -41,3 +41,14 @@ Format:
   the M1-A plan's Global Constraints and the review transcript summary.
 - Reversal cost: Low before sub-plan C consumes the surfaces; moderate after
   (compiler frontend patterns would need updating).
+
+## 2026-08-26 Chain-int truthiness: `bool(x)` is `value != 0`
+- Context: Task 5 implementer escalated — `_ChainInt` had no `__bool__`, so
+  `bool(U32(0))` was `True` (Python object default), making `if amount:` a trap.
+- Decision: `__bool__` returns `value != 0` on every numeric chain type;
+  semantics-table cases added in Task 10; the sub-plan C frontend must lower
+  truthiness tests to the equivalent zero-comparison.
+- Why: Matches Python intuition AND compiles exactly (i64.eqz); the TypeError
+  alternative forces noisier code without a fidelity gain.
+- Reversal cost: Low before sub-plan C; a compile-reject could replace it later
+  at the cost of breaking `if amount:` in existing contracts.
