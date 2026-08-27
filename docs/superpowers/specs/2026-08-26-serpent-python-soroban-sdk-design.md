@@ -47,8 +47,8 @@ from serpent import contract, contracttype, contracterror, Env, U32, I128, Symbo
 
 @contracterror
 class Error:
-    InsufficientBalance = 1
-    Unauthorized = 2
+    InsufficientBalance = errorcode(1)
+    Unauthorized = errorcode(2)
 
 @contracttype
 class State:              # named-field struct → Map<Symbol, V>
@@ -71,7 +71,9 @@ Rules:
 
 - **Chain types** are real Python classes with operator overloading, so contracts
   type-check in any IDE with no plugins. M1 types: `Bool`, `U32`, `I32`, `U64`, `I64`,
-  `U128`, `I128`, `Symbol`, `Bytes`, `BytesN[N]`, `String`, `Vec[T]`, `Map[K, V]`,
+  `U128`, `I128`, `Symbol`, `Bytes`, `Bytes32`/`Bytes64` (fixed-length aliases via
+  a `bytes_n(N)` factory — a bare-int `BytesN[32]` subscript is not a valid type
+  under strict mypy, per M1-A adversarial review), `String`, `Vec[T]`, `Map[K, V]`,
   `Address`, `Timepoint`, `Duration`, `Void` (as `None` return). Later: `U256`, `I256`,
   `MuxedAddress`, `Val` (escape hatch — but see the `Error` rule below).
 - Plain `int`/`str`/`bool` literals coerce to the annotated chain type with
@@ -103,6 +105,13 @@ Rules:
   *(Amended 2026-08-26:)* `@contracterror` makes each member an **exception
   class** carrying its `u32` code, so `raise Error.LimitExceeded` is valid,
   strict-clean Python; the compiler reads the code from the class attribute.
+  *(Corrected same day, M1-A adversarial review:)* members are declared
+  `NAME = errorcode(N)`, not bare `NAME = N` — static checkers never execute
+  decorators, so the bare-int form is inferred `int` and `raise` fails
+  `mypy --strict` (verified by live repro; no decorator typing trick rescues it).
+  `errorcode(N)` is annotated `-> type[ContractError]`, keeping the raise-site
+  semantics exactly as decided, and gives the compiler an unambiguous `ast.Call`
+  to read codes from.
 - **Events**: `@contractevent` classes (mirroring Rust's), emitted via `contract_event`
   (`x.1`). Convention enforced: `topic[0]` is a short `Symbol` event name — the host
   does not enforce a topic-count limit (the binding constraint is the event-bytes
