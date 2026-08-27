@@ -122,3 +122,39 @@ Format:
   brokenly downstream. Promoted from the plan ledger per final review (lasting
   user-facing authoring constraint).
 - Reversal cost: relaxing later is non-breaking; tightening later breaks contracts.
+
+## 2026-08-27 M1-C frontend rulings (dossier §E, all recommendations adopted)
+- Context: the M1-C inputs dossier (specs/2026-08-27-m1c-inputs-dossier.md)
+  posed 20 open questions with recommendations; controller adopted all.
+- Architecture: HYBRID frontend (E1) — import the module for declarations/
+  annotations (matching build_spec_entries' executed-class contract; build-time
+  execution of contract modules documented prominently), AST for method bodies,
+  with a mandatory inventory cross-check. Collect-all diagnostics per method
+  (E16); STABLE SPT#### error codes as public API (E17).
+- Authoring surface line (user-visible): for-in-vec and range(stop|start,stop)
+  SUPPORTED via C-side desugaring (E4/E5); arithmetic augmented assignment
+  SUPPORTED (E6); early return anywhere with definite-return proof (E7);
+  module-level helpers + private methods as internal calls, RECURSION REJECTED
+  (E8); and/or/not restricted to Bool operands (E9); truthiness only for
+  numeric chain types — `if vec:` is a compile error naming the explicit test
+  (E10); container mutation only on unaliased locals C owns — the functional-
+  host-op divergence guard (E11); Event.publish(env) REJECTED in M1-C pointing
+  at sub-plan E, env.events().publish() is the supported form, and
+  tests/fixtures/token_style.py is AMENDED accordingly (E12); raw str/bytes
+  literals in == with chain types REJECTED (E13, settles the tier1_only trio);
+  slicing via Vec.slice()/Bytes method form only (E18); len() typed U32 (E19);
+  bytes_n(N) annotations supported via the hybrid import (E20); chained
+  comparisons rejected; walrus rejected.
+- Divergence guards (F.1): every Symbol comparison routes through obj_cmp
+  (never raw packed-Val compare — the "_"-vs-"A" trap); NO arithmetic constant
+  folding (compile-time bounds checks apply to literal coercion only); I32/U32
+  carry exact width in the IR; struct field sort owned by C.
+- Also: Vec/Map TypeVar bounds widened to include structs (E2, small M1-A
+  follow-up landed inside C); struct storage keys allowed with an explicit
+  "not modelled in tier 1" ordering note (E3); C owns the reserved runtime
+  error-code registry 0xFFFF_FF00.. (E14); tests/must_reject/ excluded from
+  mypy/ruff-format/pytest-collection by explicit commented config (E15).
+- Why: each recommendation was evidence-cited in the dossier; the conservative
+  reject-first line matches spec §1 (reject rather than approximate).
+- Reversal cost: per-item low before C's tasks consume them; the fixture
+  amendment (E12) is user-visible and trivially revertable when E lands.
