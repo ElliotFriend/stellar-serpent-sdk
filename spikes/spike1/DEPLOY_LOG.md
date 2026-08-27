@@ -119,8 +119,14 @@ pub enum Error {
 }
 ```
 
-**Byte-for-byte identical rendering** between local `--wasm` and on-chain
-`--id`. Row 3 (second half) confirmed PASS.
+**Byte-for-byte identical rendering on stdout** between local `--wasm` and
+on-chain `--id` (the leading `ℹ️`/`🌎` progress lines visible in the two
+transcripts above are stderr and necessarily differ by source — `Loading
+contract spec from file...` locally vs. `Network: ...` / `Downloading contract
+spec: ...` on-chain; the spec body itself, captured on stdout, is identical —
+re-verified by capturing stdout separately with `1>out 2>/dev/null` for each
+command and running `diff`, which reported no differences). Row 3 (second
+half) confirmed PASS.
 
 ## Step 4: Invoke round-trip (rows 5-7)
 
