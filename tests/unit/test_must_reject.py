@@ -16,11 +16,10 @@ one rejected construct, declared by a machine-readable `# serpent:` header
    already exists; this is the review gate the task brief names).
 3. Meta-test B: every non-`NO_FIXTURE_ALLOWLIST` registry code has >= 1
    fixture -- `xfail(strict=False)` until Task 11b finishes the fixture set.
-4. The per-fixture runner test: lazy-imports `compile_module` (which does not
-   exist until Task 10) and skips with a clear reason until then; once
-   available, compiles the fixture AS TEXT (never imported -- importing would
-   execute decorators outside the loader's own bridging, defeating the
-   point) and asserts exactly one diagnostic matches the header's declared
+4. The per-fixture runner test (live since Task 10 landed `compile_module`):
+   compiles the fixture AS TEXT -- never imported, because importing would
+   execute decorators outside the loader's own bridging and defeat the point
+   -- and asserts exactly one diagnostic matches the header's declared
    `(code, HERE line, message substring)` triple.
 
 `# serpent:at HERE` never carries an absolute `line:col` (MJ-14 corrects the
@@ -32,14 +31,12 @@ marker does not require renumbering the header.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 
 import pytest
 
-from serpent.compiler import codes
+from serpent.compiler import codes, compile_module
 from serpent.compiler.diagnostics import CompileError
 
 #: The fixture tree, glob'd from OUTSIDE it (BL-2): `parents[1]` from
@@ -122,24 +119,6 @@ def _discover_fixtures() -> list[FixtureSpec]:
 FIXTURES: list[FixtureSpec] = _discover_fixtures()
 
 
-def _import_compile_module() -> Callable[..., object]:
-    """Lazy-import `compile_module`, skipping the calling test if absent.
-
-    `compile_module` is Task 10's deliverable. Importing it eagerly at
-    module scope would break collection of this whole file (and therefore
-    meta-tests A/B, which do not need it) for every task between here and
-    Task 10, so the import happens inside each fixture-compiling test body
-    instead. The `type: ignore[attr-defined]` below is expected to become
-    unused (and must then be deleted) the moment Task 10 lands
-    `compile_module` and un-skips this module, per the plan.
-    """
-    try:
-        from serpent.compiler import compile_module  # type: ignore[attr-defined]
-    except ImportError:
-        pytest.skip("compile_module lands in Task 10")
-    return cast("Callable[..., object]", compile_module)
-
-
 # --- scaffold integrity -----------------------------------------------------
 
 
@@ -197,7 +176,6 @@ def test_meta_b_every_registry_code_has_a_fixture() -> None:
 
 @pytest.mark.parametrize("spec", FIXTURES, ids=lambda s: s.rel_path)
 def test_fixture_rejects_with_its_declared_diagnostic(spec: FixtureSpec) -> None:
-    compile_module = _import_compile_module()
     source = spec.path.read_text()
 
     with pytest.raises(CompileError) as exc_info:

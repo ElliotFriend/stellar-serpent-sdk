@@ -6,11 +6,10 @@ subpackage never imports `stellar_sdk` directly (`serpent.spec` is the
 sanctioned transitive path -- individual submodules, e.g. `types_.py`, import
 it directly when they need it).
 
-Task 1 lands the diagnostics core and the complete `SPT####` code registry
-(`serpent.compiler.codes`). The rest of the public surface --
-`compile_module`, `compile_expression` -- lands in later tasks (frontend.py,
-Task 10); importing them here before then would break every import of this
-package, so they are not re-exported yet.
+The public surface is the diagnostics core (Task 1), the frozen `SPT####` code
+registry (`serpent.compiler.codes`), and `compile_module` (Task 10) -- the one
+entry point that turns contract source into resolved, typed IR plus the facts
+sub-plan D consumes.
 """
 
 from serpent.compiler import codes  # noqa: F401 -- imported first: diagnostics.py needs it
@@ -21,11 +20,21 @@ from serpent.compiler.diagnostics import (
     Loc,
     LocKind,
 )
+from serpent.compiler.frontend import (
+    CompiledModule,
+    LiteralInventory,
+    SpecInputs,
+    compile_module,
+)
 
 __all__ = [
     "CompileError",
+    "CompiledModule",
     "Diagnostic",
     "Diagnostics",
+    "LiteralInventory",
     "Loc",
     "LocKind",
+    "SpecInputs",
+    "compile_module",
 ]

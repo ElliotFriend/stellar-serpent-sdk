@@ -153,7 +153,12 @@ from serpent._host import STORAGE_TYPE, functions_by_name
 from serpent.compiler import codes
 from serpent.compiler.ctx import MUTABLE_TAGS, FuncCtx, Ownership
 from serpent.compiler.diagnostics import Loc
-from serpent.compiler.expr import check_expr, oracle_class
+from serpent.compiler.expr import (
+    NODE_KIND_CODES,
+    RECOGNIZED_BUILTINS,
+    check_expr,
+    oracle_class,
+)
 from serpent.compiler.ir import (
     Const,
     FieldGet,
@@ -197,6 +202,7 @@ __all__ = [
     "HostCallSpec",
     "SurfaceKind",
     "classify_binding",
+    "collect_never_owned",
     "duplicate_static_key",
     "note_escapes",
     "note_local_binding",
@@ -232,6 +238,21 @@ _HELP: dict[str, str] = {
         "or env.events().publish((Symbol('name'), ...), data)"
     ),
 }
+
+#: The comprehension node kinds, and the rewrite their SS B.2 row names. Used
+#: by `_display_items` so a comprehension in an items position is reported as
+#: the construct it is (SPT1003) rather than as a malformed display.
+_COMPREHENSION_KINDS: tuple[type[ast.expr], ...] = (
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+_COMPREHENSION_HELP = (
+    "build the container explicitly -- Vec(U32, [...]) / Map(Symbol, U32, [...]) -- "
+    "or fill it in a while loop"
+)
 
 
 # --- the recognition table itself (MJ-3) --------------------------------------
@@ -1473,6 +1494,21 @@ def _display_items(
     """
     if node is None:
         return []
+    if isinstance(node, _COMPREHENSION_KINDS):
+        # MJ-14 reconciliation (Task 10): a comprehension HAS its own SS B.2
+        # reject row, and `tests/must_reject/constructs/comprehension_list.py`
+        # declares it. `Vec(U32, [x + U32(1) for x in v])` is "comprehensions
+        # are not supported" -- with the container rewrite in its `help:` --
+        # not the generic "the items must be a list display", which describes
+        # the shape rather than the construct the author actually wrote.
+        _error(
+            ctx,
+            NODE_KIND_CODES[type(node)],
+            Loc.from_node(ctx.path, node),
+            f"`{type(node).__name__}` is not part of the serpent subset",
+            help=_COMPREHENSION_HELP,
+        )
+        return None
     if not isinstance(node, ast.List):
         _error(
             ctx,
@@ -2079,6 +2115,183 @@ def note_local_binding(slot: int, value: IRExpr, ctx: FuncCtx) -> Ownership | No
         return Ownership.OWNED
     ctx.alias_sets.mark_aliased(slot)
     return Ownership.ALIASED
+
+
+# --- the syntactic alias/escape pre-pass (E11, Task 10) ---------------------
+
+#: Method names that MUTATE their receiver, and therefore store every argument
+#: past it. Derived from `RECOGNIZED` rather than restated (MJ-5).
+_MUTATOR_METHOD_NAMES: frozenset[str] = frozenset(
+    row.rsplit(".", 1)[1] for row, spec in RECOGNIZED.items() if spec.kind is SurfaceKind.MUTATOR
+)
+
+#: Method names of every RECOGNIZED row that is not a mutator -- the container
+#: readers plus the env surfaces. A recognized non-mutator does not store a
+#: positional argument's handle anywhere, so passing a container to one is not
+#: an escape. A name that is BOTH (e.g. `set`, which is `map.set`'s mutator and
+#: `storage.set`'s serializing call) stays out of this set: the receiver-shape
+#: check in `_is_serializing_call` is what exempts the storage form, and
+#: treating the ambiguous name conservatively everywhere else is the sound
+#: direction.
+_NON_STORING_METHOD_NAMES: frozenset[str] = (
+    frozenset(
+        row.rsplit(".", 1)[1]
+        for row, spec in RECOGNIZED.items()
+        if spec.kind is not SurfaceKind.MUTATOR
+    )
+    - _MUTATOR_METHOD_NAMES
+)
+
+
+def _value_names(node: ast.expr) -> set[str]:
+    """The names `node` can BE -- the syntactic twin of `ctx._escaping_locals`.
+
+    A bare `Name` is that name; a conditional expression can be either arm.
+    Everything else (a call, a display, a `BinOp`, an attribute read) builds a
+    NEW value from its operands, so a name mentioned inside one of those is not
+    a name the expression can be.
+    """
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, ast.IfExp):
+        return _value_names(node.body) | _value_names(node.orelse)
+    return set()
+
+
+def _bound_names(target: ast.expr) -> set[str]:
+    """Every name an assignment TARGET binds (tuple/list targets included --
+    they are rejected on their own, but the pre-pass must not depend on the
+    order the two checks run in)."""
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: set[str] = set()
+        for element in target.elts:
+            names |= _bound_names(element)
+        return names
+    return set()
+
+
+def _is_serializing_call(func: ast.Attribute) -> bool:
+    """Whether `func` names one of the three recognized argument positions that
+    SERIALIZE their argument out to the host instead of storing a handle --
+    `<bucket>.set(k, v)`, `events().publish(topics, data)` and
+    `require_auth_for_args(args)`. `note_escapes`' docstring carries the full
+    ruling, including what would change it."""
+    return (
+        (func.attr == "set" and _match_storage_bucket(func.value) is not None)
+        or (func.attr == "publish" and _match_no_arg_chain(func.value, "events"))
+        or func.attr == "require_auth_for_args"
+    )
+
+
+def _positional_args_escape(node: ast.Call, ctx: FuncCtx) -> bool:
+    """Whether `node`'s POSITIONAL arguments can store a container handle.
+
+    Keyword arguments are handled separately (they always can -- the only
+    keyword positions the whole authoring surface has are a `@contracttype`'s
+    fields and `<bucket>.get`'s `default`, and both are storing or
+    value-preserving positions).
+    """
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        if _is_serializing_call(func):
+            return False
+        # A recognized reader does not store its arguments; a mutator does, and
+        # an unrecognized method name is a struct/internal call C classifies
+        # without inspecting the callee.
+        return func.attr not in _NON_STORING_METHOD_NAMES
+    if isinstance(func, ast.Name):
+        if func.id in RECOGNIZED_BUILTINS:
+            # `len(v)`/`bool(v)` read a value; they store nothing. Without this
+            # exemption the pre-pass would refuse `v.push_back(x)` in any
+            # method that also asks `len(v)`.
+            return False
+        obj = ctx.loaded.namespace.get(func.id)
+        # A chain-type constructor, `Vec`/`Map`, or a decorated class: the
+        # handles that get stored are the ITEMS of a display or the values of
+        # keyword fields, both covered by their own rules. Anything else under
+        # a bare name is an E8 internal call, whose callee may embed what it
+        # was passed.
+        return not isinstance(obj, type)
+    return True
+
+
+def collect_never_owned(body: Sequence[ast.stmt], ctx: FuncCtx) -> frozenset[str]:
+    """Every local NAME in `body` that can never be exclusively C-owned (E11).
+
+    This is the SYNTACTIC PRE-PASS `recognize_mutation`'s hand-off contract
+    requires. Ownership has to be decided flow-INSENSITIVELY, because a
+    per-statement walk is order-dependent and a loop body makes that unsound:
+
+        while cond:
+            own.push_back(U32(1))   # checked FIRST, while `own` still reads OWNED
+            w = own                 # aliases it -- for every later iteration
+
+    Collecting every alias and escape fact in the whole body BEFORE any
+    statement is checked makes the answer independent of where the checker
+    happens to be, so the second iteration cannot be classified differently
+    from the first. The result is a set of NAMES rather than slots because
+    slots do not exist yet -- `SlotTable` numbers them as the body is checked
+    -- and `stmt.py` applies it at the one point that could otherwise conclude
+    `OWNED`: immediately after `note_local_binding` classifies a binding.
+
+    Being name-based rather than slot-based is also the conservative direction:
+    a function whose `own` is legitimately owned in one region and aliased in
+    another gets the aliased answer everywhere, which is a reject rather than
+    an unsound rebind.
+
+    The facts collected, all over `ast.walk` so nested `if`/`while`/`for`
+    bodies are included:
+
+    * **Alias facts.** An assignment whose right-hand side is value-preserving
+      (a bare name, or either arm of a conditional expression) shares a handle:
+      both the source names and the target names are marked. A tuple/list
+      target is marked whatever its value, and a `for` target is marked because
+      it is bound from an element read.
+    * **Escape facts.** A name in an element of any display (a `Vec`/`Map`
+      items argument, an event-topic tuple), in any keyword-argument value (a
+      `@contracttype` field, `<bucket>.get`'s `default`), or in a positional
+      argument of a call that can store it (`_positional_args_escape`).
+
+    One escape position deliberately has no pre-pass rule: `<bucket>.get(key,
+    T, default=d)` lowers to an `IfExp` whose `orelse` IS `d`, so a container
+    handed to `default` is a conditional arm of the whole expression --
+    `note_local_binding` routes every right-hand side through `note_escapes`,
+    whose walk already understands both arms. The keyword rule above covers the
+    syntactic side of the same position, so the two agree.
+    """
+    names: set[str] = set()
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, (ast.Tuple, ast.List)):
+                        names |= _bound_names(target)
+                if node.value is not None:
+                    shared = _value_names(node.value)
+                    if shared:
+                        names |= shared
+                        for target in targets:
+                            names |= _bound_names(target)
+            elif isinstance(node, ast.For):
+                # The target is bound from an element read, and the ITERABLE's
+                # own handle is copied into the desugaring's hidden `$iter`
+                # local -- so both lose ownership (`stmt._desugar_for_vec`
+                # carries the tier-divergence this refuses).
+                names |= _bound_names(node.target)
+                names |= _value_names(node.iter)
+            elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+                for element in node.elts:
+                    names |= _value_names(element)
+            elif isinstance(node, ast.Call):
+                for keyword in node.keywords:
+                    names |= _value_names(keyword.value)
+                if _positional_args_escape(node, ctx):
+                    for arg in node.args:
+                        names |= _value_names(arg)
+    return frozenset(names)
 
 
 def _mutation_help(recv: IRExpr, *, temporary: bool) -> str:

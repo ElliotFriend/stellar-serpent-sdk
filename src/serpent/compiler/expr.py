@@ -62,15 +62,19 @@ without an import cycle.
 ## What this module does NOT own
 
 Container/struct construction and their method tables, struct field reads (all
-`recognize.py`, Task 7b) and the `Env` recognition table (Task 7a). Both reach
-a single `_deferred` helper that emits MJ-11's catch-all code with a note
-naming the owning task -- a clean located diagnostic, never a traceback
-(F.2.5) -- and every call site is marked with a `TASK-7A`/`TASK-7B` comment.
-Those markers stay until the task that WIRES this module to `recognize.py`
-lands: 7b implemented the checking, but the two modules are joined by the later
-assembly task, not by an import here. When that wiring happens, the
-internal-call branches must stay AHEAD of it -- see the ordering note in
-`_check_call`.
+`recognize.py`, Task 7b) and the `Env` recognition table (Task 7a). Task 10
+joined the two modules: `_check_attribute` and `_check_call` dispatch into
+`recognize.recognize_attribute`/`recognize_call` through the two thin
+`_recognize_*` wrappers, whose imports are function-LOCAL because
+`recognize.py` imports `check_expr` from here at module scope and the reverse
+top-level import would be a cycle. Two ordering rules are load-bearing at that
+dispatch:
+
+* the internal-call branches (`self.<name>(...)`, a module-level helper) stay
+  AHEAD of it -- see the ordering note in `_check_call`;
+* a shape neither module claims reaches `_unrecognized`, MJ-11's catch-all,
+  so a real typo whose chain does not match (`env.storage(1).instance()...`)
+  is a located diagnostic and never silence (F.2.5).
 """
 
 from __future__ import annotations
@@ -576,26 +580,65 @@ def _failed(node: IRExpr) -> bool:
     return node.ty.tag is TyTag.INVALID
 
 
-def _deferred(node: ast.expr, ctx: FuncCtx, owner: str, what: str) -> IRExpr:
-    """A construct the M1-C subset SUPPORTS but a LATER task checks.
+def _recognize_call(node: ast.Call, ctx: FuncCtx) -> IRExpr | None:
+    """`recognize.recognize_call`, reached through a function-LOCAL import.
 
-    MJ-13 rules this for `Subscript` explicitly ("route to a placeholder that
-    Task 7b replaces") and the same reasoning covers container/struct
-    construction, the `Env` recognition table, and internal calls: a clean
-    located diagnostic today, replaced by real checking when its task lands.
-    The catch-all code is deliberate -- the SPT registry is frozen at Task 1
-    and no row describes "recognized, not yet implemented" -- and the note
-    names the owning task so the placeholder cannot quietly outlive it.
+    The import cannot be at module scope: `recognize.py` imports `check_expr`
+    from THIS module at module scope, so importing it back would be a cycle.
+    The two modules are joined at call time instead, which is exactly what the
+    `TASK-7A`/`TASK-7B` markers this replaced were waiting for -- and the thin
+    wrapper (rather than a bare `ModuleType` handle) keeps the signature
+    checkable under `--strict`. `sys.modules` makes the lookup a dict hit after
+    the first call.
     """
-    loc = Loc.from_node(ctx.path, node)
+    from serpent.compiler.recognize import recognize_call
+
+    return recognize_call(node, ctx)
+
+
+def _recognize_attribute(node: ast.Attribute, ctx: FuncCtx) -> IRExpr | None:
+    """`recognize.recognize_attribute` -- see `_recognize_call` on the import."""
+    from serpent.compiler.recognize import recognize_attribute
+
+    return recognize_attribute(node, ctx)
+
+
+_UNRECOGNIZED_HELP = (
+    "use a recognized surface: env.storage().<instance|persistent|temporary>()."
+    "<set|get|has|del_|extend_ttl>(...), env.ledger().<timestamp|sequence>(), "
+    "env.events().publish(topics, data), <Address>.require_auth(), a Vec/Map/Bytes "
+    "method, a @contracttype field, or a chain-type constructor"
+)
+
+
+def _unrecognized(node: ast.expr, ctx: FuncCtx, loc: Loc, what: str) -> IRExpr:
+    """A construct no recognition table claims and no SS B row describes.
+
+    MJ-11's catch-all is its honest home: the SPT registry is frozen and no row
+    says "shaped like an API call, but not one". The message names the shape so
+    a real typo -- `env.storage(1).instance().set(...)`, whose intermediate
+    `storage(1)` breaks the chain match -- gets a located diagnostic instead of
+    silence.
+
+    The `help` spells the recognized surfaces out rather than citing
+    `docs/subset.md`: that page is GENERATED from `tests/must_reject/` (S14) and
+    does not exist yet, and a diagnostic must not send an author to a file the
+    repo does not have.
+    """
     _error(
         ctx,
         _FALLBACK_CODE,
         loc,
         what,
-        notes=(f"checking this construct lands in {owner} of the M1-C plan",),
+        help=_UNRECOGNIZED_HELP,
     )
     return _invalid(loc)
+
+
+def _unrecognized_attribute(node: ast.Attribute, ctx: FuncCtx, loc: Loc) -> IRExpr:
+    return _unrecognized(
+        node, ctx, loc, f"`.{node.attr}` is not a recognized attribute of that value"
+    )
 
 
 def _too_large(loc: Loc, ctx: FuncCtx) -> IRExpr:
@@ -967,9 +1010,13 @@ def _check_attribute(node: ast.Attribute, ctx: FuncCtx) -> IRExpr:
             )
             return _invalid(loc)
 
-    # TASK-7B: struct field reads (`bal.amount`).
-    # TASK-7A: the Env surface (`env.storage()`, `env.ledger()`, ...).
-    return _deferred(node, ctx, "Task 7a/7b", f"attribute access `.{node.attr}`")
+    # Struct field reads (`bal.amount`) and the bare `Env` surface
+    # (`env.storage` with no call) are `recognize.py`'s (Tasks 7a/7b), wired
+    # here by Task 10.
+    recognized = _recognize_attribute(node, ctx)
+    if recognized is not None:
+        return recognized
+    return _unrecognized_attribute(node, ctx, loc)
 
 
 def _check_error_member(
@@ -1144,11 +1191,14 @@ def _check_call(node: ast.Call, ctx: FuncCtx) -> IRExpr:
             # rejected`, which goes through `check_expr` -- the only entry a
             # call site has -- so re-ordering the dispatch fails that test.
             return _check_self_call(node, ctx, loc, func.attr)
-        # TASK-7A: `env.storage().get(...)`, `addr.require_auth()`.
-        # TASK-7B: container/struct methods; `Event(...).publish(env)` (E12).
-        return _deferred(node, ctx, "Task 7a/7b", "a method call")
+        # `env.storage().get(...)`, `addr.require_auth()`, container/struct
+        # methods, `Event(...).publish(env)` (E12) -- all `recognize.py`'s.
+        recognized = _recognize_call(node, ctx)
+        if recognized is not None:
+            return recognized
+        return _unrecognized(node, ctx, loc, f"`.{func.attr}(...)` is not a recognized method call")
     if not isinstance(func, ast.Name):
-        return _deferred(node, ctx, "Task 7a/7b", "a call of a computed value")
+        return _unrecognized(node, ctx, loc, "a call of a computed value is not supported")
 
     name = func.id
     if name == "bool":  # RECOGNIZED_BUILTINS, dispatched by name
@@ -1172,10 +1222,10 @@ def _check_call(node: ast.Call, ctx: FuncCtx) -> IRExpr:
         )
         return _invalid(loc)
     if obj is Vec or obj is Map:
-        # TASK-7B: `recognize.recognize_call` checks Vec(T[, items]) /
-        # Map(K, V[, pairs]) (D2/A13, MJ-15); this dispatch reaches it once
-        # the assembly task joins the two modules.
-        return _deferred(node, ctx, "Task 7b", f"`{name}(...)` construction")
+        # `Vec(T[, items])` / `Map(K, V[, pairs])` (D2/A13, MJ-15).
+        recognized = _recognize_call(node, ctx)
+        assert recognized is not None, "recognize_call always claims Vec/Map construction"
+        return recognized
     if isinstance(obj, type):
         metadata = vars(obj).get(_METADATA_ATTR)
         if isinstance(metadata, dict):
@@ -1188,9 +1238,18 @@ def _check_call(node: ast.Call, ctx: FuncCtx) -> IRExpr:
                     f"`{name}` is an error enum; its members are codes, not instances",
                 )
                 return _invalid(loc)
-            # TASK-7B: struct construction (kwargs only, P7).
-            # TASK-7A: event construction + publish (E12).
-            return _deferred(node, ctx, "Task 7a/7b", f"`{name}(...)` construction")
+            if kind == "struct":
+                # Struct construction, kwargs only (P7).
+                recognized = _recognize_call(node, ctx)
+                assert recognized is not None, "recognize_call always claims struct construction"
+                return recognized
+            # An `@contract` class, or a `@contractevent` construction that is
+            # not immediately `.publish(env)`-ed: neither is a value. The
+            # publish form itself is refused by `recognize_call`, pointing at
+            # sub-plan E (E12).
+            return _unrecognized(
+                node, ctx, loc, f"`{name}(...)` is a {kind} class, which is not a value"
+            )
         return _check_chain_constructor(node, ctx, loc, name, obj)
 
     if any(helper.name == name for helper in ctx.loaded.helpers):

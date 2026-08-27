@@ -1402,12 +1402,17 @@ _CASES_PY_REJECTS: list[tuple[str, str, str]] = [
     ("timepoint_plus_timepoint_rejected", "Timepoint(1) + Timepoint(1)", "SPT3005"),
     ("duration_unary_minus_rejected", "-Duration(5)", "SPT3005"),
     ("duration_times_int_rejected", "Duration(3) * 2", "SPT3005"),
-    # Container construction + mutation is Task 7b's; the reject obligation is
-    # met today by the deferred-surface catch-all (documented in the report).
+    # Two independent rejects sit on this one line, and the OUTER one fires
+    # first now that Task 10 wired the recognition tables to this module: a
+    # mutator on a TEMPORARY receiver has no binding to rebind (E11), which is
+    # `SPT1034`. The element-type mismatch the case is named for (`SPT3018`)
+    # would be reported if the receiver were a local -- see
+    # `test_containers_frontend.py`. Either way the source is rejected, which
+    # is the T1/T6 obligation.
     (
         "vec_wrong_element_type_rejected",
         'Vec(U32, [U32(1)]).push_back(Symbol("x"))',
-        "SPT1037",
+        "SPT1034",
     ),
     ("symbol_empty_rejected", 'Symbol("")', "SPT3004"),
     ("symbol_too_long_rejected", 'Symbol("a" * 33)', "SPT3004"),

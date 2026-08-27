@@ -53,8 +53,8 @@ import builtins
 from dataclasses import dataclass, replace
 from typing import Final
 
-from serpent.compiler import codes
-from serpent.compiler.ctx import FuncCtx
+from serpent.compiler import codes, recognize
+from serpent.compiler.ctx import FuncCtx, Ownership
 from serpent.compiler.diagnostics import Loc
 from serpent.compiler.expr import check_condition, check_expr, fold_literal
 from serpent.compiler.ir import (
@@ -250,14 +250,50 @@ class _Block:
 
 @dataclass
 class _FnState:
-    """Per-function bookkeeping that must NOT be branch-local: the counter that
-    names hidden induction locals uniquely across every loop in the body."""
+    """Per-function bookkeeping that must NOT be branch-local.
+
+    * `hidden` names hidden induction locals uniquely across every loop in the
+      body.
+    * `never_owned` is E11's syntactic pre-pass result
+      (`recognize.collect_never_owned`): the local NAMES this body proves can
+      never be exclusively C-owned. It is computed ONCE, from the whole body,
+      before any statement is checked -- see `collect_never_owned`'s docstring
+      for why a per-statement classification is unsound in a loop -- and is
+      applied at the single point that could otherwise conclude `OWNED`
+      (`_note_binding`).
+    """
 
     hidden: int = 0
+    never_owned: frozenset[str] = frozenset()
 
     def next_loop_id(self) -> int:
         self.hidden += 1
         return self.hidden - 1
+
+
+def _new_state(stmts: list[ast.stmt], ctx: FuncCtx) -> _FnState:
+    """Fresh per-function state, with E11's pre-pass already run.
+
+    Running it HERE rather than in the assembly task is what makes the
+    conservative answer the default: every entry into statement checking gets
+    the whole-body alias/escape facts, so there is no way for a caller to
+    check a body without them (`recognize_mutation`'s hand-off contract).
+    """
+    return _FnState(never_owned=recognize.collect_never_owned(stmts, ctx))
+
+
+def _note_binding(name: str, slot: int, value: IRExpr, ctx: FuncCtx, state: _FnState) -> None:
+    """Record what binding `slot` to `value` means for E11.
+
+    `recognize.note_local_binding` does the per-binding classification (and
+    marks every local the right-hand side can BE as escaped); the pre-pass then
+    OVERRIDES an `OWNED` verdict for any name the whole body proves can never
+    be exclusively owned. The override is applied after, not before, because
+    `note_local_binding`'s escape marking must run either way.
+    """
+    ownership = recognize.note_local_binding(slot, value, ctx)
+    if ownership is Ownership.OWNED and name in state.never_owned:
+        ctx.alias_sets.mark_aliased(slot)
 
 
 # --- public entry points ------------------------------------------------------
@@ -279,7 +315,7 @@ def check_body(stmts: list[ast.stmt], ctx: FuncCtx) -> list[IRStmt]:
     `check_function_body` reconciles the field against the end of the body. A
     caller that needs the field to be true must use that entry point.
     """
-    state = _FnState()
+    state = _new_state(stmts, ctx)
     params_assigned: frozenset[int] = frozenset()
     block = _check_block(stmts, ctx, state, params_assigned, is_function_body=True)
     return block.stmts
@@ -293,7 +329,7 @@ def check_function_body(stmts: list[ast.stmt], ctx: FuncCtx, *, loc: Loc) -> Che
     diagnostic points -- the same choice mypy makes, because the missing return
     is a property of the whole body rather than of any one statement in it.
     """
-    state = _FnState()
+    state = _new_state(stmts, ctx)
     block = _check_block(stmts, ctx, state, frozenset(), is_function_body=True)
 
     if ctx.return_ty.tag is not TyTag.VOID and not block.terminates:
@@ -526,7 +562,6 @@ def _assign_to_name(
     state: _FnState,
     assigned: frozenset[int],
 ) -> _Block:
-    del state  # no hidden locals are needed for a plain assignment
     loc = Loc.from_node(ctx.path, target)
     name = target.id
 
@@ -567,6 +602,7 @@ def _assign_to_name(
     if slot is None:
         return _nothing(assigned)  # SPT3017 (rebind) or SPT2004 (shadow), already reported
     ctx.locals.mark_assigned(name)
+    _note_binding(name, slot.slot, value, ctx, state)
 
     node: IRStmt
     if existing is None:
@@ -854,7 +890,7 @@ def _declare_hidden(name: str, ty: Ty, loc: Loc, ctx: FuncCtx) -> int | None:
 
 
 def _bind_loop_target(
-    target: ast.Name, ty: Ty, init: IRExpr, loc: Loc, ctx: FuncCtx
+    target: ast.Name, ty: Ty, init: IRExpr, loc: Loc, ctx: FuncCtx, state: _FnState
 ) -> tuple[IRStmt, int] | None:
     """Bind a loop variable, mirroring `_assign_to_name`'s LetLocal/SetLocal
     choice (`ir.py` documents `LetLocal` as the FIRST binding of a slot).
@@ -875,6 +911,7 @@ def _bind_loop_target(
     if slot is None:
         return None
     ctx.locals.mark_assigned(target.id)
+    _note_binding(target.id, slot.slot, init, ctx, state)
     node: IRStmt
     if existing is None:
         node = LetLocal(loc=loc, slot=slot.slot, ty=ty, init=init)
@@ -921,12 +958,23 @@ def _desugar_for_vec(
     iter_ref = LocalRef(loc=loc, ty=iterable.ty, slot=iter_slot, name=f"$for{loop_id}_iter")
     index_ref = LocalRef(loc=loc, ty=Ty.U32, slot=index_slot, name=f"$for{loop_id}_index")
 
+    # The hidden `$iter` local holds the ITERABLE's own handle, so binding it is
+    # an alias in exactly the E11 sense and both slots lose ownership. That is
+    # what refuses `for x in v: v.push_back(x)`, where the two tiers genuinely
+    # disagree: on chain the rebind leaves `$iter` pointing at the original
+    # Vec and the loop terminates, at tier 1 the iteration sees the growing
+    # container and does not. The cost is a conservative reject for a mutation
+    # of `v` AFTER the loop, where the tiers would in fact have agreed --
+    # E11's documented "when in doubt, ALIASED" direction.
+    _note_binding(f"$for{loop_id}_iter", iter_slot, iterable, ctx, state)
+
     bound = _bind_loop_target(
         stmt.target,
         elem_ty,
         HostCall(loc=loc, ty=elem_ty, fn_name="vec_get", args=(iter_ref, index_ref)),
         loc,
         ctx,
+        state,
     )
     if bound is None:
         return _nothing(assigned)
@@ -1051,7 +1099,7 @@ def _desugar_for_range(
     stop_ref = LocalRef(loc=loc, ty=index_ty, slot=stop_slot, name=f"$for{loop_id}_stop")
     index_ref = LocalRef(loc=loc, ty=index_ty, slot=index_slot, name=f"$for{loop_id}_index")
 
-    bound = _bind_loop_target(stmt.target, index_ty, index_ref, loc, ctx)
+    bound = _bind_loop_target(stmt.target, index_ty, index_ref, loc, ctx, state)
     if bound is None:
         return _nothing(assigned)
     bind_target, target_slot_index = bound
@@ -1232,9 +1280,26 @@ def _check_expr_stmt(
     SS B.1's own worked example is `count + U32(1)` on a line of its own --
     computing a value and throwing it away is always a bug on chain, where the
     computation costs budget and may trap.
+
+    A container MUTATION is recognized first, because its lowering is a REBIND
+    (`v = vec_push_back(v, x)`, E11) and therefore a statement -- there is no
+    value-position form of it to fall through to. `recognize_mutation` returns
+    `None` for anything that is not a mutation at all, which is when ordinary
+    void-expression checking takes over.
     """
     del state
     loc = Loc.from_node(ctx.path, stmt)
+    if isinstance(stmt.value, ast.Call):
+        mutation = recognize.recognize_mutation(stmt.value, ctx)
+        if mutation is not None:
+            if isinstance(mutation, SetLocal):
+                # SS C.3 rule 2 still applies to the receiver and every
+                # argument: `recognize_mutation` types the expressions, this
+                # module owns definite assignment.
+                _check_reads(mutation.value, ctx, assigned)
+            # A `Nop` means the mutation was refused and reported; it lowers to
+            # nothing and control still falls through.
+            return _Block([mutation], False, assigned)
     if isinstance(stmt.value, ast.Constant):
         # A docstring was already skipped at index 0 of the body (P1); any
         # other bare literal is a no-op line.
