@@ -104,3 +104,12 @@ Format:
 - Why: inheritance is the only zero-plugin path to static visibility; Vec is
   homogeneous by design.
 - Reversal cost: authoring-surface change — cheap now, breaking after docs/examples.
+
+## 2026-08-27 stellar-sdk becomes a runtime dep of serpent.spec only
+- Context: M1-B needs stellar_sdk XDR classes for section emission (spec §7
+  mandate); serpent core is zero-dep by design.
+- Decision: new optional extra `serpent[spec]` carries stellar-sdk>=15,<16;
+  core modules (val/types/errors/decorators/env) stay zero-dep, enforced by an
+  import-graph test. Authored contracts never need the extra; building them does.
+- Why: spec §7 vs zero-dep rule, reconciled at the subpackage boundary.
+- Reversal cost: packaging-level; low.
