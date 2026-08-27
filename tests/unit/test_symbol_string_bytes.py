@@ -6,7 +6,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from serpent import val
-from serpent.types import U32, U64, Bytes, Bytes32, Bytes64, String, Symbol, bytes_n
+from serpent.types import U32, U64, Bytes, Bytes32, Bytes64, String, Symbol, Vec, bytes_n
 
 # --- Symbol ------------------------------------------------------------------
 
@@ -132,6 +132,40 @@ def test_bytes_slicing_returns_bytes() -> None:
     # A slice of a fixed-length type is a plain Bytes: the length no longer holds.
     sliced = Bytes32(b"\0" * 32)[0:4]
     assert type(sliced) is Bytes and sliced == Bytes(b"\0" * 4)
+
+
+def test_bytes_slice_matches_vec_slice_semantics() -> None:
+    """`Bytes.slice(lo, hi)` is the METHOD form of a sub-range (MJ-1/E18).
+
+    The compiler's slicing surface is a method, never a subscript (`SPT1013`
+    points at it), so the oracle needs the method to be runnable. Its bounds
+    behaviour is `Vec.slice`'s, NOT python slicing's: the host's `bytes_slice`
+    traps on an out-of-range bound rather than clamping, so the two forms
+    deliberately disagree (`b[10:]` is empty; `b.slice(10, 10)` raises).
+    """
+    b = Bytes(b"abcd")
+    assert b.slice(1, 3) == Bytes(b"bc")
+    assert isinstance(b.slice(1, 3), Bytes)
+    assert b.slice(0, len(b)) == b
+    assert b.slice(2, 2) == Bytes(b"")
+    assert Bytes(b"").slice(0, 0) == Bytes(b"")
+    # Out of range traps, exactly like Vec.slice -- no clamping.
+    for lo, hi in ((0, 5), (5, 5), (-1, 2), (3, 1)):
+        with pytest.raises(IndexError, match="out of range"):
+            b.slice(lo, hi)
+    with pytest.raises(IndexError, match="out of range"):
+        Vec(U32).slice(0, 1)
+    # A sub-range of a fixed-length type is a plain Bytes: the length no
+    # longer holds -- the same answer `[a:b]` gives.
+    sliced = Bytes32(b"\0" * 32).slice(0, 4)
+    assert type(sliced) is Bytes and sliced == Bytes(b"\0" * 4)
+
+
+def test_bytes_slice_parameter_names_are_lo_and_hi() -> None:
+    """The names the compiler's `bytes.slice` row pins (`recognize.py`'s
+    `_METHOD_SHAPES`), so keyword form is accepted under the real API's
+    names."""
+    assert Bytes(b"abcd").slice(lo=1, hi=3) == Bytes(b"bc")
 
 
 def test_bytes_is_immutable_and_copies_its_input() -> None:

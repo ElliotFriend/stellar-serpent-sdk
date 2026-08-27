@@ -6,6 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from serpent import contracttype
 from serpent.types import (
     I32,
     I64,
@@ -540,3 +541,131 @@ def test_vec_matches_a_plain_list_reference_model(
         if model:
             assert v.get(0) == U32(model[0])
             assert v.first_index_of(U32(model[0])) == U32(model.index(model[0]))
+
+
+# --- structs in containers (E2 / MJ-7) ----------------------------------------
+#
+# A `@contracttype` struct is a `MapObject` on chain (S9), so a container of
+# structs is an ordinary contract shape -- `Vec[Balance]`, `Map[Symbol,
+# Settings]`. Two rulings meet here:
+#
+# * **E2 (b)**: `Vec`'s `T` and `Map`'s `V` are bound to `ChainValue | Struct`,
+#   so `Vec[Settings]` type-checks with no `# type: ignore[type-var]`.
+# * **MJ-7**: only the VALUE path's runtime check is widened.
+#   `Map`'s KEYS stay per E3 -- ordering a struct would mean inventing an order
+#   `val_cmp` does not model (A15 forbids it), and every key really is compared
+#   (the binary search), while a value never is.
+
+
+@contracttype
+class Settings:
+    """The struct used across the container/struct tests (matches test_typemap)."""
+
+    retries: U32
+    label: Symbol
+
+
+def test_map_round_trips_a_struct_value_directly() -> None:
+    """MJ-7's DIRECT round-trip: no suite-reliance, every accessor exercised."""
+    m: Map[Symbol, Settings] = Map(Symbol, Settings)
+    low = Settings(retries=U32(1), label=Symbol("low"))
+    high = Settings(retries=U32(9), label=Symbol("high"))
+    m.set(Symbol("a"), low)
+    m.set(Symbol("b"), high)
+    assert len(m) == 2
+    assert m.get(Symbol("a")) == low
+    assert m.get(Symbol("b")) == high
+    assert m.has(Symbol("a")) and not m.has(Symbol("zz"))
+    # Re-setting one key replaces the value, as for any other value type.
+    m.set(Symbol("a"), high)
+    assert m.get(Symbol("a")) == high and len(m) == 2
+    # Keys stay in val_cmp order; values come back in key order, in a Vec that
+    # honestly reports the declared struct element type.
+    assert [k.text for k in m] == ["a", "b"]
+    values = m.values()
+    assert values.element_type is Settings
+    assert list(values) == [high, high]
+    assert m.keys().element_type is Symbol
+    assert m.val_by_pos(0) == high and m.key_by_pos(1) == Symbol("b")
+    # Value semantics: equality, copy, deepcopy.
+    other: Map[Symbol, Settings] = Map(Symbol, Settings, [(Symbol("a"), high), (Symbol("b"), high)])
+    assert m == other
+    assert copy.copy(m) == m and copy.deepcopy(m) == m
+    m.del_(Symbol("a"))
+    assert len(m) == 1 and not m.has(Symbol("a"))
+    with pytest.raises(KeyError):
+        m.get(Symbol("a"))
+
+
+def test_vec_holds_structs() -> None:
+    """E2: `Vec[Settings]` is a real contract shape (`Vec[Balance]` in the
+    flagship token example), so the bound must admit it."""
+    low = Settings(retries=U32(1), label=Symbol("low"))
+    high = Settings(retries=U32(9), label=Symbol("high"))
+    v: Vec[Settings] = Vec(Settings, [low, high])
+    assert len(v) == 2 and v.get(0) == low
+    assert v.first_index_of(high) == U32(1)
+    assert list(v.slice(0, 1)) == [low]
+    v.push_back(low)
+    assert len(v) == 3
+    with pytest.raises(TypeError, match="element"):
+        v.push_back(U32(1))  # type: ignore[arg-type]
+
+
+def test_map_keys_stay_chain_values_only() -> None:
+    """E3, unchanged by MJ-7: a struct key is a tier-1 `TypeError` at every
+    size, because `val_cmp` cannot order it and the binary search compares
+    every key it keeps."""
+    m: Map[Any, Any] = Map(Symbol, U32)
+    settings = Settings(retries=U32(1), label=Symbol("low"))
+    for call in (
+        lambda: m.set(settings, U32(1)),
+        lambda: m.get(settings),
+        lambda: m.has(settings),
+        lambda: m.del_(settings),
+    ):
+        with pytest.raises(TypeError, match="chain value"):
+            call()
+    assert len(m) == 0
+    with pytest.raises(TypeError, match="chain value"):
+        val_cmp(settings, Symbol("a"))  # type: ignore[arg-type]
+
+
+def test_map_values_still_reject_non_chain_non_struct() -> None:
+    """The widening is exactly "chain value OR struct": a raw `int`/`str`/
+    `None` value is still refused on the way in, at every map size."""
+    m: Map[Any, Any] = Map(Symbol, U32)
+    for bad in (5, "nope", None, [U32(1)], object()):
+        with pytest.raises(TypeError, match="chain value"):
+            m.set(Symbol("k"), bad)
+    assert len(m) == 0
+    m.set(Symbol("k"), U32(1))
+    with pytest.raises(TypeError, match="chain value"):
+        m.set(Symbol("j"), 5)
+    assert len(m) == 1
+
+
+def test_heterogeneous_struct_and_chain_values_satisfy_the_vec_invariant() -> None:
+    """`values()` must never hand back a `Vec` that lies about its contents.
+
+    A `Map` is deliberately not homogeneous at runtime, so its values can
+    straddle the chain-value/struct boundary -- and the returned `Vec` must
+    still satisfy its own invariant (every `Vec` operation works on its own
+    contents), which is what the widened element-type fallback buys.
+    """
+    settings = Settings(retries=U32(1), label=Symbol("low"))
+    m: Map[Any, Any] = Map(Symbol, Settings)
+    m.set(Symbol("a"), settings)
+    m.set(Symbol("b"), U32(1))
+    values = m.values()
+    assert values.element_type is not Settings
+    assert all(isinstance(item, values.element_type) for item in values)
+    assert list(values) == [settings, U32(1)]
+    assert list(values.slice(0, 1)) == [settings]
+    assert values.first_index_of(U32(1)) == U32(1)
+    assert copy.copy(values) == values and copy.deepcopy(values) == values
+    # All-struct values that fail the declared type fall back to the struct
+    # view, not to the chain-value one (which a struct does not satisfy).
+    n: Map[Any, Any] = Map(Symbol, U32)
+    n.set(Symbol("a"), settings)
+    assert list(n.values()) == [settings]

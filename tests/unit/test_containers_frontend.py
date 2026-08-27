@@ -398,25 +398,24 @@ def test_every_method_row_names_a_real_tier1_method(method: str, row: str) -> No
     tier-1 oracle has no method for -- that is an oracle-unrunnable accept,
     the exact shape MJ-1's `len()` scoping ruling avoided.
 
-    `Bytes.slice` is the one known gap: it is a RULED tier-1 addition that
-    lands in Task 8 (decisions.md 2026-08-27, plan-review ruling "Bytes.slice
-    added to the tier-1 surface"), so this row is xfail(strict=True) until
-    then -- see `test_bytes_slice_row_awaits_task_8`.
+    `Bytes.slice` was the one known gap -- a RULED tier-1 addition
+    (decisions.md 2026-08-27, plan-review ruling "Bytes.slice added to the
+    tier-1 surface") -- and it landed in Task 8, so every row including
+    `bytes.slice` is checked here with no exemption.
     """
-    if row == "bytes.slice":
-        pytest.skip("covered by test_bytes_slice_row_awaits_task_8 (xfail until Task 8)")
     assert row in RECOGNIZED, row
     cls = _TIER1_CLASSES[row.split(".")[0]]
     assert callable(getattr(cls, method, None)), f"{cls.__name__} has no method {method}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Bytes.slice is a ruled tier-1 addition landing in Task 8 (E18/MJ-1); "
-    "flip this to a plain assertion when it lands",
-)
-def test_bytes_slice_row_awaits_task_8() -> None:
+def test_bytes_slice_landed_in_tier_1() -> None:
+    """Task 8 landed MJ-1's ruled addition (`Bytes.slice(lo, hi) -> Bytes`,
+    trapping like `Vec.slice`), which is what makes the `bytes.slice` row an
+    oracle-RUNNABLE accept. This test was the xfail(strict=True) placeholder
+    Task 7b left behind; the tier-1 behaviour itself is pinned in
+    `test_symbol_string_bytes.py`."""
     assert callable(getattr(Bytes, "slice", None))
+    assert Bytes(b"abcd").slice(1, 3) == Bytes(b"bc")
 
 
 @pytest.mark.parametrize(
@@ -424,6 +423,7 @@ def test_bytes_slice_row_awaits_task_8() -> None:
     sorted(
         [(name, row) for name, row in VEC_METHODS.items()]
         + [(name, row) for name, row in MAP_METHODS.items()]
+        + [(name, row) for name, row in BYTES_METHODS.items()]
     ),
 )
 def test_every_method_row_pins_the_tier1_parameter_names(method: str, row: str) -> None:
@@ -432,8 +432,8 @@ def test_every_method_row_pins_the_tier1_parameter_names(method: str, row: str) 
     tier-1 rename would otherwise silently turn a supported keyword into an
     `SPT1035` reject, so the names are pinned against `inspect.signature`.
 
-    (`bytes.slice` is excluded with the rest of the `Bytes` rows: the method
-    lands in Task 8.)
+    (`bytes.slice` is included now that Task 8 landed the method: its row
+    pins `(lo, hi)`, which is what `b.slice(lo=..., hi=...)` relies on.)
     """
     cls = _TIER1_CLASSES[row.split(".")[0]]
     parameters = list(inspect.signature(getattr(cls, method)).parameters)

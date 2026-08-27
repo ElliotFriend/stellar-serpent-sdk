@@ -1201,9 +1201,9 @@ MAP_METHODS: Mapping[str, str] = {
 }
 
 #: `Bytes` is immutable, so its only row is the sub-range READER. The method
-#: itself is a RULED tier-1 addition landing in Task 8 (E18/MJ-1: E18's
-#: method-form slicing needs a method to name), which is why the differential
-#: test's `bytes.slice` row is xfail until then.
+#: itself was a RULED tier-1 addition (E18/MJ-1: E18's method-form slicing
+#: needs a method to name), landed in Task 8 -- so the differential test now
+#: checks this row with no exemption.
 BYTES_METHODS: Mapping[str, str] = {"slice": "bytes.slice"}
 
 #: The syntactic gate: only an attribute call whose method name appears here is

@@ -19,10 +19,17 @@ wrong call is a type error, not a runtime surprise.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Protocol, TypeAlias, TypeVar, runtime_checkable
+from typing import Any, TypeAlias, TypeVar
 
 from serpent.types import U32, U64, Bool, Map, Vec
 from serpent.types._base import _ChainValue
+
+# One definition, shared (E2/MJ-7): `containers.py` needs the same structural
+# view of a `@contracttype` instance for its element/value bound and cannot
+# import this module (env imports the containers), so `Struct` lives in
+# `types._ordering` -- the module with no `serpent.types` imports at all -- and
+# is re-exported here, where it has always been part of the public surface.
+from serpent.types._ordering import Struct
 
 __all__ = [
     "ChainValue",
@@ -38,20 +45,6 @@ __all__ = [
 ]
 
 _T = TypeVar("_T")
-
-
-@runtime_checkable
-class Struct(Protocol):
-    """Structurally, any `@contracttype` instance.
-
-    `@contracttype` is a `dataclass_transform`, so a decorated class is a
-    dataclass to the type checker and carries `__dataclass_fields__`. Matching
-    on that is what lets `ChainValue` admit user structs without every struct
-    needing a common base class -- a decorator cannot add one that a checker
-    would see.
-    """
-
-    __dataclass_fields__: ClassVar[dict[str, Any]]
 
 
 #: Everything that can cross the host boundary as a value: any scalar chain
