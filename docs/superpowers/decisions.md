@@ -113,3 +113,12 @@ Format:
   import-graph test. Authored contracts never need the extra; building them does.
 - Why: spec §7 vs zero-dep rule, reconciled at the subpackage boundary.
 - Reversal cost: packaging-level; low.
+
+## 2026-08-27 Spec type/case names restricted to Symbol charset
+- Context: M1-B sections validate UDT type and error-case names against
+  [a-zA-Z0-9_] (stricter than XDR string<60>, which permits any bytes).
+- Decision: keep the restriction — ecosystem tools render type names as Rust
+  identifiers; permitting non-identifier names produces specs that render
+  brokenly downstream. Promoted from the plan ledger per final review (lasting
+  user-facing authoring constraint).
+- Reversal cost: relaxing later is non-breaking; tightening later breaks contracts.
