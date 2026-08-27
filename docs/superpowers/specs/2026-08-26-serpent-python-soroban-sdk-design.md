@@ -57,10 +57,10 @@ class State:              # named-field struct → Map<Symbol, V>
 
 @contract
 class Token:
-    def __init__(env: Env, admin: Address) -> None:
+    def __init__(self, env: Env, admin: Address) -> None:
         ...               # compiled to the reserved `__constructor` export
 
-    def transfer(env: Env, from_: Address, to: Address, amount: I128) -> None:
+    def transfer(self, env: Env, from_: Address, to: Address, amount: I128) -> None:
         from_.require_auth()
         if balance(env, from_) < amount:
             raise Error.InsufficientBalance
@@ -78,6 +78,13 @@ Rules:
   compile-time bounds checks. Unbounded `int` arithmetic is rejected.
 - **Exported signatures require annotations.** Docstrings flow into `contractspecv0`
   doc fields (verified wiring, not aspiration — the spike did not do this).
+- **Contract methods take `self` as their first parameter** (`def transfer(self,
+  env: Env, ...)`), which the compiler ignores. *(Amended 2026-08-26 per Phase 0
+  findings: self-less methods fail `mypy --strict` with no zero-plugin escape;
+  `self`-first is strict-clean and puya-precedented.)* `@contracttype` uses
+  `typing.dataclass_transform`, so kwargs construction type-checks. With these two
+  rules plus exception-class errors (below), the zero-plugin claim holds under
+  `mypy --strict`, not just default strictness.
 - **`__init__` compiles to `__constructor`** (host-reserved name, protocol ≥ 22).
   Documented caveat: the host *launders* constructor errors — any recoverable error
   raised in the constructor reaches the deployer as `Context(InvalidAction)`, not the
@@ -93,6 +100,9 @@ Rules:
 - **User-defined types** follow Soroban spec conventions: named-field struct →
   `Map<Symbol, V>`; tuple struct → `Vec<V>`; tagged union → `Vec` led by variant-name
   `Symbol`; int enum → `u32`; `@contracterror` → `u32` codes under `SCE_CONTRACT`.
+  *(Amended 2026-08-26:)* `@contracterror` makes each member an **exception
+  class** carrying its `u32` code, so `raise Error.LimitExceeded` is valid,
+  strict-clean Python; the compiler reads the code from the class attribute.
 - **Events**: `@contractevent` classes (mirroring Rust's), emitted via `contract_event`
   (`x.1`). Convention enforced: `topic[0]` is a short `Symbol` event name — the host
   does not enforce a topic-count limit (the binding constraint is the event-bytes
@@ -364,4 +374,17 @@ registration.
   protocol floor.
 - Spike testnet artifacts (throwaway evidence, not kept code):
   counter `CC3CUV2D6DBBAI5C4ZG44J46RPXMQVQWHM4GYR63VCKSESFS25DVFPXV` (344 B),
-  add/sum_to/gcd `CBLOHCDAO4OZTGCDYWUVTKIIQDGKB2VVVQVXOMSSGVF3S3AMOLHBOZCF` (511 B).
+  add/sum_to/gcd `CBLOHCDAO4OZTGCDYWUVTKIIQDGKB2VVVQVXOMSSGVF3S3AMOLHBOZCF` (511 B);
+  Phase 0 designed-style contract
+  `CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI` (877 B).
+- Phase-0-verified additions (see 2026-08-26-phase0-findings.md §3 for evidence):
+  `map_new_from_linear_memory` keys are `(u32 ptr, u32 len)` descriptor pairs, not
+  Vals (values ARE 8-byte Val words, in relative handle space); no panic-free
+  `&str → Symbol` path exists in soroban-sdk 27 (pre-validate: `SCSYMBOL_LIMIT` +
+  `[a-zA-Z0-9_]`); with `E = soroban_sdk::Error`, `try_invoke_contract`'s error arm
+  catches ALL host errors — discriminate `is_type(ScErrorType::Contract)`
+  (`ScErrorCode` values collide with contract codes, e.g. `InternalError = 7`,
+  making an undiscriminated mapping spoofable);
+  wasmtime Config must set `wasm_relaxed_simd = False` BEFORE `wasm_simd = False`
+  (else uncatchable Engine abort); a leaked operand passes `wasm-tools validate`
+  (polymorphic return), so emitters must balance-check at `ret()`.
