@@ -86,6 +86,21 @@ def test_serpent_spec_is_not_reachable_from_the_package_root() -> None:
     source = (SRC / "__init__.py").read_text(encoding="utf-8")
     assert "from serpent.spec" not in source
     assert "import serpent.spec" not in source
+    # Task 3 review minor, hardened here (T5): the two absolute-spelling checks
+    # above miss a RELATIVE import -- `from .spec import ...` or
+    # `from . import spec` inside serpent/__init__.py would walk right through
+    # them (only the subprocess probe in
+    # test_importing_serpent_does_not_load_stellar_sdk would still catch it).
+    # RED evidence (mutation note): verified by hand against three synthetic
+    # source strings ("from .spec import x", "from . import spec",
+    # "from serpent import spec") standing in for a hypothetical
+    # serpent/__init__.py mutation -- for each, the two absolute-spelling
+    # checks above are satisfied (silently missing the violation) while the
+    # three checks below fail (catching it), confirming they are
+    # load-bearing rather than redundant with the checks above.
+    assert "from .spec" not in source
+    assert "from . import spec" not in source
+    assert "from serpent import spec" not in source
 
 
 def test_importing_serpent_does_not_load_stellar_sdk() -> None:

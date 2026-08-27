@@ -43,5 +43,9 @@ jobs:
 
       # testpaths = ["tests"] in pyproject.toml, so spikes/ tests are never
       # collected here (deliberate: spikes are frozen evidence, not CI subjects).
+      # This includes tests/unit/test_host_bindings.py, which covers env.json
+      # drift (upstream blob SHA pin, byte-identical regeneration) and the
+      # HostFn table invariants (export-code sequencing, arity, exhaustive
+      # type-table resolution) -- no separate CI step is needed for these.
       - name: Test (pytest)
         run: uv run --frozen pytest -q
