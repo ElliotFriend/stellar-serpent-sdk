@@ -135,6 +135,8 @@ limb decomposition. For the record when M2 arrives: `obj_from_i256_pieces` takes
 
 **Files:**
 - Create: `src/serpent/val.py`, `tests/__init__.py`, `tests/unit/__init__.py`
+- Modify: `pyproject.toml` — set `[tool.mypy] files = ["src", "tests"]` NOW (later
+  tasks' gates require type-checked tests; doing this in Task 10 would be too late)
 - Test: `tests/unit/test_val.py`, `tests/unit/test_val_properties.py`
 
 **Interfaces:**
@@ -333,7 +335,7 @@ upper bound is stale — do not copy it.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/serpent/val.py tests/__init__.py tests/unit/__init__.py tests/unit/test_val.py tests/unit/test_val_properties.py
+git add src/serpent/val.py pyproject.toml tests/__init__.py tests/unit/__init__.py tests/unit/test_val.py tests/unit/test_val_properties.py
 git commit -m "feat: add Val codec core with tags, masks, and small-value packing
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -723,6 +725,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `src/serpent/types/symbol.py`, `src/serpent/types/buffers.py`
+- Modify: `src/serpent/types/__init__.py` (re-export the new types)
 - Test: `tests/unit/test_symbol_string_bytes.py`
 
 **Interfaces:**
@@ -764,6 +767,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `src/serpent/types/_ordering.py`, `src/serpent/types/containers.py`
+- Modify: `src/serpent/types/__init__.py` (re-export Vec, Map)
 - Test: `tests/unit/test_containers.py`
 
 **Interfaces:**
@@ -828,6 +832,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `src/serpent/types/address.py`
+- Modify: `src/serpent/types/__init__.py` (re-export Address)
 - Test: `tests/unit/test_address.py`
 
 **Interfaces:**
