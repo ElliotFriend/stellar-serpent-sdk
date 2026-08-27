@@ -49,6 +49,7 @@ about the END of the body rather than about whichever branch was walked last.
 from __future__ import annotations
 
 import ast
+import builtins
 from dataclasses import dataclass, replace
 from typing import Final
 
@@ -211,6 +212,17 @@ class CheckedBody:
     `returns_on_every_path` is the RESULT of SS C.3 rule 3's analysis, ready
     for `FuncIR.returns_on_every_path` -- recorded so no later task re-derives
     it (R4).
+
+    **Invariant the emitter must honour.** `returns_on_every_path=True` does
+    NOT guarantee the body ends in a `Return` node -- an infinite loop with no
+    `break` also satisfies it (it DIVERGES rather than returning, so the rule
+    holds vacuously: there is no normal exit for a missing return to escape
+    through). A wasm validator, however, types a `loop` as falling through with
+    its result type, so a function whose body ends after an infinite loop with
+    an empty stack FAILS validation. The emitter must therefore terminate the
+    function with `unreachable` whenever the last reachable statement is not a
+    `Return` -- exactly the discipline spec SS 4 already demands ("early
+    returns, missing returns" must be structurally impossible, S17/P6).
     """
 
     stmts: tuple[IRStmt, ...]
@@ -260,6 +272,11 @@ def check_body(stmts: list[ast.stmt], ctx: FuncCtx) -> list[IRStmt]:
     The function-LEVEL definite-return rule (SS C.3 rule 3) is NOT applied
     here, because it needs a location to report against when a body simply
     falls off the end -- see `check_function_body`.
+
+    One consequence of that split: `LocalSlot.definitely_assigned` is left
+    describing whichever branch was walked LAST, because only
+    `check_function_body` reconciles the field against the end of the body. A
+    caller that needs the field to be true must use that entry point.
     """
     state = _FnState()
     params_assigned: frozenset[int] = frozenset()
@@ -562,22 +579,51 @@ def _resolve_annotation_expr(node: ast.expr, ctx: FuncCtx) -> Ty | None:
     """Resolve a FUNCTION-BODY annotation (`x: Vec[U32] = ...`) to a `Ty`.
 
     Task 4's `resolve_annotation` takes a real OBJECT, which is what the hybrid
-    frontend (E1) has for declarations because the module was executed. A local
-    annotation has no such object -- it only ever exists as an AST node -- so
-    it is evaluated here, in a COPY of the module's own namespace. That is the
-    same trust boundary the hybrid design already crossed (the module's
-    top-level code has run by this point); the copy keeps an annotation from
-    rebinding a module name, and every failure becomes a located diagnostic
-    rather than an exception (F.2.5).
+    frontend (E1) has for declarations because the module was executed. A LOCAL
+    annotation has no such object -- PEP 526 is explicit that annotations on a
+    local are never evaluated at runtime, so nothing ever built one -- and it
+    exists only as an AST node. Evaluating it here therefore runs code that
+    merely importing the module does NOT, which is a step past E1's trust
+    boundary rather than a use of it. Two independent guards keep that step
+    small, and both are why this is not simply `eval` on user input:
 
-    PEP 563 (`from __future__ import annotations`, E4) does not affect this:
-    it stringifies `__annotations__`, not the AST, so the node is still a real
-    expression tree here.
+    1. `_annotation_shape_ok` walks the annotation FIRST and refuses anything
+       outside the shapes a real annotation takes -- a name, an attribute, a
+       subscript, a constant, a tuple, `X | None`, and a call whose callee is a
+       plain NAME. Nothing is compiled or evaluated until that passes, so a
+       rejected annotation has no side effects at all.
+    2. Evaluation happens in a COPY of the module's namespace with a RESTRICTED
+       `__builtins__`: the copy stops an annotation rebinding a module name, and
+       the restriction removes `__import__`/`open`/`eval`/`getattr` from reach
+       while keeping the plain type names (`int`, `str`, ...) resolvable, so
+       `x: int = ...` still gets B7's proper "not a chain type" refusal instead
+       of a confusing `NameError`.
+
+    Guard 1 still permits a call of a name to EXECUTE that name, which is
+    required: `bytes_n(N)` is a real call the compiler must evaluate (A16/E20).
+    The callee must be resolvable in the loaded module's own namespace, whose
+    top-level code has already run by this point.
+
+    PEP 563 (`from __future__ import annotations`, E4) does not affect any of
+    this: it stringifies `__annotations__`, not the AST, so the node is still a
+    real expression tree here.
     """
     loc = Loc.from_node(ctx.path, node)
+    if not _annotation_shape_ok(node):
+        _error(
+            ctx,
+            "SPT2003",
+            loc,
+            "the annotation was not evaluated: only chain-type annotation forms are "
+            "resolved here -- a name, `X | None`, `Vec[T]`/`Map[K, V]`, or `bytes_n(N)`",
+        )
+        return None
     try:
         compiled = compile(ast.Expression(body=node), ctx.path, "eval")
-        obj = eval(compiled, dict(ctx.loaded.namespace))
+        # `__builtins__` goes LAST: an executed module's namespace carries its
+        # own real `__builtins__`, which would otherwise overwrite the
+        # restricted one and hand `__import__` straight back.
+        obj = eval(compiled, {**ctx.loaded.namespace, "__builtins__": _ANNOTATION_BUILTINS})
     except Exception as exc:  # noqa: BLE001 -- any failure is a user annotation error
         _error(
             ctx,
@@ -587,6 +633,73 @@ def _resolve_annotation_expr(node: ast.expr, ctx: FuncCtx) -> Ty | None:
         )
         return None
     return resolve_annotation(obj, ctx.loaded, loc, ctx.sink)
+
+
+#: AST node kinds an annotation may contain outright. `BinOp` and `Call` are
+#: NOT here: they are admitted only in one specific shape each (see
+#: `_annotation_shape_ok`).
+_ANNOTATION_NODES: Final[tuple[type[ast.AST], ...]] = tuple(
+    kind
+    for kind in (
+        ast.Name,
+        ast.Attribute,
+        ast.Subscript,
+        ast.Constant,
+        ast.Tuple,
+        ast.Load,
+        ast.BitOr,
+        # Present-but-unused on 3.9+; the parser stopped wrapping subscripts in
+        # it, and it is slated for removal, so it is admitted only if it exists.
+        getattr(ast, "Index", None),
+    )
+    if kind is not None
+)
+
+#: The only builtins an annotation can reach. Plain type names are kept so B7's
+#: "plain int/str/bytes/bool is not a chain type" refusal still fires with its
+#: own wording; everything that can touch the filesystem, import a module, or
+#: reflect (`__import__`, `open`, `eval`, `exec`, `getattr`, ...) is absent.
+_ANNOTATION_BUILTINS: Final[dict[str, object]] = {
+    name: getattr(builtins, name)
+    for name in (
+        "bool",
+        "bytearray",
+        "bytes",
+        "complex",
+        "dict",
+        "float",
+        "frozenset",
+        "int",
+        "list",
+        "memoryview",
+        "object",
+        "set",
+        "str",
+        "tuple",
+        "type",
+    )
+}
+
+
+def _annotation_shape_ok(node: ast.expr) -> bool:
+    """Whether every node in `node` is a shape a real annotation takes.
+
+    Checked BEFORE anything is compiled, so a rejected annotation never
+    executes. `X | None` is the only binary operator form (a `BitOr`), and a
+    call is admitted only when its callee is a plain NAME and it has no keyword
+    arguments -- which covers `bytes_n(N)` (A16/E20) and nothing that needs an
+    attribute lookup to reach, such as `__import__('pathlib').Path(...)`.
+    """
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.BinOp):
+            if not isinstance(sub.op, ast.BitOr):
+                return False
+        elif isinstance(sub, ast.Call):
+            if not isinstance(sub.func, ast.Name) or sub.keywords:
+                return False
+        elif not isinstance(sub, _ANNOTATION_NODES):
+            return False
+    return True
 
 
 # --- If / While ---------------------------------------------------------------
@@ -734,6 +847,36 @@ def _declare_hidden(name: str, ty: Ty, loc: Loc, ctx: FuncCtx) -> int | None:
     return slot.slot
 
 
+def _bind_loop_target(
+    target: ast.Name, ty: Ty, init: IRExpr, loc: Loc, ctx: FuncCtx
+) -> tuple[IRStmt, int] | None:
+    """Bind a loop variable, mirroring `_assign_to_name`'s LetLocal/SetLocal
+    choice (`ir.py` documents `LetLocal` as the FIRST binding of a slot).
+
+    A loop variable is an ordinary local: it may already exist -- bound before
+    the loop, or by an earlier loop over the same name -- and then this is a
+    reassignment, not a declaration. `SlotTable.declare` still owns the two
+    rules that can refuse it: a pre-bound slot of a DIFFERENT type is SS C.3
+    rule 1's `SPT3017` (the same diagnostic an ordinary reassignment gets), and
+    a name that collides with a parameter or module-level name is rule 4's
+    `SPT2004`.
+    """
+    if target.id == "self":
+        _error(ctx, "SPT2002", loc, "`self` cannot be a loop variable")
+        return None
+    existing = ctx.locals.lookup(target.id)
+    slot = ctx.locals.declare(target.id, ty, loc, ctx.sink)
+    if slot is None:
+        return None
+    ctx.locals.mark_assigned(target.id)
+    node: IRStmt
+    if existing is None:
+        node = LetLocal(loc=loc, slot=slot.slot, ty=ty, init=init)
+    else:
+        node = SetLocal(loc=loc, slot=slot.slot, value=init)
+    return node, slot.slot
+
+
 def _desugar_for_vec(
     stmt: ast.For, ctx: FuncCtx, state: _FnState, assigned: frozenset[int]
 ) -> _Block:
@@ -769,15 +912,21 @@ def _desugar_for_vec(
     if iter_slot is None or index_slot is None:  # pragma: no cover
         return _nothing(assigned)
 
-    target_slot = ctx.locals.declare(stmt.target.id, elem_ty, loc, ctx.sink)
-    if target_slot is None:
-        return _nothing(assigned)
-    ctx.locals.mark_assigned(stmt.target.id)
-
     iter_ref = LocalRef(loc=loc, ty=iterable.ty, slot=iter_slot, name=f"$for{loop_id}_iter")
     index_ref = LocalRef(loc=loc, ty=Ty.U32, slot=index_slot, name=f"$for{loop_id}_index")
 
-    inner_assigned = assigned | {iter_slot, index_slot, target_slot.slot}
+    bound = _bind_loop_target(
+        stmt.target,
+        elem_ty,
+        HostCall(loc=loc, ty=elem_ty, fn_name="vec_get", args=(iter_ref, index_ref)),
+        loc,
+        ctx,
+    )
+    if bound is None:
+        return _nothing(assigned)
+    bind_target, target_slot_index = bound
+
+    inner_assigned = assigned | {iter_slot, index_slot, target_slot_index}
     body = _check_block(
         stmt.body, replace(ctx, loop_depth=ctx.loop_depth + 1), state, inner_assigned
     )
@@ -794,16 +943,7 @@ def _desugar_for_vec(
         rhs=HostCall(loc=loc, ty=Ty.U32, fn_name="vec_len", args=(iter_ref,)),
         via_obj_cmp=False,
     )
-    loop_body: list[IRStmt] = [
-        LetLocal(
-            loc=loc,
-            slot=target_slot.slot,
-            ty=elem_ty,
-            init=HostCall(loc=loc, ty=elem_ty, fn_name="vec_get", args=(iter_ref, index_ref)),
-        ),
-        _bump(index_ref, loc),
-        *body.stmts,
-    ]
+    loop_body: list[IRStmt] = [bind_target, _bump(index_ref, loc), *body.stmts]
     header.append(While(loc=loc, cond=cond, body=tuple(loop_body)))
     # The loop may run zero times, so neither the loop variable nor anything
     # the body bound is assigned afterwards -- only the two hidden locals are.
@@ -828,7 +968,17 @@ def _desugar_for_range(
     loc = Loc.from_node(ctx.path, stmt)
     assert isinstance(stmt.target, ast.Name)
 
-    if call.keywords or not 1 <= len(call.args) <= 2:
+    if call.keywords:
+        named = ", ".join(kw.arg or "**" for kw in call.keywords)
+        _error(
+            ctx,
+            "SPT1020",
+            Loc.from_node(ctx.path, call),
+            f"range() takes its bounds positionally here; keyword arguments ({named}) "
+            "are not supported",
+        )
+        return _nothing(assigned)
+    if not 1 <= len(call.args) <= 2:
         _error(
             ctx,
             "SPT1020",
@@ -892,15 +1042,15 @@ def _desugar_for_range(
     if stop_slot is None or index_slot is None:  # pragma: no cover
         return _nothing(assigned)
 
-    target_slot = ctx.locals.declare(stmt.target.id, index_ty, loc, ctx.sink)
-    if target_slot is None:
-        return _nothing(assigned)
-    ctx.locals.mark_assigned(stmt.target.id)
-
     stop_ref = LocalRef(loc=loc, ty=index_ty, slot=stop_slot, name=f"$for{loop_id}_stop")
     index_ref = LocalRef(loc=loc, ty=index_ty, slot=index_slot, name=f"$for{loop_id}_index")
 
-    inner_assigned = assigned | {stop_slot, index_slot, target_slot.slot}
+    bound = _bind_loop_target(stmt.target, index_ty, index_ref, loc, ctx)
+    if bound is None:
+        return _nothing(assigned)
+    bind_target, target_slot_index = bound
+
+    inner_assigned = assigned | {stop_slot, index_slot, target_slot_index}
     body = _check_block(
         stmt.body, replace(ctx, loop_depth=ctx.loop_depth + 1), state, inner_assigned
     )
@@ -917,11 +1067,7 @@ def _desugar_for_range(
         rhs=stop_ref,
         via_obj_cmp=False,
     )
-    loop_body: list[IRStmt] = [
-        LetLocal(loc=loc, slot=target_slot.slot, ty=index_ty, init=index_ref),
-        _bump(index_ref, loc),
-        *body.stmts,
-    ]
+    loop_body: list[IRStmt] = [bind_target, _bump(index_ref, loc), *body.stmts]
     header.append(While(loc=loc, cond=cond, body=tuple(loop_body)))
     return _Block(header, False, assigned | {stop_slot, index_slot})
 
@@ -970,7 +1116,7 @@ def _check_raise(stmt: ast.Raise, ctx: FuncCtx, assigned: frozenset[int]) -> _Bl
                     f"`{enum_name}` has no member `{exc.attr}`",
                     help=f"declare it as `{exc.attr} = errorcode(N)` in `{enum_name}`",
                 )
-                return _nothing(assigned)
+                return _rejected_raise(assigned)
             return _Block(
                 [Raise(loc=loc, enum=enum_name, case=exc.attr, code=code)], True, assigned
             )
@@ -981,7 +1127,19 @@ def _check_raise(stmt: ast.Raise, ctx: FuncCtx, assigned: frozenset[int]) -> _Bl
         "only `raise <ErrorEnum>.<Member>` is supported",
         notes=(_ERROR_IS_A_CODE_NOTE,),
     )
-    return _nothing(assigned)
+    return _rejected_raise(assigned)
+
+
+def _rejected_raise(assigned: frozenset[int]) -> _Block:
+    """A rejected `raise` still TERMINATES its path, exactly as a rejected
+    `return` does.
+
+    The author wrote a statement that ends the path; the form of it is what the
+    diagnostic is about. Reporting `terminates=False` here would draw a second,
+    purely consequential "not every path returns" (SPT7001) on top of the real
+    error, which is the cascade collect-all is supposed to avoid (E16).
+    """
+    return _Block([], True, assigned)
 
 
 def _error_enum_cases(node: ast.Attribute, ctx: FuncCtx) -> tuple[str, dict[str, int]] | None:

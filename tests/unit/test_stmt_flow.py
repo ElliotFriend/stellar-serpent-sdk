@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import textwrap
 import time
+from pathlib import Path
 
 import pytest
 
@@ -49,6 +50,7 @@ from serpent.compiler.ir import (
     Unary,
     UnaryOp,
     While,
+    walk,
 )
 from serpent.compiler.loader import LoadedModule, load_module
 from serpent.compiler.stmt import STMT_KIND_CODES, check_body, check_function_body
@@ -71,6 +73,7 @@ from serpent import (
     U32,
     U64,
     Vec,
+    bytes_n,
     contract,
     contracterror,
     contracttype,
@@ -111,6 +114,8 @@ class C:
         m: Map[Symbol, U32],
         bal: Balance,
         flag: Bool,
+        b12: bytes_n(12),
+        ou32: U32 | None,
     ) -> U32:
         return a
 '''
@@ -126,6 +131,8 @@ _PARAMS: list[tuple[str, Ty]] = [
     ("m", Ty.Map(Ty.Symbol, Ty.U32)),
     ("bal", Ty.Struct("Balance")),
     ("flag", Ty.Bool),
+    ("b12", Ty.BytesN(12)),
+    ("ou32", Ty.Option(Ty.U32)),
 ]
 
 
@@ -296,6 +303,72 @@ def test_unresolvable_annotation_is_rejected() -> None:
 
 def test_unmappable_annotation_is_rejected() -> None:
     _assert_reject(_reject("x: int = a"), "SPT3013")
+
+
+def test_annotation_shape_allowlist_blocks_arbitrary_code(tmp_path: Path) -> None:
+    """Fix round 1, Important 2: a local annotation must not execute code.
+
+    PEP 526 says annotations on a local are NEVER evaluated at runtime, so
+    anything the compiler evaluates here is code that importing the module does
+    not run. The AST allowlist is checked BEFORE anything is compiled, so the
+    write never happens -- asserted on the filesystem, not just on the
+    diagnostic.
+    """
+    victim = tmp_path / "written.txt"
+    source = f"x: __import__('pathlib').Path({str(victim)!r}).write_text('pwned') = U32(1)"
+    diag = _reject(source)
+    _assert_reject(diag, "SPT2003", "not evaluated")
+    assert not victim.exists(), "the annotation was evaluated despite the allowlist"
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "[U32]",
+        "(lambda: U32)()",
+        "U32 if flag else U64",
+        "{'a': U32}",
+        "-U32",
+        "U32 + U64",
+    ],
+)
+def test_annotation_forms_outside_the_allowlist_are_rejected(annotation: str) -> None:
+    _assert_reject(_reject(f"x: {annotation} = a"), "SPT2003", "not evaluated")
+
+
+@pytest.mark.parametrize(
+    ("source", "ty"),
+    [
+        ("x: U64 = c", Ty.U64),
+        ("x: Vec[U32] = v", Ty.Vec(Ty.U32)),
+        ("x: Map[Symbol, U32] = m", Ty.Map(Ty.Symbol, Ty.U32)),
+        # The one form that must still EXECUTE a call (A16/E20).
+        ("x: bytes_n(12) = b12", Ty.BytesN(12)),
+        ("x: U32 | None = ou32", Ty.Option(Ty.U32)),
+        ("x: Balance = bal", Ty.Struct("Balance")),
+    ],
+)
+def test_annotation_forms_inside_the_allowlist_still_resolve(source: str, ty: Ty) -> None:
+    stmts = _ok(source)
+    let = stmts[0]
+    assert isinstance(let, LetLocal)
+    assert let.ty == ty
+
+
+def test_annotation_cannot_reach_dangerous_builtins() -> None:
+    """The second, independent guard: even a shape the allowlist admits (a call
+    of a plain NAME) cannot reach `__import__`, because the evaluation namespace
+    carries a restricted `__builtins__`."""
+    diag = _reject("x: __import__('pathlib') = a")
+    _assert_reject(diag, "SPT2003", "__import__")
+
+
+def test_annotation_cannot_rebind_a_module_name() -> None:
+    """A walrus is outside the allowlist, so the rebind never runs -- and even
+    if it did, evaluation uses a COPY of the module namespace."""
+    before = _LOADED.namespace["ADMIN"]
+    _assert_reject(_reject("x: (ADMIN := U32) = a"), "SPT2003", "not evaluated")
+    assert _LOADED.namespace["ADMIN"] is before
 
 
 # --- AugAssign ----------------------------------------------------------------
@@ -519,6 +592,41 @@ def test_for_in_vec_declares_distinct_hidden_slots_per_loop() -> None:
     assert len(hidden) == 4, names  # two loops x (iterable + index)
 
 
+def test_pre_bound_loop_variable_is_a_set_local() -> None:
+    """Fix round 1, Important 3: `LetLocal` is the FIRST binding of a slot, so
+    a loop variable that already exists must be reassigned, not re-declared."""
+    stmts = _ok("x = U32(0)\nfor x in v:\n    total = x")
+    lets = [s for s in stmts if isinstance(s, LetLocal)]
+    assert len(lets) == 3  # x, then the two hidden locals
+    loop = stmts[-1]
+    assert isinstance(loop, While)
+    bind_target = loop.body[0]
+    assert isinstance(bind_target, SetLocal)
+    assert bind_target.slot == lets[0].slot
+
+
+def test_two_loops_sharing_a_target_declare_it_once() -> None:
+    stmts = _ok("for x in v:\n    pass\nfor x in v:\n    pass")
+    first, second = stmts[2], stmts[5]
+    assert isinstance(first, While)
+    assert isinstance(second, While)
+    assert isinstance(first.body[0], LetLocal)
+    assert isinstance(second.body[0], SetLocal)
+    assert second.body[0].slot == first.body[0].slot
+
+
+def test_pre_bound_loop_variable_of_another_type_is_rejected() -> None:
+    """The same diagnostic an ordinary reassignment at a different type gets."""
+    _assert_reject(_reject("x = s\nfor x in v:\n    pass"), "SPT3017")
+
+
+def test_pre_bound_range_variable_is_a_set_local() -> None:
+    stmts = _ok("i = U32(0)\nfor i in range(a):\n    total = i")
+    loop = stmts[-1]
+    assert isinstance(loop, While)
+    assert isinstance(loop.body[0], SetLocal)
+
+
 def test_for_loop_body_continue_still_advances_the_index() -> None:
     """The regression this shape exists to prevent: an increment at the END of
     the body is skipped by `continue`, and the loop spins until the budget
@@ -610,6 +718,14 @@ def test_for_loop_rejects(source: str, code: str) -> None:
     _assert_reject(_reject(source), code)
 
 
+def test_range_keyword_argument_message_does_not_claim_zero_arguments() -> None:
+    """Fix round 1, Minor 5: `len(call.args)` is 0 for a keyword call, so the
+    old detail claimed "got 0" about a call that clearly had an argument."""
+    diag = _reject("for i in range(stop=a):\n    pass")
+    _assert_reject(diag, "SPT1020", "keyword")
+    assert "got 0" not in diag.message
+
+
 # --- Raise / Return -----------------------------------------------------------
 
 
@@ -638,6 +754,20 @@ def test_raise_unknown_member_is_rejected() -> None:
 )
 def test_unsupported_raise_forms(source: str) -> None:
     _assert_reject(_reject(source), "SPT1021")
+
+
+def test_rejected_raise_does_not_cascade_into_a_missing_return() -> None:
+    """Fix round 1, Minor 4: the author's statement DOES end the path; only its
+    form is wrong, so the flow analysis must not add SPT7001 on top."""
+    ctx = _ctx()
+    check_function_body(_parse('raise ValueError("x")'), ctx, loc=Loc.whole_file(PATH))
+    assert [d.code for d in ctx.sink.diagnostics] == ["SPT1021"]
+
+
+def test_rejected_raise_member_does_not_cascade_either() -> None:
+    ctx = _ctx()
+    check_function_body(_parse("raise Err.Bogus"), ctx, loc=Loc.whole_file(PATH))
+    assert [d.code for d in ctx.sink.diagnostics] == ["SPT2001"]
 
 
 def test_return_a_value() -> None:
@@ -877,6 +1007,28 @@ def test_while_true_with_no_break_satisfies_definite_return() -> None:
     returns, ctx = _function("while True:\n    return a")
     assert not ctx.sink, [d.message for d in ctx.sink.diagnostics]
     assert returns is True
+
+
+def test_while_true_divergence_yields_no_return_node_at_all() -> None:
+    """Fix round 1, Important 1: the flag is vacuously true here.
+
+    `while True:` with no `break` satisfies definite return by DIVERGING, so
+    `returns_on_every_path` is True while the IR contains no `Return` (and no
+    `Raise`) anywhere. Sub-plan D must not read the flag as "the body ends in a
+    Return": a wasm validator types a `loop` as falling through with its result
+    type, so a body that ends after an infinite loop fails validation unless the
+    emitter terminates the function with `unreachable`. The invariant is stated
+    on `CheckedBody`; this test is what keeps the shape it describes real.
+    """
+    ctx = _ctx()
+    checked = check_function_body(
+        _parse("while True:\n    total = U32(1)"), ctx, loc=Loc.whole_file(PATH)
+    )
+    assert not ctx.sink, [d.message for d in ctx.sink.diagnostics]
+    assert checked.returns_on_every_path is True
+    nodes = [node for stmt in checked.stmts for node in walk(stmt)]
+    assert not [n for n in nodes if isinstance(n, (Return, Raise))], nodes
+    assert any(isinstance(n, While) for n in nodes)
 
 
 def test_while_true_with_a_break_needs_a_return_after_the_loop() -> None:
