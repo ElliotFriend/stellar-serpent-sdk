@@ -52,3 +52,34 @@ Format:
   alternative forces noisier code without a fidelity gain.
 - Reversal cost: Low before sub-plan C; a compile-reject could replace it later
   at the cost of breaking `if amount:` in existing contracts.
+
+## 2026-08-26 Timepoint/Duration: no arithmetic in M1-A
+- Context: Task 5 review — both types inherited full _ChainInt arithmetic by
+  default (Timepoint * Timepoint "worked"), while Rust's newtypes expose no ops.
+- Decision: disable ALL arithmetic on Timepoint/Duration (TypeError naming the
+  omission and pointing at the to_u64/from_u64 bridges). Deliberate time algebra
+  (Duration+Duration, Timepoint-Timepoint→Duration) is a sub-plan E decision.
+  Also: Python bool accepted wherever int is for numeric operands (bool ⊂ int is
+  Python; the compiler tier rejects it statically anyway) — Task 10 table
+  documents it; Bool's ordering accepts plain bool, matching its equality.
+- Why: oracle fidelity to the Rust/host surface beats convenience acquired by
+  inheritance; additive to re-enable later.
+- Reversal cost: trivial (re-allow ops); reverse direction would break contracts.
+
+## 2026-08-26 Bytes-family equality is payload-based
+- Context: Task 6 — should Bytes32(p) == Bytes(p)?
+- Decision: yes — equality/ordering/hash across Bytes/Bytes32/Bytes64 compare
+  payloads (same _SCVAL_RANK). Fixed-length-ness is an authoring constraint;
+  on-chain all three are the same BytesObject host type, and val_cmp answers 0
+  for equal payloads.
+- Why: type-exact equality would diverge from on-chain observable behavior.
+- Reversal cost: one predicate + tests, before sub-plan C freezes patterns.
+
+## 2026-08-26 No negative indexing on chain containers/buffers
+- Context: Task 7 flagged Vec.get(-1) IndexError vs Bytes[-1] following Python.
+- Decision: indexing is chain-faithful everywhere — negative indices raise
+  IndexError on Vec.get AND Bytes.__getitem__ (aligned in Task 8). Slicing keeps
+  Python semantics as authoring sugar (compiler tier will bound what compiles).
+- Why: host vec_get/bytes_get take U32Vals; negative indices are unrepresentable
+  on-chain, and oracle surfaces must not answer questions the chain cannot.
+- Reversal cost: two lines + tests.
