@@ -227,3 +227,20 @@ Format:
   conversions is gated above base.
 - Reversal cost: collapsing to one set later is a field deletion; D not yet
   written, so zero consumers break.
+
+## 2026-08-27 Three registry codes formally never-emitted (Task 11b)
+- Context: fixture completion proved three codes unreachable from real
+  source: SPT1009 (bare Slice, always intercepted by SPT1013/1014), SPT4018
+  (struct positional args — Task 7b's review adjudicated SPT3020 as the
+  honest code for that shape), SPT7003 (break/continue outside a loop —
+  CPython's compile() raises SyntaxError, bridged to SPT1037, before the
+  frontend's own check can run).
+- Decision: all three added to NO_FIXTURE_ALLOWLIST with reachability
+  reasons; rows retained under the append-only rule; SPT4018's text carries
+  a supersession note; the defensive branches (expr.py SPT1009, stmt.py
+  SPT7003) stay as defense-in-depth for AST-only entry paths.
+- Why: the executable subset spec (must_reject/) must be complete over
+  emittable codes without forcing fake fixtures; deleting rows would break
+  the append-only public-API guarantee.
+- Reversal cost: none — any code that later becomes reachable just gets its
+  fixture and leaves the allowlist.
