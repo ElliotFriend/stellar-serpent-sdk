@@ -30,8 +30,9 @@ its own, and higher layers depend only on the ones below them:
   contract author writes against (`U32`, `I128`, `Address`, `Bytes32`,
   `Vec`, `Map`, ...), each knowing how to encode itself via the val codec.
 - **Decorators** (`serpent/decorators.py`) -- `@contract`, `@contracttype`,
-  `@contractevent`, `@contracterror`, `@errorcode`: the authoring surface
-  that attaches the metadata later layers consume.
+  `@contractevent`, `@contracterror`, and the `errorcode` field-declaration
+  function (`LimitExceeded = errorcode(7)`, not a decorator): the authoring
+  surface that attaches the metadata later layers consume.
 - **Env surface** (`serpent/env.py`) -- the `Env`/`ChainValue`/`Event` API a
   contract method calls against for storage, events, and other host-mediated
   effects.

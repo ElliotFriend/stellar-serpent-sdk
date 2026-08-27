@@ -64,9 +64,9 @@ class HostFn:
     """One host function entry from the pinned env.json.
 
     `name` through `docs` are emitted verbatim by codegen as declared
-    fields. `val_typed_args`, `wasm_params`, and `wasm_result` are computed
-    `@property`s -- never emitted -- derived from `arg_types`/`ret_type` via
-    `RAW_SCALAR_TYPES` and `ENV_TYPE_TO_WASM_TYPE`.
+    fields. `val_typed_args`, `val_typed_ret`, `wasm_params`, and
+    `wasm_result` are computed `@property`s -- never emitted -- derived from
+    `arg_types`/`ret_type` via `RAW_SCALAR_TYPES` and `ENV_TYPE_TO_WASM_TYPE`.
     """
 
     name: str
@@ -84,6 +84,16 @@ class HostFn:
     def val_typed_args(self) -> tuple[bool, ...]:
         """Per-argument: `True` if passed as an encoded `Val`, `False` if a raw scalar."""
         return tuple(t not in RAW_SCALAR_TYPES for t in self.arg_types)
+
+    @property
+    def val_typed_ret(self) -> bool:
+        """`True` if the return is an encoded `Val`, `False` if a raw scalar.
+
+        19 pinned functions (e.g. `obj_cmp`) return a raw scalar -- consumers
+        must not re-derive that ABI fact by checking `ret_type` against
+        `RAW_SCALAR_TYPES` themselves.
+        """
+        return self.ret_type not in RAW_SCALAR_TYPES
 
     @property
     def wasm_params(self) -> tuple[str, ...]:

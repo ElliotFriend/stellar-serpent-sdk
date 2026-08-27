@@ -202,7 +202,7 @@ def _option(annotation: object) -> xdr.SCSpecTypeDef:
     """
     args = typing.get_args(annotation)
     present = [arg for arg in args if arg is not types.NoneType]
-    if len(present) != 1 or len(present) == len(args):
+    if len(present) != 1:
         raise _unmappable(
             annotation,
             "the only union the spec can express is `X | None` (OPTION); "

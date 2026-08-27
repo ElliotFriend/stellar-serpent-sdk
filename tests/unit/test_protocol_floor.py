@@ -67,6 +67,21 @@ def test_check_protocol_target_names_every_offender() -> None:
     assert "protocol_gated_dummy" in message
 
 
+def test_check_protocol_target_dedupes_a_repeated_offender() -> None:
+    """A duplicate input name must be named only once in the error message,
+    not once per occurrence."""
+    with pytest.raises(ProtocolGateError) as exc_info:
+        check_protocol_target(PHASE0_FNS | {"protocol_gated_dummy"}, DEFAULT_TARGET_PROTOCOL)
+    baseline_count = str(exc_info.value).count("protocol_gated_dummy")
+
+    with pytest.raises(ProtocolGateError) as exc_info_dup:
+        check_protocol_target(
+            [*PHASE0_FNS, "protocol_gated_dummy", "protocol_gated_dummy"],
+            DEFAULT_TARGET_PROTOCOL,
+        )
+    assert str(exc_info_dup.value).count("protocol_gated_dummy") == baseline_count
+
+
 def test_check_protocol_target_unknown_name_raises_key_error() -> None:
     with pytest.raises(KeyError, match="not_a_real_host_fn"):
         check_protocol_target(["not_a_real_host_fn"], DEFAULT_TARGET_PROTOCOL)

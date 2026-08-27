@@ -64,6 +64,19 @@ def test_raw_scalar_args_distinguished() -> None:
     assert "StorageType" in RAW_SCALAR_TYPES
 
 
+def test_raw_scalar_ret_distinguished() -> None:
+    # obj_cmp returns a raw i64 comparison result, not an encoded Val.
+    assert functions_by_name["obj_cmp"].val_typed_ret is False
+    # vec_new returns a VecObject, an encoded Val.
+    assert functions_by_name["vec_new"].val_typed_ret is True
+
+
+def test_raw_scalar_ret_count() -> None:
+    # Verified against the pinned env.json: 19 of the 199 functions return a
+    # raw scalar rather than an encoded Val.
+    assert sum(not f.val_typed_ret for f in HOST_FUNCTIONS) == 19
+
+
 def test_bindings_regeneration_is_byte_identical(tmp_path: pathlib.Path) -> None:
     out = tmp_path / "bindings.py"
     subprocess.run(

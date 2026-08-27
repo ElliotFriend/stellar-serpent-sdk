@@ -50,10 +50,12 @@ def check_protocol_target(fn_names: Iterable[str], target: int) -> None:
 
     A fn is incompatible if its `min_protocol` exceeds `target`, or its
     `max_protocol` is below `target`. An unknown name raises `KeyError`
-    naming it.
+    naming it. `fn_names` is deduped (first-seen order preserved) before
+    checking, so a duplicate input name is never named twice in the message.
     """
+    seen: dict[str, None] = dict.fromkeys(fn_names)
     offenders: list[str] = []
-    for name in fn_names:
+    for name in seen:
         fn = _FUNCTIONS_BY_NAME[name]
         if fn.min_protocol is not None and fn.min_protocol > target:
             offenders.append(f"{fn.name} (min_protocol={fn.min_protocol} > target={target})")
