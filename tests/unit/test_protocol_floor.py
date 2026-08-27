@@ -82,9 +82,23 @@ def test_declared_protocol_accepts_an_explicit_value_at_or_above_the_floor() -> 
     assert declared_protocol(PHASE0_FNS, DEFAULT_TARGET_PROTOCOL) == DEFAULT_TARGET_PROTOCOL
 
 
-def test_declared_protocol_raises_value_error_when_requested_is_below_the_floor() -> None:
-    with pytest.raises(ValueError, match="27"):
+def test_declared_protocol_gate_error_takes_precedence_over_floor_check() -> None:
+    """`requested=20` is also below `delegate_account_auth`'s floor of 27, but
+    `check_protocol_target` runs first and fires on the gate violation --
+    this must raise `ProtocolGateError` specifically, not the floor
+    `ValueError` (the two failure modes are easy to conflate: both are
+    `ValueError`s and this message happens to contain "27" too)."""
+    with pytest.raises(ProtocolGateError, match="delegate_account_auth"):
         declared_protocol(PHASE0_FNS | {"delegate_account_auth"}, 20)
+
+
+def test_declared_protocol_raises_value_error_when_requested_is_below_the_floor() -> None:
+    """A genuinely gate-clean function set (PHASE0_FNS, floor 20) with a
+    `requested` below that floor must hit `_protocol.py`'s `requested <
+    floor` branch, not `check_protocol_target`."""
+    with pytest.raises(ValueError, match="below the computed floor 20") as exc_info:
+        declared_protocol(PHASE0_FNS, 10)
+    assert not isinstance(exc_info.value, ProtocolGateError)
 
 
 def test_declared_protocol_raises_protocol_gate_error_for_an_incompatible_function() -> None:
