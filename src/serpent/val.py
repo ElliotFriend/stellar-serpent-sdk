@@ -232,3 +232,40 @@ def symbol_small_text(v: int) -> str:
         body >>= 6
     chars.reverse()
     return "".join(chars)
+
+
+# --- Error Vals ---------------------------------------------------------------
+# Layout: (code << 32) | (error_type << 8) | TAG_ERROR -- i.e. an Error Val is
+# from_major_minor_tag(code, error_type, TAG_ERROR): code is the major field,
+# error_type the minor field. Named per XDR SCErrorType.
+
+ERROR_TYPE_CONTRACT = 0
+ERROR_TYPE_WASM_VM = 1
+ERROR_TYPE_CONTEXT = 2
+ERROR_TYPE_STORAGE = 3
+ERROR_TYPE_OBJECT = 4
+ERROR_TYPE_CRYPTO = 5
+ERROR_TYPE_EVENTS = 6
+ERROR_TYPE_BUDGET = 7
+ERROR_TYPE_VALUE = 8
+ERROR_TYPE_AUTH = 9
+
+
+def error_val(code: int, error_type: int = ERROR_TYPE_CONTRACT) -> int:
+    return from_major_minor_tag(code, error_type, TAG_ERROR)
+
+
+def error_code_of(v: int) -> int:
+    """Validates the tag first, raising ValueError naming the found and expected tags."""
+    _require_tag(v, TAG_ERROR)
+    return major_of(v)
+
+
+def error_type_of(v: int) -> int:
+    """Validates the tag first, raising ValueError naming the found and expected tags."""
+    _require_tag(v, TAG_ERROR)
+    return minor_of(v)
+
+
+def is_contract_error_val(v: int) -> bool:
+    return tag_of(v) == TAG_ERROR and minor_of(v) == ERROR_TYPE_CONTRACT
