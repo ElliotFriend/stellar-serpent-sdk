@@ -7,6 +7,16 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = []
 
+# `serpent.spec` -- and ONLY `serpent.spec` -- needs stellar-sdk, for the XDR
+# classes that build the Soroban custom sections (spec Sec.7). It is an extra,
+# not a dependency, so `pip install serpent` stays zero-dep and an authored
+# contract carries nothing at runtime; `tests/unit/test_core_zero_dep.py`
+# enforces the boundary. The dev group below installs it for the test suite
+# (`uv sync --all-groups` installs groups, not extras), so do not remove it
+# from there.
+[project.optional-dependencies]
+spec = ["stellar-sdk>=15,<16"]
+
 [dependency-groups]
 dev = [
     "pytest>=8",

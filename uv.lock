@@ -1041,6 +1041,11 @@ name = "serpent"
 version = "0.0.1"
 source = { editable = "." }
 
+[package.optional-dependencies]
+spec = [
+    { name = "stellar-sdk" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
@@ -1053,6 +1058,8 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "stellar-sdk", marker = "extra == 'spec'", specifier = ">=15,<16" }]
+provides-extras = ["spec"]
 
 [package.metadata.requires-dev]
 dev = [
