@@ -158,3 +158,23 @@ Format:
   reject-first line matches spec §1 (reject rather than approximate).
 - Reversal cost: per-item low before C's tasks consume them; the fixture
   amendment (E12) is user-visible and trivially revertable when E lands.
+
+## 2026-08-27 M1-C plan-review rulings (all findings adopted)
+- Context: adversarial review of the M1-C plan — 4 blockers (unreachable
+  SPT6xxx band; must_reject runner inside its own mypy exclusion; semantics-
+  classification obligation false vs 3 real cases; error-code registry left
+  underivable), 16 majors, 13 minors. Zero disputes; two findings promoted to
+  rulings:
+- Ruling: Bytes.slice added to the tier-1 surface (narrow M1-A edit — E18's
+  method-form slicing needs a method to name; bytes_slice b.f exists); len()
+  scoped to Vec/Map/Bytes only (Symbol/String have no __len__ at tier 1 —
+  len(Symbol) becomes a compile reject, not an oracle-unrunnable accept).
+- Ruling: Map struct VALUES supported at tier-1 runtime (require_chain_value
+  widened on the value path only; keys stay per E3) — struct values are
+  ordinary on-chain shapes and E2's annotation widening would otherwise create
+  a new static/runtime split.
+- Also structural: compile_module gains target_protocol; the SPT code registry
+  becomes Task 1's primary deliverable (public API); Tasks 7/10 split (plan is
+  now 15 tasks); zero-dep exemption instruction deleted (the existing walk
+  already handles compiler/ correctly).
+- Reversal cost: per-item low pre-execution.
