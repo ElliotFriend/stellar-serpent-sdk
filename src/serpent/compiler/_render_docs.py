@@ -22,14 +22,20 @@ noticing first:
    surface (what a call/attribute lowers to), as opposed to (1)-(3), which are
    all reject-side.
 
-## Zero-dep (dossier D9 / `tests/unit/test_core_zero_dep.py`)
+## Import-graph compliance (dossier D9 / `tests/unit/test_core_zero_dep.py`)
 
 This module lives under `src/serpent/compiler/`, which the zero-dep walk
 covers directly -- there is no `[spec]`-extra exemption for it the way there
-is for `serpent.spec`. It therefore imports nothing but the standard library
-and other `serpent.compiler` modules, all of which are themselves zero-dep
-(`compile_module` reaches `stellar_sdk` only through annotation resolution
-inside `serpent.spec`, never through this module).
+is for `serpent.spec`. Every import this file's own source writes resolves to
+the standard library or another `serpent` module, which is all that walk
+checks: a static AST scan of each file's OWN `import` statements, never the
+transitive closure a real interpreter loads. That is NOT a claim that
+importing this module needs no `stellar_sdk` at runtime -- it does:
+`serpent.compiler.__init__` already pulls in `frontend` -> `ctx` -> `ir` ->
+`types_` -> `serpent.spec` -> `stellar_sdk` unconditionally, a pre-existing
+fact about the whole `serpent.compiler` package this file does not change, so
+`stellar_sdk` must be installed to import `_render_docs` at all, exactly like
+every other checker module in this package.
 
 ## Determinism (S14)
 
@@ -129,8 +135,14 @@ def _parse_fixture_header(path: Path) -> tuple[str, str, str, str, int]:
     """`(code, message, doc_title, source_text, here_line)` for one fixture.
 
     Mirrors `tests/unit/test_must_reject.py::_parse_fixture`'s directive and
-    `# HERE`-marker rules (MJ-14): `at` must be the literal `HERE`, and the
-    anchor line is the FIRST `# HERE` marker comment in the file.
+    `# HERE`-marker rules (MJ-14): `at` must be the literal `HERE`, the anchor
+    line is the FIRST `# HERE` marker comment in the file, a repeated `#
+    serpent:<key>` directive is malformed, and a SECOND `# HERE` marker is
+    malformed (the plan review's HERE-duplicate-marker guard) -- both copied
+    from the runner's own parser, not imported from it (this module's
+    docstring explains why `src/` cannot import a `tests/` module), so a
+    future malformed fixture cannot silently pass one parser and not the
+    other.
     """
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -139,9 +151,18 @@ def _parse_fixture_header(path: Path) -> tuple[str, str, str, str, int]:
     for lineno, line in enumerate(lines, start=1):
         m = _DIRECTIVE_RE.match(line)
         if m:
-            directives[m.group("key")] = m.group("value")
+            key = m.group("key")
+            if key in directives:
+                raise FixtureFormatError(f"{path}: duplicate '# serpent:{key}' directive")
+            directives[key] = m.group("value")
             continue
-        if here_line is None and _HERE_MARKER_RE.search(line):
+        if _HERE_MARKER_RE.search(line):
+            if here_line is not None:
+                raise FixtureFormatError(
+                    f"{path}: more than one '# HERE' marker comment found (lines "
+                    f"{here_line} and {lineno}); exactly one is allowed, so the anchor "
+                    "is never ambiguous"
+                )
             here_line = lineno
 
     missing = _REQUIRED_DIRECTIVES - directives.keys()
