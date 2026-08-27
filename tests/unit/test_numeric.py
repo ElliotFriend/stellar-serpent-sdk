@@ -1,3 +1,7 @@
+import copy
+import pickle
+from typing import ClassVar
+
 import pytest
 
 from serpent import val
@@ -7,11 +11,15 @@ from serpent.types import I32, I128, U32, U64, Bool, Duration, Timepoint
 # I64/U128 are not on the brief's verbatim import line above but are needed by
 # the analogous blocks ("write all analogous blocks for every type"); imported
 # from their defining module so the verbatim line stays untouched.
-from serpent.types.numeric import I64, U128, _ChainInt
+from serpent.types.numeric import I64, U128, _ChainArith, _ChainInt
 
+# Every chain integer (construction, comparison and Val-form behaviour) ...
 INT_TYPES: list[type[_ChainInt]] = [U32, I32, U64, I64, U128, I128, Timepoint, Duration]
-SIGNED_TYPES: list[type[_ChainInt]] = [I32, I64, I128]
-UNSIGNED_TYPES: list[type[_ChainInt]] = [U32, U64, U128, Timepoint, Duration]
+# ... versus the ones that carry arithmetic at all: Timepoint/Duration do not.
+ARITH_TYPES: list[type[_ChainArith]] = [U32, I32, U64, I64, U128, I128]
+SIGNED_TYPES: list[type[_ChainArith]] = [I32, I64, I128]
+UNSIGNED_TYPES: list[type[_ChainArith]] = [U32, U64, U128]
+TIME_TYPES: list[type[_ChainInt]] = [Timepoint, Duration]
 SMALL_UNSIGNED_TYPES: list[type[_ChainInt]] = [U64, U128, Timepoint, Duration]
 SMALL_SIGNED_TYPES: list[type[_ChainInt]] = [I64, I128]
 
@@ -76,7 +84,7 @@ def test_checked_arithmetic_overflow_raises() -> None:
 
 
 def test_checked_arithmetic_overflow_every_type() -> None:
-    for cls in INT_TYPES:
+    for cls in ARITH_TYPES:
         with pytest.raises(ArithmeticOverflow):
             cls(cls.MAX) + 1
         with pytest.raises(ArithmeticOverflow):
@@ -440,3 +448,83 @@ def test_truthiness_is_zero_test() -> None:
     assert bool(I32(-1)) is True
     assert not U32(0)
     assert bool(Timepoint(0)) is False and bool(Duration(1)) is True
+
+
+def test_time_types_expose_no_arithmetic() -> None:
+    # RULED: Timepoint/Duration carry no operators at all -- not even same-type.
+    # Rust's newtypes do not either, and a time algebra is a sub-plan E decision.
+    # These are TypeErrors, NOT ArithmeticOverflow: the omission bites first.
+    with pytest.raises(TypeError, match="no arithmetic"):
+        Timepoint(5) + Timepoint(1)  # type: ignore[operator]
+    with pytest.raises(TypeError, match="no arithmetic"):
+        Timepoint(5) - Timepoint(1)  # type: ignore[operator]
+    with pytest.raises(TypeError, match="no arithmetic"):
+        Duration(5) * Duration(2)    # type: ignore[operator]
+    with pytest.raises(TypeError, match="no arithmetic"):
+        Duration(5) // Duration(2)   # type: ignore[operator]
+    with pytest.raises(TypeError, match="no arithmetic"):
+        Duration(5) % Duration(2)    # type: ignore[operator]
+    with pytest.raises(TypeError, match="no arithmetic"):
+        -Timepoint(1)
+    with pytest.raises(TypeError, match="no arithmetic"):
+        -Duration(1)
+    # ... including against plain ints, on both sides.
+    with pytest.raises(TypeError, match="to_u64"):
+        Timepoint(5) + 1             # type: ignore[operator]
+    with pytest.raises(TypeError, match="to_u64"):
+        1 + Timepoint(5)             # type: ignore[operator]
+    with pytest.raises(TypeError, match="to_u64"):
+        Duration(5) - 1              # type: ignore[operator]
+    with pytest.raises(TypeError, match="to_u64"):
+        10 // Duration(5)            # type: ignore[operator]
+
+
+def test_time_types_keep_everything_except_arithmetic() -> None:
+    assert Timepoint(1) < Timepoint(2) and Duration(2) >= Duration(2)
+    assert bool(Duration(0)) is False and bool(Timepoint(1)) is True
+    assert Timepoint.from_val(Timepoint(3).to_val()) == Timepoint(3)
+    assert Duration(3).value == 3 and repr(Duration(3)) == "Duration(3)"
+    # The sanctioned way to compute with them: bridge to U64 and back.
+    assert Timepoint.from_u64(Timepoint(5).to_u64() + U64(1)) == Timepoint(6)
+    assert Duration.from_u64(Duration(5).to_u64() - U64(5)) == Duration(0)
+
+
+def test_copy_deepcopy_and_pickle_round_trip() -> None:
+    # __slots__ + a rejecting __setattr__ breaks the default protocols, so
+    # _ChainScalar.__reduce__ reconstructs through the constructor instead.
+    originals: list[object] = [U32(7), I128(-(2**100)), Bool(True), Timepoint(1000)]
+    for original in originals:
+        clones = [
+            copy.copy(original),
+            copy.deepcopy(original),
+            pickle.loads(pickle.dumps(original)),
+        ]
+        for clone in clones:
+            assert type(clone) is type(original)
+            assert clone == original
+    assert copy.deepcopy([U32(1), Bool(False)]) == [U32(1), Bool(False)]
+
+
+def test_bool_ordering_accepts_plain_bool() -> None:
+    # Consistent with __eq__, which already answers against a plain bool.
+    assert Bool(False) < True
+    assert Bool(True) > False
+    assert Bool(True) >= True and Bool(False) <= False
+    assert not (Bool(True) < False)
+    assert True > Bool(False)
+    assert False <= Bool(False)
+
+
+def test_missing_tag_mapping_fails_with_a_clear_message() -> None:
+    class Untagged(_ChainArith):
+        __slots__ = ()
+
+        MIN: ClassVar[int] = 0
+        MAX: ClassVar[int] = 255
+        _SCVAL_RANK: ClassVar[int] = 99
+
+    assert Untagged(1) + Untagged(2) == Untagged(3)  # otherwise a normal type
+    with pytest.raises(TypeError, match="tag mapping"):
+        Untagged(1).to_val()
+    with pytest.raises(TypeError, match="tag mapping"):
+        Untagged.from_val(val.pack_u32val(1))

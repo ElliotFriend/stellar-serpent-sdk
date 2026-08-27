@@ -23,6 +23,12 @@ therefore chain-driven, not Python-driven:
 * **Val forms.** `to_val()` returns the inline/small form when the value fits
   in 56 bits and raises `NotImplementedError("host object form; sub-plan B")`
   otherwise; `from_val` is tag-checked. `serpent.val` owns all bit math.
+* **Truthiness.** A chain integer is a zero test (`bool(U32(0))` is `False`),
+  which compiles to `i64.eqz`. `Bool` is the chain `bool` and has no
+  arithmetic at all.
+* **Time types.** `Timepoint`/`Duration` expose **no** arithmetic, not even
+  same-type: they are u64 newtypes exactly as in Rust, and any time algebra is
+  a sub-plan E decision. Bridge with `to_u64()` / `from_u64()`.
 
 `**`, `divmod` and the bitwise operators are deliberately omitted (they raise
 `TypeError` naming the omission) until a real contract needs them.
@@ -41,6 +47,17 @@ _OMITTED = (
 
 def _omitted(op: str, owner: object) -> NoReturn:
     raise TypeError(f"{op} is not supported on {type(owner).__name__}: {_OMITTED}")
+
+
+_NO_TIME_ARITH = (
+    "the time types expose no arithmetic (the host models them as bare u64 and "
+    "serpent does not invent a time algebra); bridge through to_u64()/from_u64() "
+    "and compute on U64"
+)
+
+
+def _no_time_arith(op: str, owner: object) -> NoReturn:
+    raise TypeError(f"{op} is not supported on {type(owner).__name__}: {_NO_TIME_ARITH}")
 
 
 def _trunc_div(a: int, b: int) -> int:
@@ -81,13 +98,25 @@ class _ChainScalar:
     def _cmp_payload(self) -> object:
         return self._value
 
+    def __reduce__(self) -> tuple[type[Self], tuple[object, ...]]:
+        """Reconstruct by re-running the constructor.
+
+        `__slots__` plus a rejecting `__setattr__` makes the default
+        copy/pickle protocol (restore-then-setattr) impossible, so state is
+        handed back as constructor arguments instead. Covers `copy.copy`,
+        `copy.deepcopy` and `pickle` for every chain scalar, `Bool` included.
+        """
+        return (type(self), (self._value,))
+
 
 class _ChainInt(_ChainScalar):
-    """Base for every fixed-width chain integer.
+    """Base for every fixed-width chain integer: bounds, comparison contract,
+    truthiness, the omitted operators and the Val forms.
 
-    Subclasses declare `MIN`/`MAX`, `_SCVAL_RANK` and their Val tags; all
-    semantics live here so that there is exactly one definition of the
-    checked-arithmetic and comparison contracts.
+    Subclasses declare `MIN`/`MAX`, `_SCVAL_RANK` and their Val tags. The
+    checked-arithmetic contract lives one level down in `_ChainArith`, so that
+    `_TimeValue` can be a full chain integer with no arithmetic at all; each
+    contract therefore still has exactly one definition.
     """
 
     __slots__ = ()
@@ -121,36 +150,6 @@ class _ChainInt(_ChainScalar):
 
     # --- operand handling ----------------------------------------------------
 
-    def _operand(self, other: object) -> int | None:
-        """Coerce an arithmetic operand, or return None to defer (NotImplemented).
-
-        Same chain type -> its value. Foreign chain type -> `TypeError` (no
-        implicit widening or narrowing). In-range `int` -> itself. Out-of-range
-        `int` -> `ValueError` (an authoring bug: that literal cannot exist as a
-        value of this type on-chain).
-        """
-        if isinstance(other, _ChainInt):
-            if type(other) is not type(self):
-                raise TypeError(
-                    f"no implicit conversion between chain types: "
-                    f"{type(self).__name__} and {type(other).__name__}; convert explicitly"
-                )
-            return other._value
-        if isinstance(other, _ChainScalar):
-            raise TypeError(
-                f"no implicit conversion between chain types: "
-                f"{type(self).__name__} and {type(other).__name__}; convert explicitly"
-            )
-        if isinstance(other, int):
-            v = int(other)
-            if not self.MIN <= v <= self.MAX:
-                raise ValueError(
-                    f"{v} is out of range for {type(self).__name__} "
-                    f"[{self.MIN}, {self.MAX}]"
-                )
-            return v
-        return None
-
     def _cmp_operand(self, other: object) -> int | None:
         """Coerce an ordering operand, or return None to defer (NotImplemented).
 
@@ -170,79 +169,6 @@ class _ChainInt(_ChainScalar):
         if isinstance(other, int):
             return int(other)
         return None
-
-    def _wrap(self, result: int) -> Self:
-        if not self.MIN <= result <= self.MAX:
-            raise ArithmeticOverflow(
-                f"{type(self).__name__} arithmetic overflowed: {result} is outside "
-                f"[{self.MIN}, {self.MAX}]"
-            )
-        return type(self)(result)
-
-    # --- checked arithmetic --------------------------------------------------
-
-    def __add__(self, other: Self | int) -> Self:
-        o = self._operand(other)
-        if o is None:
-            return NotImplemented
-        return self._wrap(self._value + o)
-
-    def __radd__(self, other: int) -> Self:
-        o = self._operand(other)
-        if o is None:
-            return NotImplemented
-        return self._wrap(o + self._value)
-
-    def __sub__(self, other: Self | int) -> Self:
-        o = self._operand(other)
-        if o is None:
-            return NotImplemented
-        return self._wrap(self._value - o)
-
-    def __rsub__(self, other: int) -> Self:
-        o = self._operand(other)
-        if o is None:
-            return NotImplemented
-        return self._wrap(o - self._value)
-
-    def __mul__(self, other: Self | int) -> Self:
-        o = self._operand(other)
-        if o is None:
-            return NotImplemented
-        return self._wrap(self._value * o)
-
-    def __rmul__(self, other: int) -> Self:
-        o = self._operand(other)
-        if o is None:
-            return NotImplemented
-        return self._wrap(o * self._value)
-
-    def __floordiv__(self, other: Self | int) -> Self:
-        o = self._operand(other)
-        if o is None:
-            return NotImplemented
-        return self._wrap(_trunc_div(self._value, o))
-
-    def __rfloordiv__(self, other: int) -> Self:
-        o = self._operand(other)
-        if o is None:
-            return NotImplemented
-        return self._wrap(_trunc_div(o, self._value))
-
-    def __mod__(self, other: Self | int) -> Self:
-        o = self._operand(other)
-        if o is None:
-            return NotImplemented
-        return self._wrap(_trunc_rem(self._value, o))
-
-    def __rmod__(self, other: int) -> Self:
-        o = self._operand(other)
-        if o is None:
-            return NotImplemented
-        return self._wrap(_trunc_rem(o, self._value))
-
-    def __neg__(self) -> Self:
-        return self._wrap(-self._value)
 
     def __bool__(self) -> bool:
         """Zero-test: `bool(U32(0))` is `False`, every other value is `True`.
@@ -339,6 +265,24 @@ class _ChainInt(_ChainScalar):
 
     # --- Val forms -----------------------------------------------------------
 
+    @classmethod
+    def _val_tags(cls) -> tuple[int, int]:
+        """This type's `(small form, object form)` tags.
+
+        `_SMALL_TAG`/`_OBJECT_TAG` are declared but unset on `_ChainInt` (the
+        always-inline types override `to_val`/`from_val` instead), so a future
+        subclass that declares neither would otherwise fail with a bare
+        `AttributeError` deep inside the codec.
+        """
+        small = getattr(cls, "_SMALL_TAG", None)
+        object_tag = getattr(cls, "_OBJECT_TAG", None)
+        if small is None or object_tag is None:
+            raise TypeError(
+                f"{cls.__name__} has no small/object tag mapping: declare "
+                "_SMALL_TAG and _OBJECT_TAG, or override to_val()/from_val()"
+            )
+        return int(small), int(object_tag)
+
     def to_val(self) -> int:
         """The 56-bit small form, or `NotImplementedError` for wider values.
 
@@ -346,12 +290,13 @@ class _ChainInt(_ChainScalar):
         (`MIN_SMALL_I64 <= v <= MAX_SMALL_I64`), unsigned types the unsigned one
         (`0 <= v <= MAX_SMALL_U64`) -- including the 128-bit types.
         """
+        small_tag, _ = self._val_tags()
         v = self._value
         if self.MIN < 0:
             if val.fits_small_i(v):
-                return val.pack_small_i64(v, self._SMALL_TAG)
+                return val.pack_small_i64(v, small_tag)
         elif val.fits_small_u(v):
-            return val.pack_small_u64(v, self._SMALL_TAG)
+            return val.pack_small_u64(v, small_tag)
         raise NotImplementedError("host object form; sub-plan B")
 
     @classmethod
@@ -361,11 +306,125 @@ class _ChainInt(_ChainScalar):
         Wrong tag -> `ValueError` (raised by the codec, naming both tags); this
         type's *object* tag -> `NotImplementedError`, mirroring `to_val`.
         """
-        if val.tag_of(v) == cls._OBJECT_TAG:
+        small_tag, object_tag = cls._val_tags()
+        if val.tag_of(v) == object_tag:
             raise NotImplementedError("host object form; sub-plan B")
         if cls.MIN < 0:
-            return cls(val.unpack_small_i64(v, cls._SMALL_TAG))
-        return cls(val.unpack_small_u64(v, cls._SMALL_TAG))
+            return cls(val.unpack_small_i64(v, small_tag))
+        return cls(val.unpack_small_u64(v, small_tag))
+
+
+class _ChainArith(_ChainInt):
+    """A `_ChainInt` that carries the checked-arithmetic contract.
+
+    Split out from `_ChainInt` so that a type can be a fully-featured chain
+    integer (bounds, comparisons, truthiness, Val forms) while exposing **no**
+    arithmetic at all -- see `_TimeValue`. Both mypy and the runtime then reject
+    `Timepoint(5) + Timepoint(1)`, which is what the compiler tier will do too.
+    """
+
+    __slots__ = ()
+
+    def _operand(self, other: object) -> int | None:
+        """Coerce an arithmetic operand, or return None to defer (NotImplemented).
+
+        Same chain type -> its value. Foreign chain type -> `TypeError` (no
+        implicit widening or narrowing). In-range `int` -> itself. Out-of-range
+        `int` -> `ValueError` (an authoring bug: that literal cannot exist as a
+        value of this type on-chain).
+        """
+        if isinstance(other, _ChainInt):
+            if type(other) is not type(self):
+                raise TypeError(
+                    f"no implicit conversion between chain types: "
+                    f"{type(self).__name__} and {type(other).__name__}; convert explicitly"
+                )
+            return other._value
+        if isinstance(other, _ChainScalar):
+            raise TypeError(
+                f"no implicit conversion between chain types: "
+                f"{type(self).__name__} and {type(other).__name__}; convert explicitly"
+            )
+        if isinstance(other, int):
+            v = int(other)
+            if not self.MIN <= v <= self.MAX:
+                raise ValueError(
+                    f"{v} is out of range for {type(self).__name__} "
+                    f"[{self.MIN}, {self.MAX}]"
+                )
+            return v
+        return None
+
+    def _wrap(self, result: int) -> Self:
+        if not self.MIN <= result <= self.MAX:
+            raise ArithmeticOverflow(
+                f"{type(self).__name__} arithmetic overflowed: {result} is outside "
+                f"[{self.MIN}, {self.MAX}]"
+            )
+        return type(self)(result)
+
+    def __add__(self, other: Self | int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(self._value + o)
+
+    def __radd__(self, other: int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(o + self._value)
+
+    def __sub__(self, other: Self | int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(self._value - o)
+
+    def __rsub__(self, other: int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(o - self._value)
+
+    def __mul__(self, other: Self | int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(self._value * o)
+
+    def __rmul__(self, other: int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(o * self._value)
+
+    def __floordiv__(self, other: Self | int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(_trunc_div(self._value, o))
+
+    def __rfloordiv__(self, other: int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(_trunc_div(o, self._value))
+
+    def __mod__(self, other: Self | int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(_trunc_rem(self._value, o))
+
+    def __rmod__(self, other: int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(_trunc_rem(o, self._value))
+
+    def __neg__(self) -> Self:
+        return self._wrap(-self._value)
 
 
 class Bool(_ChainScalar):
@@ -400,25 +459,38 @@ class Bool(_ChainScalar):
     def __hash__(self) -> int:
         return hash(self._value)
 
-    def __lt__(self, other: "Bool") -> bool:
-        if not isinstance(other, Bool):
-            return NotImplemented
-        return self._value < other._value
+    def _cmp_operand(self, other: object) -> bool | None:
+        """`Bool` or a plain `bool`, consistent with `__eq__`; anything else
+        defers (a plain `int` is NOT ordered against a `Bool`)."""
+        if isinstance(other, Bool):
+            return bool(other._value)
+        if isinstance(other, bool):
+            return other
+        return None
 
-    def __le__(self, other: "Bool") -> bool:
-        if not isinstance(other, Bool):
+    def __lt__(self, other: "Bool | bool") -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
             return NotImplemented
-        return self._value <= other._value
+        return bool(self._value) < o
 
-    def __gt__(self, other: "Bool") -> bool:
-        if not isinstance(other, Bool):
+    def __le__(self, other: "Bool | bool") -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
             return NotImplemented
-        return self._value > other._value
+        return bool(self._value) <= o
 
-    def __ge__(self, other: "Bool") -> bool:
-        if not isinstance(other, Bool):
+    def __gt__(self, other: "Bool | bool") -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
             return NotImplemented
-        return self._value >= other._value
+        return bool(self._value) > o
+
+    def __ge__(self, other: "Bool | bool") -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
+            return NotImplemented
+        return bool(self._value) >= o
 
     def _cmp_payload(self) -> object:
         return bool(self._value)
@@ -431,7 +503,7 @@ class Bool(_ChainScalar):
         return cls(val.unpack_bool(v))
 
 
-class U32(_ChainInt):
+class U32(_ChainArith):
     """32-bit unsigned. Always has an inline Val form (`U32Val`)."""
 
     __slots__ = ()
@@ -448,7 +520,7 @@ class U32(_ChainInt):
         return cls(val.unpack_u32val(v))
 
 
-class I32(_ChainInt):
+class I32(_ChainArith):
     """32-bit signed. Always has an inline Val form (`I32Val`)."""
 
     __slots__ = ()
@@ -465,7 +537,7 @@ class I32(_ChainInt):
         return cls(val.unpack_i32val(v))
 
 
-class U64(_ChainInt):
+class U64(_ChainArith):
     """64-bit unsigned."""
 
     __slots__ = ()
@@ -477,7 +549,7 @@ class U64(_ChainInt):
     _OBJECT_TAG: ClassVar[int] = val.TAG_U64_OBJECT
 
 
-class I64(_ChainInt):
+class I64(_ChainArith):
     """64-bit signed."""
 
     __slots__ = ()
@@ -492,12 +564,14 @@ class I64(_ChainInt):
 class _TimeValue(_ChainInt):
     """Shared base for `Timepoint` and `Duration` (both u64-ranged).
 
-    **Deferred:** cross-type time arithmetic (`Timepoint - Timepoint ->
-    Duration`, `Timepoint + Duration -> Timepoint`) is NOT provided. The host
-    models both as bare u64 and performs no unit algebra, so serpent will not
-    invent one that the compiler tier cannot enforce; mixing them raises
-    `TypeError`. Bridge explicitly through `to_u64()` / `from_u64()` (sub-plan E
-    needs this for `env.ledger().timestamp()`).
+    **These types expose no arithmetic at all** -- not even same-type: Rust's
+    `Timepoint`/`Duration` newtypes carry no operators either, and a time
+    algebra (`Timepoint - Timepoint -> Duration`, `Timepoint + Duration ->
+    Timepoint`) is a deliberate sub-plan E decision that serpent will not
+    pre-empt. `+ - * // %` and unary `-` raise `TypeError` naming the omission;
+    comparisons, truthiness, the Val forms and the `to_u64()` / `from_u64()`
+    bridges all work, so arithmetic is done explicitly on `U64` (sub-plan E
+    needs the bridge for `env.ledger().timestamp()`).
     """
 
     __slots__ = ()
@@ -511,6 +585,39 @@ class _TimeValue(_ChainInt):
 
     def to_u64(self) -> U64:
         return U64(self._value)
+
+    def __add__(self, other: Never) -> Never:
+        _no_time_arith("+", self)
+
+    def __radd__(self, other: Never) -> Never:
+        _no_time_arith("+", self)
+
+    def __sub__(self, other: Never) -> Never:
+        _no_time_arith("-", self)
+
+    def __rsub__(self, other: Never) -> Never:
+        _no_time_arith("-", self)
+
+    def __mul__(self, other: Never) -> Never:
+        _no_time_arith("*", self)
+
+    def __rmul__(self, other: Never) -> Never:
+        _no_time_arith("*", self)
+
+    def __floordiv__(self, other: Never) -> Never:
+        _no_time_arith("//", self)
+
+    def __rfloordiv__(self, other: Never) -> Never:
+        _no_time_arith("//", self)
+
+    def __mod__(self, other: Never) -> Never:
+        _no_time_arith("%", self)
+
+    def __rmod__(self, other: Never) -> Never:
+        _no_time_arith("%", self)
+
+    def __neg__(self) -> Never:
+        _no_time_arith("unary -", self)
 
 
 class Timepoint(_TimeValue):
@@ -533,7 +640,7 @@ class Duration(_TimeValue):
     _OBJECT_TAG: ClassVar[int] = val.TAG_DURATION_OBJECT
 
 
-class U128(_ChainInt):
+class U128(_ChainArith):
     """128-bit unsigned, with the host's limb convention."""
 
     __slots__ = ()
@@ -555,7 +662,7 @@ class U128(_ChainInt):
         return self._value & val.MASK64
 
 
-class I128(_ChainInt):
+class I128(_ChainArith):
     """128-bit signed, with the host's limb convention."""
 
     __slots__ = ()

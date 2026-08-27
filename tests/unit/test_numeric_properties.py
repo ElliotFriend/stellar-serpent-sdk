@@ -7,10 +7,14 @@ from hypothesis import strategies as st
 from serpent import val
 from serpent.errors import ArithmeticOverflow
 from serpent.types import I32, I64, I128, U32, U64, U128, Duration, Timepoint
-from serpent.types.numeric import _ChainInt
+from serpent.types.numeric import _ChainArith, _ChainInt
 
 INT_TYPES: list[type[_ChainInt]] = [U32, I32, U64, I64, U128, I128, Timepoint, Duration]
 TYPE_IDS: list[str] = [cls.__name__ for cls in INT_TYPES]
+# Timepoint/Duration expose no arithmetic at all, so the arithmetic properties
+# run over the types that do.
+ARITH_TYPES: list[type[_ChainArith]] = [U32, I32, U64, I64, U128, I128]
+ARITH_TYPE_IDS: list[str] = [cls.__name__ for cls in ARITH_TYPES]
 
 
 # --- Reference model ---------------------------------------------------------
@@ -76,7 +80,7 @@ def values_for(cls: type[_ChainInt]) -> st.SearchStrategy[int]:
     )
 
 
-def check(cls: type[_ChainInt], op: Callable[[], _ChainInt], expected: int) -> None:
+def check(cls: type[_ChainArith], op: Callable[[], _ChainArith], expected: int) -> None:
     """The op equals the reference model when the result fits, and raises
     ArithmeticOverflow exactly when it does not."""
     if cls.MIN <= expected <= cls.MAX:
@@ -88,10 +92,10 @@ def check(cls: type[_ChainInt], op: Callable[[], _ChainInt], expected: int) -> N
             op()
 
 
-@pytest.mark.parametrize("cls", INT_TYPES, ids=TYPE_IDS)
+@pytest.mark.parametrize("cls", ARITH_TYPES, ids=ARITH_TYPE_IDS)
 @given(data=st.data())
 def test_arithmetic_matches_the_truncating_reference_model(
-    cls: type[_ChainInt], data: st.DataObject
+    cls: type[_ChainArith], data: st.DataObject
 ) -> None:
     a: int = data.draw(values_for(cls))
     b: int = data.draw(values_for(cls))
@@ -121,10 +125,10 @@ def test_arithmetic_matches_the_truncating_reference_model(
         check(cls, lambda: b % x, ref_rem(b, a))
 
 
-@pytest.mark.parametrize("cls", INT_TYPES, ids=TYPE_IDS)
+@pytest.mark.parametrize("cls", ARITH_TYPES, ids=ARITH_TYPE_IDS)
 @given(data=st.data())
 def test_remainder_never_overflows_and_agrees_with_division(
-    cls: type[_ChainInt], data: st.DataObject
+    cls: type[_ChainArith], data: st.DataObject
 ) -> None:
     a: int = data.draw(values_for(cls))
     b: int = data.draw(values_for(cls).filter(lambda v: v != 0))
