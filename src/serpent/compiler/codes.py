@@ -339,6 +339,25 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "this construct is not supported by the serpent subset",
         "Task 5",
     ),
+    # Added in Task 7a's review fix round (controller ruling). A recognized
+    # Env-API attribute referenced without being called/chained at all
+    # (`env.storage`, no `()`) and a structurally malformed recognized call
+    # that is neither an arity mismatch (SPT3020) nor a type mismatch
+    # (SPT3018) -- e.g. `env.events().publish((), data)`'s empty topics
+    # tuple -- had no row; `recognize.py` was reusing SPT3018 ("declared-vs-
+    # actual type mismatch"), which is the wrong KIND of error for either
+    # shape (neither is a type disagreement). SPT1xxx, because the true
+    # story is "this call shape is not part of the supported subset", the
+    # same framing SPT1xxx already carries for every other REJECT row.
+    CodeEntry(
+        "SPT1038",
+        "SPT1xxx",
+        "Env API attribute referenced without being called/chained (`env.storage`, no "
+        "`()`), or a structurally malformed recognized call that is not an arity or type "
+        "error (e.g. an empty event-topics tuple)",
+        "env API used with an unsupported call shape",
+        "Task 7a",
+    ),
 )
 
 # --- SPT2xxx: name resolution / imports / scope -----------------------------
@@ -541,12 +560,26 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
     # argument disagreeing with a parameter type" (SPT1xxx would falsely claim
     # the construct is unsupported, and SPT4xxx is about DECLARATION shape,
     # not call sites).
+    #
+    # Widened in Task 7a's review fix round (controller ruling): the same
+    # arity-shaped mistake -- too many/too few positional arguments, a
+    # missing required argument, a duplicate keyword -- recurs at every
+    # `recognize.py` call site (`env.storage().instance().set(k)`,
+    # `addr.require_auth_for_args(a, b)`, ...), and it is the SAME kind of
+    # disagreement a chain-type constructor's own arity check already
+    # reports here: a call-signature mismatch against a KNOWN shape, never a
+    # type disagreement (SPT3018) and never an unsupported construct
+    # (SPT1xxx -- every one of these calls IS supported, just miscalled).
+    # One code for the one rule, general to any recognized call, not just a
+    # constructor.
     CodeEntry(
         "SPT3020",
         "SPT3xxx",
-        "Call -- chain-type constructor with the wrong number of arguments (`U32()`, `U32(1, 2)`)",
-        "a chain-type constructor takes exactly one value",
-        "Task 5",
+        "Call -- a chain-type constructor or a recognized API call with the wrong "
+        "arguments (wrong arity, a missing required argument, or a duplicate keyword) -- "
+        "`U32()`, `U32(1, 2)`, `<bucket>.set(k)`, `addr.require_auth_for_args(a, b)`",
+        "call has the wrong arguments (missing, extra, or duplicate keyword)",
+        "Task 5/7a",
     ),
 )
 

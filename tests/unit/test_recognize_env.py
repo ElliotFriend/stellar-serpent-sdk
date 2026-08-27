@@ -160,12 +160,24 @@ def _reject_attr(source: str) -> Diagnostic:
     return ctx.sink.diagnostics[0]
 
 
-def _assert_reject(diag: Diagnostic, code: str, substring: str) -> None:
+def _assert_reject(diag: Diagnostic, code: str, detail_substring: str) -> None:
+    """Assert `diag` is `code`, carries its registry intent as the message's
+    PREFIX, and carries `detail_substring` in the part AFTER that prefix --
+    the code-specific detail, never the intent wording itself (which every
+    `_error()` call prepends unconditionally, so asserting on the whole
+    message would pass even when the detail is wrong or missing -- fix
+    round 1's tautology finding)."""
     assert diag.code == code, f"expected {code}, got {diag.code}: {diag.message}"
-    assert _INTENT[code] in diag.message, (
-        f"{code}: message does not carry its registry intent\n  message: {diag.message}"
+    intent = _INTENT[code]
+    assert diag.message.startswith(intent), (
+        f"{code}: message does not start with its registry intent\n"
+        f"  message: {diag.message}\n  intent:  {intent}"
     )
-    assert substring in diag.message, f"{code}: {substring!r} not in message: {diag.message}"
+    detail = diag.message[len(intent) :]
+    assert detail_substring in detail, (
+        f"{code}: {detail_substring!r} not in the code-specific detail {detail!r} "
+        f"(full message: {diag.message})"
+    )
     if code.startswith("SPT1"):
         assert diag.help, f"{code}: SPT1xxx diagnostics must carry help (F.2.11)"
 
@@ -224,6 +236,23 @@ def test_storage_get_records_the_reserved_missing_value_code() -> None:
     for key, spec in RECOGNIZED.items():
         if key != "storage.get":
             assert spec.missing_value_code is None, key
+
+
+# --- registry ruling (fix round 1): the two sanctioned codes.py edits --------
+
+
+def test_registry_has_the_new_call_shape_code() -> None:
+    by_code = {entry.code: entry for entry in codes.REGISTRY}
+    assert "SPT1038" in by_code
+    entry = by_code["SPT1038"]
+    assert entry.band == "SPT1xxx"
+    assert entry.message_intent == "env API used with an unsupported call shape"
+
+
+def test_registry_spt3020_widened_for_recognized_calls() -> None:
+    entry = next(e for e in codes.REGISTRY if e.code == "SPT3020")
+    assert "7a" in entry.owning_task
+    assert "constructor" not in entry.message_intent.lower()
 
 
 # --- Completeness assertion (MJ-3): both directions ---------------------------
@@ -346,7 +375,25 @@ def test_storage_keyed_extend_ttl_has_a_key_and_storage_type() -> None:
 
 
 def test_storage_set_missing_argument() -> None:
-    _assert_reject(_reject_call("env.storage().instance().set(sym)"), "SPT3018", "value")
+    """`_bind`'s "missing required" branch -> SPT3020 (a call-arity mistake,
+    not a type mismatch -- fix round 1)."""
+    _assert_reject(_reject_call("env.storage().instance().set(sym)"), "SPT3020", "value")
+
+
+def test_storage_has_too_many_arguments() -> None:
+    """`_bind`'s "too many positional arguments" branch -> SPT3020."""
+    _assert_reject(_reject_call("env.storage().instance().has(sym, amt)"), "SPT3020", "at most 1")
+
+
+def test_storage_set_duplicate_keyword() -> None:
+    """`_bind`'s "duplicate keyword" branch -> SPT3020 -- distinct from an
+    UNRECOGNIZED keyword (SPT1035, `test_storage_set_unrecognized_keyword`),
+    since this keyword IS recognized, just supplied twice."""
+    _assert_reject(
+        _reject_call("env.storage().instance().set(sym, amt, value=amt)"),
+        "SPT3020",
+        "multiple values",
+    )
 
 
 def test_storage_set_unrecognized_keyword() -> None:
@@ -358,8 +405,13 @@ def test_storage_set_unrecognized_keyword() -> None:
 
 
 def test_storage_get_type_argument_must_be_a_bare_name() -> None:
+    """`_resolve_type_arg`'s non-`Name` type argument is an annotation-shape
+    mistake -> SPT3013 (the same code Task 6 uses for the identical shape of
+    mistake elsewhere), not SPT3018 (fix round 1)."""
     _assert_reject(
-        _reject_call("env.storage().instance().get(key, U32 if True else U32)"), "SPT3018", "type"
+        _reject_call("env.storage().instance().get(key, U32 if True else U32)"),
+        "SPT3013",
+        "type argument",
     )
 
 
@@ -406,17 +458,22 @@ def test_events_publish() -> None:
 
 
 def test_events_publish_rejects_a_long_first_topic() -> None:
+    """Minor 4 (fix round 1): the too-long case says WHY, distinct from the
+    non-Symbol case below."""
     diag = _reject_call('env.events().publish((Symbol("a" * 10), addr), amt)')
-    _assert_reject(diag, "SPT3019", "topics[0]")
+    _assert_reject(diag, "SPT3019", "too long")
+    assert "<= 9" in diag.message
 
 
 def test_events_publish_rejects_a_non_symbol_first_topic() -> None:
     diag = _reject_call("env.events().publish((addr, addr), amt)")
-    _assert_reject(diag, "SPT3019", "topics[0]")
+    _assert_reject(diag, "SPT3019", "not Symbol")
 
 
 def test_events_publish_rejects_an_empty_topics_tuple() -> None:
-    _assert_reject(_reject_call("env.events().publish((), amt)"), "SPT3018", "topics")
+    """An empty topics tuple is a structurally malformed call shape, not a
+    type mismatch -> the new SPT1038 (fix round 1)."""
+    _assert_reject(_reject_call("env.events().publish((), amt)"), "SPT1038", "non-empty tuple")
 
 
 def test_events_unknown_method() -> None:
@@ -490,7 +547,9 @@ def test_unknown_env_attribute_called() -> None:
 
 
 def test_bare_storage_attribute_must_be_called() -> None:
-    _assert_reject(_reject_attr("env.storage"), "SPT3018", "storage")
+    """A recognized-but-uncalled Env attribute is an unsupported call shape,
+    not a type mismatch -> the new SPT1038 (fix round 1)."""
+    _assert_reject(_reject_attr("env.storage"), "SPT1038", "must be called and chained")
 
 
 def test_known_future_names_and_core_surfaces_are_disjoint() -> None:

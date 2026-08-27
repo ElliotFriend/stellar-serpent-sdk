@@ -261,7 +261,7 @@ def test_registry_rows_name_a_construct_and_message_intent() -> None:
 #: any registry change, never to make a test pass without reading the diff.
 _EXPECTED_CODES = frozenset(
     {
-        *(f"SPT1{n:03d}" for n in range(1, 38)),
+        *(f"SPT1{n:03d}" for n in range(1, 39)),
         *(f"SPT2{n:03d}" for n in range(1, 7)),
         *(f"SPT3{n:03d}" for n in range(1, 21)),
         *(f"SPT4{n:03d}" for n in range(1, 21)),
@@ -285,8 +285,13 @@ def test_registry_is_complete_not_a_sample() -> None:
     # SPT4020 (decorated-class-body member shape, which was falling to
     # MJ-11's catch-all). Task 5's review fix round added one more, for the
     # same reason: SPT3020 (a chain-type constructor called with the wrong
-    # number of arguments, which was also falling to the catch-all).
-    assert len(codes.REGISTRY) == 94
+    # number of arguments, which was also falling to the catch-all). Task
+    # 7a's review fix round added one more, SPT1038 (an Env-API attribute
+    # referenced without being called/chained, or a structurally malformed
+    # recognized call that is neither an arity nor a type mismatch), and
+    # widened SPT3020 to cover general recognized-call arity mistakes, not
+    # just chain-type constructors (controller ruling, task-7a-fix-round-1).
+    assert len(codes.REGISTRY) == 95
 
 
 def test_registry_code_set_matches_the_frozen_snapshot() -> None:

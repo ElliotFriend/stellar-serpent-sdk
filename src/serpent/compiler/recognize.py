@@ -44,6 +44,30 @@ Dossier SS C.4 draws two lines this module enforces structurally:
    so M1-C recognizes only `env.events().publish(topics, data)` and rejects
    the `<Event instance>.publish(env)` form outright, pointing at sub-plan E.
 
+## Diagnostic codes: matching the KIND of mistake, not just its severity
+
+Fix round 1 (review finding) tightened four call sites that were all
+reporting `SPT3018` ("declared-vs-actual type mismatch") for mistakes that
+are not type mismatches at all:
+
+* `_bind`'s three call-shape failures -- too many positional arguments, a
+  missing required argument, a duplicate keyword -- are ARITY mistakes
+  against a known signature, the same kind `SPT3020` already covers for a
+  chain-type constructor's own arity check (widened, this round, to cover
+  any recognized call, not just a constructor).
+* A recognized Env attribute referenced without being called/chained
+  (`env.storage`, no `()`) and a structurally malformed recognized call that
+  is neither an arity nor a type mismatch (`env.events().publish((), d)`'s
+  empty topics tuple) are UNSUPPORTED CALL SHAPES, not type disagreements --
+  `SPT1038` (added this round).
+* `_resolve_type_arg`'s non-`Name` type argument is an ANNOTATION-shape
+  mistake, the same kind `SPT3013` already covers everywhere else in the
+  compiler (Task 6's own annotation-shape fix made the identical call).
+
+`SPT3018` stays exactly where the mistake really IS a type disagreement:
+`_both_u32`'s threshold/extend_to check, the get-default `default` value's
+type, and the Address/Vec receiver-type checks in `_recognize_require_auth`.
+
 ## What this module deliberately does NOT decide
 
 The missing-key runtime trap for `<bucket>.get(key, T)` with no `default`
@@ -105,6 +129,10 @@ _HELP: dict[str, str] = {
     "SPT1032": "use env.events().publish(topics, data) instead",
     "SPT1033": "this Env surface is deferred to M2; there is no rewrite available yet",
     "SPT1035": "pass the argument positionally, or by the name the recognized API uses",
+    "SPT1038": (
+        "call it and chain the recognized form, e.g. env.storage().instance().get(...), "
+        "or env.events().publish((Symbol('name'), ...), data)"
+    ),
 }
 
 
@@ -306,7 +334,7 @@ def _bind(
     if len(node.args) > len(names):
         _error(
             ctx,
-            "SPT3018",
+            "SPT3020",
             loc,
             f"`{surface}` takes at most {len(names)} argument(s), got {len(node.args)}",
         )
@@ -318,14 +346,14 @@ def _bind(
             _error(ctx, "SPT1035", loc, f"`{shown}` is not a recognized keyword for `{surface}`")
             return None
         if keyword.arg in bound:
-            _error(ctx, "SPT3018", loc, f"`{surface}` got multiple values for `{keyword.arg}`")
+            _error(ctx, "SPT3020", loc, f"`{surface}` got multiple values for `{keyword.arg}`")
             return None
         bound[keyword.arg] = keyword.value
     missing = [name for name in required if name not in bound]
     if missing:
         _error(
             ctx,
-            "SPT3018",
+            "SPT3020",
             loc,
             f"`{surface}` is missing required argument(s): {', '.join(missing)}",
         )
@@ -398,7 +426,7 @@ def _recognize_env_top_level(ctx: FuncCtx, loc: Loc, name: str) -> IRExpr:
     if name in _CORE_ENV_SURFACES:
         _error(
             ctx,
-            "SPT3018",
+            "SPT1038",
             loc,
             f"`env.{name}` must be called and chained, e.g. `env.{name}().<method>(...)`",
         )
@@ -553,7 +581,13 @@ def _resolve_type_arg(node: ast.expr, ctx: FuncCtx, loc: Loc) -> Ty | None:
     here (SS C.4's own worked examples -- `get(NAME_KEY, String)`, `get(key,
     U32, default=U32(0))` -- are all bare type names)."""
     if not isinstance(node, ast.Name):
-        _error(ctx, "SPT3018", loc, "the type argument must name a chain type directly")
+        _error(
+            ctx,
+            "SPT3013",
+            loc,
+            "the type argument must name a chain type directly, e.g. `get(key, U32)`",
+            help="pass a bare chain type or @contracttype struct name, not an expression",
+        )
         return None
     obj = ctx.loaded.namespace.get(node.id)
     if obj is None:
@@ -720,9 +754,10 @@ def _events_publish(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
     if not isinstance(topics_node, ast.Tuple) or not topics_node.elts:
         _error(
             ctx,
-            "SPT3018",
+            "SPT1038",
             loc,
-            "topics must be a non-empty tuple, e.g. (Symbol('name'), addr)",
+            "topics must be a non-empty tuple literal, e.g. (Symbol('name'), addr)",
+            help="pass a non-empty tuple literal, e.g. (Symbol('name'), addr)",
         )
         return _invalid(loc)
 
@@ -731,8 +766,16 @@ def _events_publish(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
         return _invalid(loc)
 
     first = topic_irs[0]
-    if first.ty != Ty.Symbol or not _is_short_symbol(first):
-        _error(ctx, "SPT3019", loc, f"topics[0] is {first.ty.render()}")
+    if first.ty != Ty.Symbol:
+        _error(ctx, "SPT3019", loc, f"topics[0] is {first.ty.render()}, not Symbol")
+        return _invalid(loc)
+    if not _is_short_symbol(first):
+        _error(
+            ctx,
+            "SPT3019",
+            loc,
+            "topics[0] is too long; event topic Symbols must be <= 9 characters",
+        )
         return _invalid(loc)
 
     data = check_expr(bound["data"], ctx)
