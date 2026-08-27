@@ -622,15 +622,16 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
     CodeEntry(
         "SPT4002",
         "SPT4xxx",
-        "FunctionDef -- *args/**kwargs on an export",
-        "exported methods have a fixed arity; *args/**kwargs are not supported",
+        "FunctionDef -- *args/**kwargs, or a keyword-only parameter, on a contract function",
+        "contract functions have a fixed, positional arity; *args/**kwargs and "
+        "keyword-only parameters are not supported",
         "Task 3",
     ),
     CodeEntry(
         "SPT4003",
         "SPT4xxx",
         "FunctionDef -- default parameter value",
-        "default parameter values are not supported on exported methods",
+        "default parameter values are not supported on a contract function",
         "Task 3",
     ),
     CodeEntry(
@@ -644,7 +645,7 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "SPT4005",
         "SPT4xxx",
         "FunctionDef -- missing return annotation",
-        "exported methods need a return annotation",
+        "a contract function needs a return annotation",
         "Task 3",
     ),
     CodeEntry(

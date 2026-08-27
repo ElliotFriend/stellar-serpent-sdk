@@ -367,6 +367,21 @@ def test_review_round_findings_landed() -> None:
     assert "AugAssign" in by_code["SPT3005"].construct
 
 
+def test_declaration_shape_intents_speak_for_every_contract_function() -> None:
+    """Task 8 fix round 1, M-1 (sanctioned wording edit, no renumber): the
+    parameter/return-shape rules apply identically to exports, module-level
+    helpers and private methods -- `decls.py` emits all three codes for
+    helpers and private methods, which `decorators.py` never validates -- so
+    their intent text may not name exports alone.
+    """
+    intents = {entry.code: entry.message_intent for entry in codes.REGISTRY}
+    for code in ("SPT4002", "SPT4003", "SPT4005"):
+        assert "exported method" not in intents[code], (code, intents[code])
+        assert "contract function" in intents[code], (code, intents[code])
+    # The same edit folded the keyword-only parameter into SPT4002's subject.
+    assert "keyword-only" in intents["SPT4002"]
+
+
 def test_no_fixture_allowlist_is_subset_of_registry() -> None:
     registry_codes = {entry.code for entry in codes.REGISTRY}
     assert codes.NO_FIXTURE_ALLOWLIST <= registry_codes
