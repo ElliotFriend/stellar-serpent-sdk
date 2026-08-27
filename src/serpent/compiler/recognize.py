@@ -237,6 +237,7 @@ _HELP: dict[str, str] = {
         "call it and chain the recognized form, e.g. env.storage().instance().get(...), "
         "or env.events().publish((Symbol('name'), ...), data)"
     ),
+    "SPT3019": "make topics[0] a short Symbol, e.g. Symbol('transfer')",
 }
 
 #: The comprehension node kinds, and the rewrite their SS B.2 row names. Used

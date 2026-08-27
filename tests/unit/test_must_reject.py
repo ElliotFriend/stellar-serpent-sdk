@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 
 from serpent.compiler import codes, compile_module
-from serpent.compiler.diagnostics import CompileError
+from serpent.compiler.diagnostics import CompileError, LocKind
 
 #: The fixture tree, glob'd from OUTSIDE it (BL-2): `parents[1]` from
 #: `tests/unit/test_must_reject.py` is `tests/`.
@@ -48,6 +48,10 @@ _DIRECTIVE_RE = re.compile(
 )
 _HERE_MARKER_RE = re.compile(r"#\s*HERE\b")
 _REQUIRED_DIRECTIVES = frozenset({"reject", "at", "message", "doc-title"})
+
+#: `code -> message_intent`, so the diagnostics-quality sweep can assert every
+#: fixture's matched diagnostic carries its registry row's own wording.
+_INTENT: dict[str, str] = {entry.code: entry.message_intent for entry in codes.REGISTRY}
 
 
 class FixtureHeaderError(ValueError):
@@ -76,6 +80,15 @@ def _parse_fixture(path: Path) -> FixtureSpec:
     but parsing does not depend on position); the `# HERE` marker is the
     first line -- excluding header directive lines themselves -- containing
     a `# HERE` comment (MJ-14).
+
+    A SECOND `# HERE` marker anywhere later in the file is a fixture-authoring
+    bug, not a valid fixture (plan review, MJ-item): the README's own anchor
+    rule names "the first" marker as authoritative, which silently implies
+    that a second one is dead weight an author meant to delete -- and, worse,
+    an ambiguous rewrite target if the file is ever edited. Refusing it here,
+    at parse time, keeps that ambiguity from ever reaching the runner's
+    line-comparison assertion, where it would silently do nothing rather than
+    fail loudly.
     """
     lines = path.read_text().splitlines()
     directives: dict[str, str] = {}
@@ -88,7 +101,13 @@ def _parse_fixture(path: Path) -> FixtureSpec:
                 raise FixtureHeaderError(f"{path}: duplicate '# serpent:{key}' directive")
             directives[key] = m.group("value")
             continue
-        if here_line is None and _HERE_MARKER_RE.search(line):
+        if _HERE_MARKER_RE.search(line):
+            if here_line is not None:
+                raise FixtureHeaderError(
+                    f"{path}: more than one '# HERE' marker comment found (lines "
+                    f"{here_line} and {lineno}); exactly one is allowed, so the anchor "
+                    "is never ambiguous"
+                )
             here_line = lineno
 
     missing = _REQUIRED_DIRECTIVES - directives.keys()
@@ -123,10 +142,12 @@ FIXTURES: list[FixtureSpec] = _discover_fixtures()
 
 
 def test_seed_fixtures_are_discovered() -> None:
-    # A floor, not a moving target: Task 2 seeds exactly 15 fixtures (12
-    # constructs/ + 2 shape/ + 1 types/). Task 11b adds more; this guards the
-    # scaffold itself, not the eventual complete set.
-    assert len(FIXTURES) >= 15
+    # A floor, not a moving target: Task 11b completes the fixture set (95 of
+    # the 96 registry codes minus the one allowlisted SPT6001, less the
+    # handful this task's own report proves genuinely unreachable from
+    # source). This guards the completed tree does not regress under a later
+    # edit, not the exact count.
+    assert len(FIXTURES) >= 90
 
 
 def test_fixture_paths_are_unique() -> None:
@@ -146,6 +167,47 @@ def test_no_init_py_or_test_prefixed_file_in_the_fixture_tree() -> None:
     assert not offenders, offenders
 
 
+# --- the HERE-duplicate guard (plan review, MJ-item) ------------------------
+
+
+def _write_fixture(tmp_path: Path, text: str) -> Path:
+    fixture = tmp_path / "scratch_fixture.py"
+    fixture.write_text(text)
+    return fixture
+
+
+def test_a_second_here_marker_is_rejected(tmp_path: Path) -> None:
+    text = (
+        "# serpent:reject SPT1001\n"
+        "# serpent:at HERE\n"
+        "# serpent:message nested functions and closures are not supported\n"
+        "# serpent:doc-title nested function definition\n"
+        "def outer():  # HERE\n"
+        "    def inner():  # HERE\n"
+        "        pass\n"
+    )
+    fixture = _write_fixture(tmp_path, text)
+    with pytest.raises(FixtureHeaderError, match="more than one"):
+        _parse_fixture(fixture)
+
+
+def test_a_single_here_marker_still_parses(tmp_path: Path) -> None:
+    # The guard's negative case: exactly one marker is the whole point of the
+    # anchor and must keep working.
+    text = (
+        "# serpent:reject SPT1001\n"
+        "# serpent:at HERE\n"
+        "# serpent:message nested functions and closures are not supported\n"
+        "# serpent:doc-title nested function definition\n"
+        "def outer():\n"
+        "    def inner():  # HERE\n"
+        "        pass\n"
+    )
+    fixture = _write_fixture(tmp_path, text)
+    spec = _parse_fixture(fixture)
+    assert spec.here_line == 6
+
+
 # --- meta-test A: every declared code is registered (live now) -------------
 
 
@@ -159,16 +221,88 @@ def test_meta_a_every_declared_code_is_registered() -> None:
 
 # --- meta-test B: every non-allowlisted code has >= 1 fixture (Task 11b) ---
 
-
-@pytest.mark.xfail(
-    strict=False,
-    reason="fixture completion is Task 11b's deliverable; only 15 seed fixtures exist so far",
+#: Codes Task 11b's author found to have NO reachable `must_reject/` fixture
+#: under the CURRENT frontend implementation, each with a concrete
+#: reachability argument (task-11b-report.md carries the full writeup). This
+#: is deliberately NOT the same list as `codes.NO_FIXTURE_ALLOWLIST`: that
+#: registry is read-only for this task (the task brief is explicit -- "do not
+#: add to NO_FIXTURE_ALLOWLIST yourself... the controller decides allowlist
+#: vs bug"), so this is a LOCAL, provisional exemption that keeps meta-test B
+#: a real, hard, enforced check for every one of the other 92 required codes
+#: while these three await that ruling. A controller decision to allowlist
+#: one of them belongs in `codes.NO_FIXTURE_ALLOWLIST`, at which point it
+#: should be removed from here too (`test_pending_ruling_codes_are_still_
+#: reachable_gaps` catches the reverse mistake -- leaving a stale entry here
+#: after a fixture is added).
+_PENDING_CONTROLLER_RULING: frozenset[str] = frozenset(
+    {
+        # `ast.Slice` reaches `expr.py`'s exhaustive-dispatch fallback
+        # (`NODE_KIND_CODES[ast.Slice] = "SPT1009"`) only if `check_expr` is
+        # ever called directly on a bare `Slice` node -- but a `Slice` is
+        # syntactically producible ONLY as a `Subscript`'s `.slice` (directly,
+        # or nested inside a `Tuple` for extended/multi-dim slicing).
+        # `expr._check_subscript` intercepts `isinstance(node.slice,
+        # ast.Slice)` unconditionally BEFORE any dispatch (-> `SPT1013`), so a
+        # direct slice never reaches the fallback; a multi-dim slice
+        # (`b[1:2, 0]`) wraps its slices in a `Tuple`, which
+        # `NODE_KIND_CODES` itself claims first (-> `SPT1014`) without ever
+        # visiting the `Tuple`'s elements. Verified empirically (`b[1:2,
+        # 0]` on a `Bytes` receiver produces `SPT1014`, never `SPT1009`).
+        "SPT1009",
+        # The registry's own construct text for SPT4018 ("Call --
+        # @contracttype construction with positional args") names the exact
+        # rule `recognize.py::_struct_construction` implements -- but that
+        # function reports POSITIONAL struct-construction arguments under
+        # `SPT3020` (`if node.args: _error(ctx, "SPT3020", ...)`), not
+        # `SPT4018`. `grep -rn SPT4018 src/` finds only the registry row
+        # itself; no code path raises it. Verified empirically
+        # (`Point(U32(1), U32(2))` on a declared `@contracttype Point`
+        # produces `SPT3020`). This looks like the registry/implementation
+        # drift `test_diagnostics.py`'s "Finding 2" comment already flags
+        # (SPT4018 was widened away from "constructor" wording in a review
+        # round); the controller should decide whether SPT4018 is dead code
+        # to allowlist or a real code `recognize.py` should raise instead.
+        "SPT4018",
+        # `break`/`continue` outside a loop is a hard Python `SyntaxError`
+        # ("'break' outside loop") raised by `compile()`'s own symtable pass
+        # -- BEFORE `ast.parse` even runs (`ast.parse` has no control-flow
+        # awareness and accepts the source fine). `loader._execute` calls
+        # `compile()` on every top-level statement and bridges any
+        # `SyntaxError` to `SPT1037`, so a real `break`/`continue` with no
+        # enclosing loop NEVER reaches `stmt._check_loop_jump`'s own
+        # `ctx.loop_depth == 0` branch at all -- that branch is unreachable
+        # from any module `compile_module` can even get past parsing. Every
+        # loop body `stmt.py` walks is entered with `loop_depth + 1`
+        # unconditionally (`_check_for`'s two desugarings, `_check_while`),
+        # so there is no shape where OUR walk disagrees with CPython's own
+        # loop-nesting count either. Verified empirically (`if True: break`
+        # inside a method body produces `SPT1037` with the raw
+        # `SyntaxError` text as a note, not `SPT7003`).
+        "SPT7003",
+    }
 )
+
+
 def test_meta_b_every_registry_code_has_a_fixture() -> None:
     declared = {f.code for f in FIXTURES}
-    required = codes.CODES - codes.NO_FIXTURE_ALLOWLIST
+    required = codes.CODES - codes.NO_FIXTURE_ALLOWLIST - _PENDING_CONTROLLER_RULING
     missing = sorted(required - declared)
     assert not missing, f"registry code(s) with no must_reject/ fixture: {missing}"
+
+
+def test_pending_ruling_codes_are_still_reachable_gaps() -> None:
+    # The mirror check: every `_PENDING_CONTROLLER_RULING` code must actually
+    # be missing a fixture (else it is a stale entry masking real coverage)
+    # and must not already be in the registry's own allowlist (else the
+    # controller has ruled and this local list is now redundant).
+    declared = {f.code for f in FIXTURES}
+    stale = _PENDING_CONTROLLER_RULING & declared
+    assert not stale, f"code(s) pending ruling already have a fixture: {sorted(stale)}"
+    redundant = _PENDING_CONTROLLER_RULING & codes.NO_FIXTURE_ALLOWLIST
+    assert not redundant, (
+        f"code(s) pending ruling are already in codes.NO_FIXTURE_ALLOWLIST: "
+        f"{sorted(redundant)} -- remove them from _PENDING_CONTROLLER_RULING"
+    )
 
 
 # --- the runner: compile each fixture and check its declared diagnostic ----
@@ -191,4 +325,54 @@ def test_fixture_rejects_with_its_declared_diagnostic(spec: FixtureSpec) -> None
         f"{spec.rel_path}: expected exactly one diagnostic matching "
         f"code={spec.code!r} line={spec.here_line} message~={spec.message!r}; "
         f"got: {diagnostics!r}"
+    )
+
+
+# --- diagnostics-quality sweep (Task 11b, dossier F.2.11) -------------------
+
+#: Fixture ids no `must_reject/` fixture currently declares a `WHOLE_FILE`
+#: diagnostic for: the fixture header format has no way to anchor `# HERE` at
+#: a `WHOLE_FILE` `Loc` (it always resolves to a real, >= 1 source line, and
+#: `Loc.whole_file` is `line=0`), so a fixture whose declared diagnostic is
+#: `WHOLE_FILE` could never pass the runner's own `d.loc.line ==
+#: spec.here_line` assertion in the first place. This set exists so that
+#: fact is a checked, named invariant instead of an implicit one -- if a
+#: future fixture format extension ever lets a fixture declare `WHOLE_FILE`
+#: on purpose, its id belongs here.
+_WHOLE_FILE_DECLARED: frozenset[str] = frozenset()
+
+
+@pytest.mark.parametrize("spec", FIXTURES, ids=lambda s: s.rel_path)
+def test_every_fixtures_matched_diagnostic_has_diagnostics_quality(spec: FixtureSpec) -> None:
+    """Every fixture's declared-triple diagnostic must carry: a non-empty
+    `help`, a `Loc` that is `NODE` (never `WHOLE_FILE`) unless the fixture is
+    named in `_WHOLE_FILE_DECLARED`, and a `message` that contains its own
+    registry row's `message_intent` -- the message-intent-prefix consistency
+    every `serpent.compiler` module's own `_error()` helper promises (dossier
+    F.2.11)."""
+    source = spec.path.read_text()
+    with pytest.raises(CompileError) as exc_info:
+        compile_module(source, spec.rel_path)
+
+    diagnostics = exc_info.value.diagnostics
+    matching = [
+        d
+        for d in diagnostics
+        if d.code == spec.code and d.loc.line == spec.here_line and spec.message in d.message
+    ]
+    assert len(matching) == 1, f"{spec.rel_path}: the declared triple must match exactly once"
+    diagnostic = matching[0]
+
+    assert diagnostic.help, f"{spec.rel_path}: {spec.code} diagnostic carries no `help` rewrite"
+
+    if spec.rel_path not in _WHOLE_FILE_DECLARED:
+        assert diagnostic.loc.kind is not LocKind.WHOLE_FILE, (
+            f"{spec.rel_path}: {spec.code} diagnostic is WHOLE_FILE but this fixture does "
+            "not declare that in _WHOLE_FILE_DECLARED"
+        )
+
+    intent = _INTENT[spec.code]
+    assert intent in diagnostic.message, (
+        f"{spec.rel_path}: {spec.code}'s message does not carry its registry row's own "
+        f"intent {intent!r}; got {diagnostic.message!r}"
     )
