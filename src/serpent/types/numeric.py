@@ -244,6 +244,14 @@ class _ChainInt(_ChainScalar):
     def __neg__(self) -> Self:
         return self._wrap(-self._value)
 
+    def __bool__(self) -> bool:
+        """Zero-test: `bool(U32(0))` is `False`, every other value is `True`.
+
+        Pythonic, matches plain-`int` intuition, and compiles exactly (`i64.eqz`),
+        so tier-1 execution and the future compiler agree on `if amount:`.
+        """
+        return self._value != 0
+
     # --- deliberately omitted operators --------------------------------------
 
     def __pow__(self, other: Never) -> Never:

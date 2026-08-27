@@ -433,3 +433,10 @@ def test_from_val_rejects_the_object_form_explicitly() -> None:
     ):
         with pytest.raises(NotImplementedError, match="sub-plan B"):
             cls.from_val(val.from_major_minor_tag(0, 0, object_tag))
+
+
+def test_truthiness_is_zero_test() -> None:
+    assert bool(U32(0)) is False and bool(U32(1)) is True
+    assert bool(I32(-1)) is True
+    assert not U32(0)
+    assert bool(Timepoint(0)) is False and bool(Duration(1)) is True
