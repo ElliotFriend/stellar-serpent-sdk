@@ -1402,13 +1402,14 @@ _CASES_PY_REJECTS: list[tuple[str, str, str]] = [
     ("timepoint_plus_timepoint_rejected", "Timepoint(1) + Timepoint(1)", "SPT3005"),
     ("duration_unary_minus_rejected", "-Duration(5)", "SPT3005"),
     ("duration_times_int_rejected", "Duration(3) * 2", "SPT3005"),
-    # Two independent rejects sit on this one line, and the OUTER one fires
-    # first now that Task 10 wired the recognition tables to this module: a
-    # mutator on a TEMPORARY receiver has no binding to rebind (E11), which is
-    # `SPT1034`. The element-type mismatch the case is named for (`SPT3018`)
-    # would be reported if the receiver were a local -- see
-    # `test_containers_frontend.py`. Either way the source is rejected, which
-    # is the T1/T6 obligation.
+    # `cases.py` spells this as an EXPRESSION, and in an expression position
+    # the mutator itself is the first reject: `push_back` rebinds its receiver
+    # (E11), and an expression has no binding to rebind, so `SPT1034` fires
+    # before any argument is type-checked. The element-type mismatch the case
+    # is NAMED for is still proven -- in statement position, where the mutation
+    # is legal and its argument is checked against the receiver's element type:
+    # see `test_vec_wrong_element_type_in_statement_position_is_spt3018` just
+    # below. Either spelling rejects, which is the T1/T6 obligation.
     (
         "vec_wrong_element_type_rejected",
         'Vec(U32, [U32(1)]).push_back(Symbol("x"))',
@@ -1420,6 +1421,38 @@ _CASES_PY_REJECTS: list[tuple[str, str, str]] = [
     ("bytes64_wrong_length_rejected", 'Bytes64(b"x" * 10)', "SPT3004"),
     ("address_rejects_malformed_strkey", 'Address("not-a-strkey")', "SPT3004"),
 ]
+
+
+def test_vec_wrong_element_type_in_statement_position_is_spt3018() -> None:
+    """`vec_wrong_element_type_rejected`'s own reject, through `compile_module`.
+
+    Fix round 1, M-6: the table entry above can only observe the expression
+    spelling, where the mutator-in-a-value-position rule fires first. Putting
+    the same mutation on a line of its own -- the form E11 actually supports --
+    lets the argument reach `_bound_args`, which checks it against the
+    receiver's element type. That is the assertion `cases.py` names the case
+    for, so it is made here rather than left implied.
+    """
+    from serpent.compiler import compile_module
+    from serpent.compiler.diagnostics import CompileError
+
+    source = (
+        "from serpent import Env, Symbol, U32, Vec, contract\n"
+        "\n"
+        "\n"
+        "@contract\n"
+        "class C:\n"
+        "    def go(self, env: Env) -> U32:\n"
+        "        v = Vec(U32, [U32(1)])\n"
+        '        v.push_back(Symbol("x"))\n'
+        "        return U32(0)\n"
+    )
+    with pytest.raises(CompileError) as info:
+        compile_module(source, "contracts/t.py")
+    (diagnostic,) = info.value.diagnostics
+    assert diagnostic.code == "SPT3018"
+    assert "Symbol" in diagnostic.message and "U32" in diagnostic.message
+    assert diagnostic.loc.line == 8
 
 
 def test_every_cases_py_reject_case_is_represented() -> None:

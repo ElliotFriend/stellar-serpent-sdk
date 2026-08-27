@@ -24,6 +24,7 @@ from serpent.compiler.ir import (
     Const,
     ConstDecl,
     ContractIR,
+    FuncIR,
     FuncKind,
     ModuleIR,
 )
@@ -123,6 +124,69 @@ def test_every_host_fn_the_frontend_names_is_in_the_pinned_bindings(
     # rather than at emission.
     unknown = sorted(token_style.host_fns_reachable - set(functions_by_name))
     assert not unknown, unknown
+
+
+#: The host functions the frontend deliberately leaves out of BOTH host-fn sets
+#: because C cannot decide them (see `frontend.py`'s module docstring): the
+#: small-vs-object integer bridges, the 128-bit piece constructors/accessors,
+#: the i256 family D's 128-bit division and remainder route through (SS C.4),
+#: and `Convert`'s Timepoint/Duration bridges.
+_OMITTED_HOST_FN_FAMILIES: tuple[str, ...] = (
+    "obj_from_u64",
+    "obj_to_u64",
+    "obj_from_i64",
+    "obj_to_i64",
+    "obj_from_u128_pieces",
+    "obj_to_u128_lo64",
+    "obj_to_u128_hi64",
+    "obj_from_i128_pieces",
+    "obj_to_i128_lo64",
+    "obj_to_i128_hi64",
+    "obj_from_i256_pieces",
+    "i256_div",
+    "i256_rem_euclid",
+    "timepoint_obj_from_u64",
+    "timepoint_obj_to_u64",
+    "duration_obj_from_u64",
+    "duration_obj_to_u64",
+)
+
+
+def test_the_omitted_host_fn_families_are_ungated() -> None:
+    """Fix round 1, I-2: the condition that makes the omissions floor-safe.
+
+    `host_fns_reachable` deliberately excludes three families D derives itself
+    (`frontend.py`'s "Three families are in NEITHER set"). That is only sound
+    while none of them is gated: an omitted name with a `min_protocol` above
+    the base would make C's computed floor LOWER than the protocol the emitted
+    module actually needs, and the module would fail on chain rather than at
+    compile time.
+
+    Note the i256 entries: D's 128-bit div/rem routes through the UNCHECKED
+    `i256_div`/`i256_rem_euclid`, which are ungated. The `i256_checked_*`
+    variants are gated at protocol 26 and are deliberately not that path -- if
+    a future D reaches for them instead, this test still passes and the omission
+    stops being safe, so the docstring names the distinction explicitly.
+    """
+    gated: list[str] = []
+    for name in _OMITTED_HOST_FN_FAMILIES:
+        fn = functions_by_name[name]  # KeyError here = a re-pin renamed it
+        if (fn.min_protocol is not None and fn.min_protocol > BASE_PROTOCOL) or (
+            fn.max_protocol is not None
+        ):
+            gated.append(f"{name} (min={fn.min_protocol}, max={fn.max_protocol})")
+    assert not gated, (
+        "omitted-from-both-sets host function(s) are protocol-gated, so the computed floor "
+        f"can now be too low: {gated}"
+    )
+
+
+def test_the_omitted_families_really_are_omitted(token_style: CompiledModule) -> None:
+    # Guards the other direction: if a later change starts emitting one of
+    # these, the docstring's claim (and the test above) stops describing
+    # reality and the name belongs in the reachable set instead.
+    overlap = sorted(set(_OMITTED_HOST_FN_FAMILIES) & token_style.host_fns_reachable)
+    assert not overlap, overlap
 
 
 def test_token_style_needs_memory_and_literal_inventory(token_style: CompiledModule) -> None:
@@ -254,6 +318,56 @@ def test_static_bulk_construction_needs_memory() -> None:
         """
     )
     assert compiled.needs_memory is True
+
+
+def test_a_static_topic_tuple_alone_needs_memory() -> None:
+    """Fix round 1, I-1 (the reviewer's repro).
+
+    An all-`Const` topic tuple is the one bulk construction with no
+    `all_static` flag to read -- topics are heterogeneous by design (D8) -- so
+    it was reported as needing no memory while `host_fns_reachable`
+    simultaneously named `vec_new_from_linear_memory`.
+    """
+    compiled = _compile(
+        """
+        from serpent import Env, Symbol, U32, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> U32:
+                env.events().publish((Symbol("mv"), Symbol("a")), U32(1))
+                return U32(0)
+        """
+    )
+    assert compiled.needs_memory is True
+    assert "vec_new_from_linear_memory" in compiled.host_fns_reachable
+
+
+def test_a_topic_tuple_with_a_dynamic_topic_does_not_need_memory() -> None:
+    # The other side of I-1: a non-Const topic means D has to build the vector
+    # up, so nothing here touches linear memory.
+    compiled = _compile(
+        """
+        from serpent import Address, Env, Symbol, U32, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env, who: Address) -> U32:
+                env.events().publish((Symbol("mv"), who), U32(1))
+                return U32(0)
+        """
+    )
+    assert compiled.needs_memory is False
+
+
+def test_every_linear_memory_host_fn_is_a_real_pinned_binding() -> None:
+    # Fix round 1, M-5: the set is enumerated, not matched on a name substring,
+    # so a re-pin that renamed one must fail here rather than silently stop
+    # answering `needs_memory`.
+    unknown = sorted(frontend._LINEAR_MEMORY_HOST_FNS - set(functions_by_name))
+    assert not unknown, unknown
 
 
 def test_a_non_static_bulk_construction_does_not_need_memory() -> None:
@@ -453,31 +567,70 @@ def test_mutation_before_an_alias_in_a_while_body_is_rejected() -> None:
     )
 
 
-def test_mutation_before_an_escape_in_a_for_body_is_rejected() -> None:
-    _expect_reject(
+def test_mutation_then_alias_in_straight_line_code_is_rejected() -> None:
+    """Fix round 1, M-1: the flow-insensitive cost, pinned.
+
+    In straight-line code the two tiers would actually AGREE here -- the
+    mutation happens before the alias exists -- so this is a conservative
+    reject, not a divergence. It is pinned deliberately: the pre-pass is
+    flow-insensitive by design (that is what makes the loop case sound), so
+    this reject is the price, and a future change that "fixed" it by going
+    flow-sensitive would silently reintroduce the loop unsoundness.
+    """
+    exc = _expect_reject(
         """
         from serpent import Env, U32, Vec, contract
 
 
         @contract
         class C:
+            def go(self, env: Env) -> U32:
+                own = Vec(U32, [U32(1)])
+                own.push_back(U32(2))
+                w = own
+                return len(w)
+        """,
+        "SPT1034",
+    )
+    mutation = next(d for d in exc.diagnostics if d.code == "SPT1034")
+    assert "aliased to another binding" in mutation.message
+
+
+def test_mutation_before_an_escape_in_a_for_body_is_rejected() -> None:
+    # Fix round 1, M-2: the escape is a `@contracttype` field, so the fixture
+    # compiles apart from the one reject under test. The previous source used
+    # `Vec(Vec, [])`, which is not a spec-expressible type at all -- it drew
+    # two unrelated diagnostics and left the mechanism under test unclear.
+    exc = _expect_reject(
+        """
+        from serpent import Env, U32, Vec, contract, contracttype
+
+
+        @contracttype
+        class Holder:
+            items: Vec[U32]
+
+
+        @contract
+        class C:
             def go(self, env: Env, n: U32) -> U32:
                 own = Vec(U32, [U32(1)])
-                nest = Vec(Vec, [])
                 for i in range(n):
                     own.push_back(U32(2))
-                    nest.push_back(own)
+                    h = Holder(items=own)
                 return U32(0)
         """,
         "SPT1034",
     )
+    # Exactly one problem, and it is the mutation -- not a cascade.
+    assert _codes(exc) == ["SPT1034"], _codes(exc)
 
 
 def test_mutating_the_container_being_iterated_is_rejected() -> None:
     # `for x in v:` binds a hidden `$for0_iter` local from `v` itself, so the
     # two share a handle and neither may be rebound -- which is exactly right:
     # mutating `v` mid-iteration diverges between the tiers.
-    _expect_reject(
+    exc = _expect_reject(
         """
         from serpent import Env, U32, Vec, contract
 
@@ -492,6 +645,42 @@ def test_mutating_the_container_being_iterated_is_rejected() -> None:
         """,
         "SPT1034",
     )
+    # Fix round 1, M-3: the author wrote no `a = b`, so the diagnostic must
+    # name ITERATION as the alias rather than sending them to look for an
+    # assignment that is not in their source.
+    mutation = next(d for d in exc.diagnostics if d.code == "SPT1034")
+    assert "`for` loop iterates" in mutation.message, mutation.message
+    assert "aliased to another binding" not in mutation.message
+
+
+def test_mutating_an_iterated_container_after_the_loop_is_also_rejected() -> None:
+    """The documented conservative cost of the iteration alias.
+
+    Here the tiers would agree (the loop is over), so this is a false reject
+    kept on purpose -- E11's "when in doubt, ALIASED". It still has to name
+    ITERATION as the cause, which is the whole point of M-3: a post-loop
+    mutation is precisely where the generic "aliased to another binding" would
+    be most baffling.
+    """
+    exc = _expect_reject(
+        """
+        from serpent import Env, U32, Vec, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> U32:
+                v = Vec(U32, [U32(1)])
+                total = U32(0)
+                for x in v:
+                    total = total + x
+                v.push_back(U32(9))
+                return total
+        """,
+        "SPT1034",
+    )
+    mutation = next(d for d in exc.diagnostics if d.code == "SPT1034")
+    assert "`for` loop iterates" in mutation.message, mutation.message
 
 
 def test_mutating_a_vec_a_struct_field_holds_is_rejected() -> None:
@@ -610,30 +799,88 @@ def test_a_container_in_a_keyword_position_loses_ownership() -> None:
 # --- recognition wired into real bodies ------------------------------------
 
 
-def test_a_malformed_storage_chain_gets_a_located_diagnostic() -> None:
-    # Carried obligation: `env.storage(1)` is a real typo, and before the
-    # recognition tables were wired to body checking it fell through
-    # unrecognized. It must be a located diagnostic, never silence.
-    exc = _expect_reject_any(
-        """
+def _chain_source(chain: str) -> str:
+    return f"""
         from serpent import Env, Symbol, U32, contract
 
 
         @contract
         class C:
             def go(self, env: Env) -> U32:
-                env.storage(1).instance().set(Symbol("k"), U32(1))
+                {chain}
                 return U32(0)
         """
+
+
+def test_a_malformed_storage_chain_names_the_broken_link() -> None:
+    """Carried obligation + fix round 1's I-3.
+
+    `env.storage(1)` is a real typo. Before recognition was wired to body
+    checking it fell through silently; after wiring it drew SPT1037 ("not
+    supported") pointed at `.instance` -- a link that is written CORRECTLY, and
+    a code whose own registry reasoning excludes this case (the surface is
+    supported, just miscalled). It is now SPT3020, located at `storage(1)`.
+    """
+    exc = _expect_reject(
+        _chain_source('env.storage(1).instance().set(Symbol("k"), U32(1))'), "SPT3020"
     )
-    assert all(d.loc.kind is LocKind.NODE for d in exc.diagnostics), exc.diagnostics
-    assert all(d.loc.line == 7 for d in exc.diagnostics), exc.diagnostics
+    (diagnostic,) = exc.diagnostics
+    assert diagnostic.loc.kind is LocKind.NODE
+    assert diagnostic.loc.line == 7
+    # The caret covers `env.storage(1)` -- the broken link -- and stops before
+    # `.instance()`.
+    assert diagnostic.loc.col == 8
+    assert diagnostic.loc.end_col == 22
+    assert "`storage()` takes no arguments" in diagnostic.message
 
 
-def _expect_reject_any(source: str) -> CompileError:
-    with pytest.raises(CompileError) as info:
-        _compile(source)
-    return info.value
+def test_a_malformed_bucket_step_names_that_step() -> None:
+    exc = _expect_reject(
+        _chain_source('env.storage().instance(2).set(Symbol("k"), U32(1))'), "SPT3020"
+    )
+    (diagnostic,) = exc.diagnostics
+    assert "`instance()` takes no arguments" in diagnostic.message
+    # The whole `env.storage().instance(2)` prefix, i.e. up to the bad link.
+    assert (diagnostic.loc.col, diagnostic.loc.end_col) == (8, 33)
+
+
+def test_an_uncalled_chain_step_still_gets_spt1038() -> None:
+    # The other broken shape the same walk recognizes, routed through the
+    # function that owns the standalone `env.storage` case so the two
+    # spellings cannot drift apart.
+    exc = _expect_reject(
+        _chain_source('env.storage.instance().set(Symbol("k"), U32(1))'), "SPT1038"
+    )
+    (diagnostic,) = exc.diagnostics
+    assert "must be called and chained" in diagnostic.message
+    assert (diagnostic.loc.col, diagnostic.loc.end_col) == (8, 19)
+
+
+def test_the_chain_check_does_not_claim_a_non_env_receiver() -> None:
+    """The `env`-rooted guard on the chain walk.
+
+    `instance` is a storage-bucket name, so without the guard a struct field or
+    local spelled that way would collect an env diagnostic -- the opposite of
+    naming the right link.
+    """
+    exc = _expect_reject(
+        """
+        from serpent import Env, U32, contract, contracttype
+
+
+        @contracttype
+        class Holder:
+            amount: U32
+
+
+        @contract
+        class C:
+            def go(self, env: Env, h: Holder) -> U32:
+                return h.instance(U32(1))
+        """,
+        "SPT1037",
+    )
+    assert not any("takes no arguments" in d.message for d in exc.diagnostics)
 
 
 def test_a_comprehension_in_a_vec_items_position_is_spt1003() -> None:
@@ -733,6 +980,50 @@ def test_invalid_ty_with_no_diagnostic_behind_it_is_a_compiler_bug() -> None:
     with pytest.raises(CompilerBugError) as info:
         frontend._assert_no_invalid_ir(ir)
     assert "Ty.Invalid" in str(info.value)
+
+
+def test_invalid_ty_in_a_non_expression_field_is_also_caught() -> None:
+    """Fix round 1, M-4: the check covers every `Ty`-valued field.
+
+    An unresolved PARAMETER type reaching the emitter is exactly as broken as
+    an unresolved expression, and no `IRExpr.ty` scan would have looked at it.
+    The nested form (`Vec[<invalid>]`) is covered here too.
+    """
+    loc = Loc.whole_file(PATH)
+    for bad_ty in (Ty.Invalid, Ty.Vec(Ty.Invalid)):
+        ir = ModuleIR(
+            loc=loc,
+            path=PATH,
+            doc="",
+            imports=(),
+            consts=(),
+            structs=(),
+            error_enums=(),
+            events=(),
+            contract=ContractIR(
+                loc=loc,
+                name="C",
+                doc="",
+                methods=(
+                    FuncIR(
+                        loc=loc,
+                        py_name="go",
+                        export_name="go",
+                        kind=FuncKind.EXPORT,
+                        params=(("x", bad_ty, loc),),
+                        ret=Ty.U32,
+                        doc="",
+                        locals=(),
+                        body=(),
+                        returns_on_every_path=True,
+                    ),
+                ),
+            ),
+            helpers=(),
+        )
+        with pytest.raises(CompilerBugError) as info:
+            frontend._assert_no_invalid_ir(ir)
+        assert "FuncIR.params" in str(info.value), str(info.value)
 
 
 def test_a_clean_compile_has_no_invalid_nodes(token_style: CompiledModule) -> None:

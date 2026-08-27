@@ -727,6 +727,15 @@ def recognize_call(node: ast.Call, ctx: FuncCtx) -> IRExpr | None:
     if method in _CONTAINER_METHOD_NAMES:
         return _recognize_container_method(node, ctx, method, base)
 
+    # Nothing above claimed the SHAPE. Before giving up, check whether this is
+    # an `env` chain with one broken LINK (`env.storage(1).instance()...`):
+    # the surface is recognized and supported, only miscalled, and saying so at
+    # the offending step is worth far more than the catch-all's "not supported"
+    # at the wrong link.
+    malformed = _malformed_env_chain_step(node, ctx)
+    if malformed is not None:
+        return malformed
+
     return None
 
 
@@ -790,6 +799,94 @@ def _recognize_env_top_level(ctx: FuncCtx, loc: Loc, name: str) -> IRExpr:
 
 def _is_env_name(node: ast.expr) -> bool:
     return isinstance(node, ast.Name) and node.id == "env"
+
+
+#: Every step name an `env` chain is built from: the three core surfaces and
+#: the three storage buckets. All of them take NO arguments, which is what
+#: makes a broken link mechanically detectable.
+_NO_ARG_CHAIN_STEPS: frozenset[str] = _CORE_ENV_SURFACES | _STORAGE_BUCKETS
+
+_CHAIN_HELP = (
+    "every step of an env chain takes no arguments -- write it exactly as "
+    "`env.storage().<instance|persistent|temporary>().<method>(...)`, "
+    "`env.ledger().<method>()` or `env.events().publish(topics, data)`"
+)
+
+
+def _chain_links(node: ast.expr) -> list[ast.expr]:
+    """The `.`-chain `node` sits at the end of, OUTERMOST first.
+
+    Each `ast.Call` is followed by its own `func`, and each `ast.Attribute` by
+    its `value`, so the last element is the chain's root (a `Name` for a
+    well-formed env chain).
+    """
+    links: list[ast.expr] = []
+    current: ast.expr = node
+    while True:
+        links.append(current)
+        if isinstance(current, ast.Call):
+            current = current.func
+        elif isinstance(current, ast.Attribute):
+            current = current.value
+        else:
+            return links
+
+
+def _malformed_env_chain_step(node: ast.expr, ctx: FuncCtx) -> IRExpr | None:
+    """Report the first broken LINK of an `env` chain, or `None`.
+
+    An env chain is built entirely from steps that take no arguments
+    (`env.storage()`, `.instance()`, `.ledger()`, `.events()`), so a step whose
+    NAME is one of them but whose call shape is not is a miscalled recognized
+    API -- exactly what `SPT3020` covers ("a recognized API call with the wrong
+    arguments"), and NOT an unsupported construct. Reporting it at that step is
+    the point: `env.storage(1).instance().set(k, v)` breaks at `storage(1)`,
+    while every structural matcher above simply fails to match and the
+    catch-all would name `.instance` -- a link that is written correctly.
+
+    Two broken shapes are recognized, and the chain is scanned ROOT-FIRST so
+    the earliest bad link is the one named (every later failure cascades from
+    it):
+
+    * a recognized step name CALLED with arguments -> `SPT3020`;
+    * a recognized core surface referenced without being called at all
+      (`env.storage.instance()`) -> `SPT1038`, through the same
+      `_recognize_env_top_level` that owns the standalone `env.storage` case,
+      so the two spellings cannot drift apart.
+
+    The chain must be rooted at the `env` NAME. Without that guard a struct
+    field or local called `instance` would collect an env diagnostic
+    (`holder.instance(1)`), which is the opposite of naming the right link.
+    """
+    links = _chain_links(node)
+    if not _is_env_name(links[-1]):
+        return None
+
+    for index in range(len(links) - 1, -1, -1):
+        link = links[index]
+        if isinstance(link, ast.Call):
+            func = link.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr in _NO_ARG_CHAIN_STEPS
+                and (link.args or link.keywords)
+            ):
+                count = len(link.args) + len(link.keywords)
+                _error(
+                    ctx,
+                    "SPT3020",
+                    Loc.from_node(ctx.path, link),
+                    f"`{func.attr}()` takes no arguments; got {count}",
+                    help=_CHAIN_HELP,
+                )
+                return _invalid(Loc.from_node(ctx.path, node))
+            continue
+        if isinstance(link, ast.Attribute) and link.attr in _CORE_ENV_SURFACES:
+            called = index > 0 and isinstance(links[index - 1], ast.Call)
+            if not called and _is_env_name(link.value):
+                _recognize_env_top_level(ctx, Loc.from_node(ctx.path, link), link.attr)
+                return _invalid(Loc.from_node(ctx.path, node))
+    return None
 
 
 def _match_no_arg_chain(node: ast.expr, attr: str) -> bool:
@@ -2031,7 +2128,7 @@ def classify_binding(value: IRExpr) -> BindingSource:
     return BindingSource.OTHER
 
 
-def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx) -> None:
+def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx, reason: str | None = None) -> None:
     """Mark every container local whose handle ESCAPES into `values` as
     `ALIASED` (E11, review fix round 1's Critical 1).
 
@@ -2071,11 +2168,17 @@ def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx) -> None:
     the documented entry point -- and the place the "which positions are NOT
     escapes" ruling above is recorded -- while there is exactly one copy of
     the "which locals can this expression BE" walk.
+
+    `reason` is the optional, author-facing cause recorded on every slot this
+    call aliases (`AliasTable.mark_aliased`), for the shapes where "aliased to
+    another binding" would not tell the author what they actually wrote.
     """
-    ctx.alias_sets.mark_escapes(values)
+    ctx.alias_sets.mark_escapes(values, reason)
 
 
-def note_local_binding(slot: int, value: IRExpr, ctx: FuncCtx) -> Ownership | None:
+def note_local_binding(
+    slot: int, value: IRExpr, ctx: FuncCtx, reason: str | None = None
+) -> Ownership | None:
     """Record what binding `slot` to `value` means for E11, and return the
     `Ownership` recorded (`None` when `value` is not a mutable container type,
     which is most bindings -- nothing to track).
@@ -2104,16 +2207,16 @@ def note_local_binding(slot: int, value: IRExpr, ctx: FuncCtx) -> Ownership | No
         return None
     # Any local the right-hand side can BE loses ownership, whatever the
     # target ends up classified as.
-    note_escapes([value], ctx)
+    note_escapes([value], ctx, reason)
     source = classify_binding(value)
     if source is BindingSource.LOCAL_ALIAS:
         # `note_escapes` already marked the SOURCE slot; this marks the target.
-        ctx.alias_sets.mark_aliased(slot)
+        ctx.alias_sets.mark_aliased(slot, reason)
         return Ownership.ALIASED
     if source in _OWNED_SOURCES:
         ctx.alias_sets.mark_owned(slot)
         return Ownership.OWNED
-    ctx.alias_sets.mark_aliased(slot)
+    ctx.alias_sets.mark_aliased(slot, reason)
     return Ownership.ALIASED
 
 
@@ -2321,8 +2424,15 @@ def _mutation_slot(recv: IRExpr, ctx: FuncCtx, loc: Loc, surface: str) -> int | 
         ownership = ctx.alias_sets.ownership_of(recv.slot)
         if ownership is Ownership.OWNED:
             return recv.slot
+        # A recorded reason beats the generic wording: some shapes alias a
+        # local without the author writing `a = b` anywhere (iterating it, for
+        # one), and "aliased to another binding" sends them looking for an
+        # assignment that is not there.
+        recorded = ctx.alias_sets.alias_reason(recv.slot)
         detail = (
-            f"`{recv.name}` is aliased to another binding"
+            f"`{recv.name}` {recorded}"
+            if ownership is Ownership.ALIASED and recorded is not None
+            else f"`{recv.name}` is aliased to another binding"
             if ownership is Ownership.ALIASED
             # No entry at all: an unclassified slot is not KNOWN to be owned.
             # Failing loudly here is deliberate -- a later task that forgets to

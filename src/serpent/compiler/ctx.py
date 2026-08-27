@@ -230,17 +230,32 @@ class AliasTable:
     A slot with no entry here is simply "not yet classified" rather than
     defaulting to either `Ownership`, so Task 7b's pass (and any test of it)
     can tell that apart from an explicit `ALIASED` classification.
+
+    `mark_aliased` takes an optional `reason`, recorded FIRST-WINS and read
+    back by `alias_reason`. It exists because the default diagnostic detail --
+    "`own` is aliased to another binding" -- is confusing for the shapes where
+    the author wrote no `a = b` at all: the clearest example is the container a
+    `for` loop iterates, which shares its handle with the desugaring's hidden
+    `$iter` local. Naming the real cause is the difference between a
+    diagnostic an author can act on and one they have to reverse-engineer.
     """
 
     _ownership: dict[int, Ownership] = field(default_factory=dict)
+    _reasons: dict[int, str] = field(default_factory=dict)
 
     def mark_owned(self, slot: int) -> None:
         self._ownership[slot] = Ownership.OWNED
 
-    def mark_aliased(self, slot: int) -> None:
+    def mark_aliased(self, slot: int, reason: str | None = None) -> None:
         self._ownership[slot] = Ownership.ALIASED
+        if reason is not None:
+            self._reasons.setdefault(slot, reason)
 
-    def mark_escapes(self, values: Iterable[IRExpr]) -> None:
+    def alias_reason(self, slot: int) -> str | None:
+        """Why `slot` is `ALIASED`, when a caller recorded a specific cause."""
+        return self._reasons.get(slot)
+
+    def mark_escapes(self, values: Iterable[IRExpr], reason: str | None = None) -> None:
         """Mark every mutable-container local whose handle ESCAPES into
         `values` as `ALIASED` (E11).
 
@@ -262,7 +277,7 @@ class AliasTable:
         for value in values:
             for ref in _escaping_locals(value):
                 if ref.ty.tag in MUTABLE_TAGS:
-                    self.mark_aliased(ref.slot)
+                    self.mark_aliased(ref.slot, reason)
 
     def ownership_of(self, slot: int) -> Ownership | None:
         """`None` means "not (yet) known to be a container-typed slot"."""

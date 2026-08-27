@@ -54,17 +54,30 @@ because the lowering FORM is D's choice: a `MakeVec`/`MakeMap` with
   floor is computed over the REACHABLE set, because a floor computed over a
   subset could be too low for what D actually emits.
 
-Representation-driven conversions (`obj_from_u64`, `obj_from_u128_pieces`, ...)
-are in NEITHER set: which of them an expression needs depends on the VALUE at
-run time, not on the type (A3), so D derives them from `Ty.repr_form` during
-layout. `tests/unit/test_frontend.py` pins the safety condition that makes both
-omissions sound -- none of the candidates is gated above the base protocol, so
-no omission can lower the floor.
+Three families are in NEITHER set, because C cannot decide them at all:
+
+* the small-vs-object integer bridges (`obj_from_u64`/`obj_to_u64`,
+  `obj_from_i64`/`obj_to_i64`) -- which one an expression needs depends on the
+  VALUE at run time, not on the type (A3);
+* the 128-bit piece constructors and accessors (`obj_from_u128_pieces`,
+  `obj_to_u128_lo64`/`hi64` and the signed twins), plus the **i256 family D's
+  128-bit division and remainder route through** (`obj_from_i256_pieces`,
+  `i256_div`, `i256_rem_euclid` -- SS C.4's own row; the `i256_checked_*`
+  variants, which ARE gated at protocol 26, are deliberately not that path);
+* `Convert`'s `Timepoint`/`Duration` bridges (`timepoint_obj_from_u64`,
+  `duration_obj_from_u64` and their `_to_u64` directions), which no Task 5-9
+  checker emits today.
+
+`tests/unit/test_frontend.py::test_the_omitted_host_fn_families_are_ungated`
+enumerates all three and asserts none of them is gated above `BASE_PROTOCOL`.
+That is the condition which makes the omissions floor-safe: an omitted name
+could otherwise have raised the real floor above what C computed.
 """
 
 from __future__ import annotations
 
 import ast
+import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
@@ -87,7 +100,7 @@ from serpent.compiler.ir import (
     FieldGet,
     FuncIR,
     HostCall,
-    IRExpr,
+    IRNode,
     MakeMap,
     MakeStruct,
     MakeTopics,
@@ -102,7 +115,7 @@ from serpent.compiler.limits import validate_limits
 from serpent.compiler.loader import CompilerBugError, LoadedModule, load_module
 from serpent.compiler.recognize import RECOGNIZED
 from serpent.compiler.stmt import check_function_body
-from serpent.compiler.types_ import TyTag
+from serpent.compiler.types_ import Ty, TyTag
 
 # The IR must not disagree with the spec about the same text (F.2.7), so the
 # class docstring comes from `spec.sections`' own reader -- the same deliberate
@@ -147,6 +160,24 @@ _FIELD_GET_FN, _FIELD_SYMBOL_FN = RECOGNIZED["struct.field"].host_fns
 #: from `all_static` (MJ-15), so all of them are reachable and none is certain.
 _VEC_BUILD_FNS: tuple[str, ...] = RECOGNIZED["vec.new"].host_fns
 _MAP_BUILD_FNS: tuple[str, ...] = RECOGNIZED["map.new"].host_fns
+
+#: Every host function the frontend can name that reads from linear memory --
+#: enumerated rather than matched on a `"linear_memory" in name` substring,
+#: which would silently start answering for any future binding that happens to
+#: share the suffix (`sparse_map_new_from_linear_memory`, gated at protocol 28,
+#: is already in the pin) and would silently STOP answering if a re-pin renamed
+#: one. `test_frontend.py` asserts every member is a real pinned binding.
+_LINEAR_MEMORY_HOST_FNS: frozenset[str] = frozenset(
+    {
+        _SYMBOL_LM_FN,
+        _STRING_LM_FN,
+        _BYTES_LM_FN,
+        _FIELD_SYMBOL_FN,
+        _STRUCT_NEW_FN,
+        "vec_new_from_linear_memory",
+        "map_new_from_linear_memory",
+    }
+)
 
 #: The guest-runtime part every checked arithmetic operation needs (A4/S20):
 #: an out-of-range result must reach `fail_with_error` with the
@@ -608,11 +639,26 @@ def _needs_memory(ir: ModuleIR, literals: LiteralInventory, used: frozenset[str]
 
     Spec SS 5's list, node by node: a `Symbol` past 9 characters, a `String` or
     `Bytes` literal, a struct (whose `map_new_from_linear_memory` form is not
-    optional), and a bulk `Vec`/`Map` construction whose items are all static
-    -- the case where D can use the linear-memory constructor. A construction
-    with a non-static item falls back to the build-up chain, which needs no
-    memory, so `all_static` is what the question turns on. Any host function
-    already in the definite set whose name says linear memory settles it too.
+    optional), and a bulk construction D can lay out in the data section. Any
+    host function already in the definite set that reads linear memory
+    (`_LINEAR_MEMORY_HOST_FNS`) settles it too.
+
+    **A bulk construction counts when C can see that D has the choice**, which
+    is not the same test for all three nodes:
+
+    * `MakeVec`/`MakeMap` carry `all_static`, so that flag answers it directly.
+      A construction with a non-static item falls back to the build-up chain,
+      which needs no memory at all.
+    * `MakeTopics` has NO `all_static` flag -- topics are a heterogeneous tuple
+      by design (D8), so the node never computed one -- and the equivalent test
+      has to be made here: every topic being a `Const` is exactly the condition
+      under which `vec_new_from_linear_memory` (already in
+      `host_fns_reachable` for this node) is available to D. Fix round 1's I-1:
+      omitting this reported `needs_memory=False` for a contract whose only
+      memory-eligible construction was a static topic tuple, while
+      `host_fns_reachable` simultaneously named the linear-memory constructor.
+      The conservative answer is the correct one -- a memory export that D
+      turns out not to use costs bytes; a missing one fails validation.
 
     A contract needing none of that compiles memoryless, which spec SS 5 keeps
     supported.
@@ -621,9 +667,18 @@ def _needs_memory(ir: ModuleIR, literals: LiteralInventory, used: frozenset[str]
         return True
     if literals.struct_key_descriptor_sets:
         return True
-    if any("linear_memory" in name for name in used):
+    if used & _LINEAR_MEMORY_HOST_FNS:
         return True
-    return any(isinstance(node, (MakeVec, MakeMap)) and node.all_static for node in walk(ir))
+    return any(_bulk_construction_can_use_memory(node) for node in walk(ir))
+
+
+def _bulk_construction_can_use_memory(node: object) -> bool:
+    """Whether `node` is a bulk construction D could lay out in linear memory."""
+    if isinstance(node, (MakeVec, MakeMap)):
+        return node.all_static
+    if isinstance(node, MakeTopics):
+        return all(isinstance(topic, Const) for topic in node.topics)
+    return False
 
 
 # --- the guest-runtime parts (SS C.2 output 3, spec SS 6) --------------------
@@ -661,25 +716,56 @@ def _collect_runtime_parts(ir: ModuleIR) -> frozenset[str]:
 # --- the sink invariant -------------------------------------------------------
 
 
+def _invalid_ty_fields(node: IRNode) -> list[str]:
+    """Every field of `node` holding a `Ty` that is (or contains) `Ty.Invalid`.
+
+    Reflection over `dataclasses.fields` rather than a per-node-kind check, for
+    the same reason `ir.walk` uses it: a node kind or a field added later is
+    covered automatically instead of being silently skipped. Nested type
+    parameters are followed too, so `Vec[<invalid>]` is caught as well as a
+    bare `Ty.Invalid` -- an `elem`/`key`/`value` that failed to resolve is the
+    same broken promise one level down.
+    """
+    return [f.name for f in dataclasses.fields(node) if _contains_invalid(getattr(node, f.name))]
+
+
+def _contains_invalid(value: object) -> bool:
+    if isinstance(value, Ty):
+        if value.tag is TyTag.INVALID:
+            return True
+        return any(_contains_invalid(getattr(value, f.name)) for f in dataclasses.fields(value))
+    if isinstance(value, (tuple, list)):
+        return any(_contains_invalid(item) for item in value)
+    return False
+
+
 def _assert_no_invalid_ir(ir: ModuleIR) -> None:
-    """Every `Ty.Invalid` in the output IR must have a diagnostic behind it.
+    """No `Ty.Invalid` anywhere in the output IR, in ANY field.
 
     `Ty.Invalid` is the checkers' "already reported, keep walking" placeholder
-    (minor 13). Reaching a caller with an EMPTY sink would mean the frontend
-    silently dropped an expression and handed sub-plan D a node with no type --
-    a compiler bug, not a contract error, which is why it raises
-    `CompilerBugError` (an `AssertionError`) and not `CompileError`. Called
-    only after `raise_if_any()`, so the sink is provably empty at that point.
+    (minor 13), so an `Invalid` reaching a caller with an EMPTY sink means the
+    frontend silently dropped something and handed sub-plan D a node with no
+    type. That is a compiler bug, not a contract error, which is why this
+    raises `CompilerBugError` (an `AssertionError`) and not `CompileError`. It
+    is called only after `raise_if_any()`, so the sink is provably empty at
+    that point and "no diagnostic behind it" needs no separate check.
+
+    The scan is over every `Ty`-valued FIELD of every node, not just
+    `IRExpr.ty` (fix round 1's M-4). The non-expression positions are real and
+    would otherwise have been missed: `FuncIR.params`/`ret`/`locals`,
+    `StructDecl`/`EventDecl.fields`, `ConstDecl.ty`, `MakeVec.elem_ty`,
+    `MakeMap.key_ty`/`value_ty` and `Convert.from_ty`/`to_ty` all carry a `Ty`
+    that no `IRExpr.ty` check would look at -- and an unresolved parameter type
+    reaching the emitter is exactly as broken as an unresolved expression.
     """
-    offenders = [
-        node for node in walk(ir) if isinstance(node, IRExpr) and node.ty.tag is TyTag.INVALID
-    ]
+    offenders = [(node, fields) for node in walk(ir) if (fields := _invalid_ty_fields(node))]
     if offenders:
         rendered = ", ".join(
-            f"{type(node).__name__} at {node.loc.sort_key()}" for node in offenders
+            f"{type(node).__name__}.{'/'.join(fields)} at {node.loc.sort_key()}"
+            for node, fields in offenders
         )
         raise CompilerBugError(
-            f"{len(offenders)} Ty.Invalid node(s) reached the output IR with an empty "
-            f"diagnostics sink: {rendered} -- Ty.Invalid is the reported-failure "
-            "placeholder, so an Invalid node with nothing reported is a compiler bug"
+            f"{len(offenders)} node(s) reached the output IR carrying Ty.Invalid with an "
+            f"empty diagnostics sink: {rendered} -- Ty.Invalid is the reported-failure "
+            "placeholder, so an Invalid with nothing reported is a compiler bug"
         )

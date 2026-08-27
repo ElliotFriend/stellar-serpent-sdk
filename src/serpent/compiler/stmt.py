@@ -94,6 +94,16 @@ _INTENT: dict[str, str] = {entry.code: entry.message_intent for entry in codes.R
 #: MJ-11's catch-all, statement side.
 _FALLBACK_CODE = "SPT1037"
 
+#: Why a container a `for` loop iterates cannot be mutated (E11). Recorded as
+#: an `AliasTable` reason rather than left to the generic "aliased to another
+#: binding" detail, because the author wrote no assignment: the alias is the
+#: `for` statement itself, whose desugaring copies the iterable's handle into a
+#: hidden induction local.
+_ITERATION_ALIAS_REASON = (
+    "is the container a `for` loop iterates over, and the loop holds its handle for the "
+    "whole iteration"
+)
+
 #: Statement kinds SS B.1 rejects outright, keyed by `ast` node class. Every
 #: concrete `ast.stmt` subclass is either handled by `_check_stmt`'s dispatch
 #: or listed here; anything else (a synthetic node, or a kind a future Python
@@ -282,7 +292,15 @@ def _new_state(stmts: list[ast.stmt], ctx: FuncCtx) -> _FnState:
     return _FnState(never_owned=recognize.collect_never_owned(stmts, ctx))
 
 
-def _note_binding(name: str, slot: int, value: IRExpr, ctx: FuncCtx, state: _FnState) -> None:
+def _note_binding(
+    name: str,
+    slot: int,
+    value: IRExpr,
+    ctx: FuncCtx,
+    state: _FnState,
+    *,
+    reason: str | None = None,
+) -> None:
     """Record what binding `slot` to `value` means for E11.
 
     `recognize.note_local_binding` does the per-binding classification (and
@@ -290,10 +308,14 @@ def _note_binding(name: str, slot: int, value: IRExpr, ctx: FuncCtx, state: _FnS
     OVERRIDES an `OWNED` verdict for any name the whole body proves can never
     be exclusively owned. The override is applied after, not before, because
     `note_local_binding`'s escape marking must run either way.
+
+    `reason` is the author-facing cause a later `SPT1034` quotes back, for the
+    shapes where the generic "aliased to another binding" would send the author
+    looking for an assignment they never wrote.
     """
-    ownership = recognize.note_local_binding(slot, value, ctx)
+    ownership = recognize.note_local_binding(slot, value, ctx, reason)
     if ownership is Ownership.OWNED and name in state.never_owned:
-        ctx.alias_sets.mark_aliased(slot)
+        ctx.alias_sets.mark_aliased(slot, reason)
 
 
 # --- public entry points ------------------------------------------------------
@@ -966,7 +988,18 @@ def _desugar_for_vec(
     # container and does not. The cost is a conservative reject for a mutation
     # of `v` AFTER the loop, where the tiers would in fact have agreed --
     # E11's documented "when in doubt, ALIASED" direction.
-    _note_binding(f"$for{loop_id}_iter", iter_slot, iterable, ctx, state)
+    #
+    # The `reason` matters more here than anywhere else the alias analysis
+    # fires: the author wrote no `a = b` at all, so the generic detail would
+    # describe an assignment that does not exist in their source.
+    _note_binding(
+        f"$for{loop_id}_iter",
+        iter_slot,
+        iterable,
+        ctx,
+        state,
+        reason=_ITERATION_ALIAS_REASON,
+    )
 
     bound = _bind_loop_target(
         stmt.target,
