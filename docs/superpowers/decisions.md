@@ -178,3 +178,20 @@ Format:
   now 15 tasks); zero-dep exemption instruction deleted (the existing walk
   already handles compiler/ correctly).
 - Reversal cost: per-item low pre-execution.
+
+## 2026-08-27 SPT registry: honest-code remap for env API misuse (Task 7a)
+- Context: Task 7a review demonstrated SPT3018 ("value's type does not match
+  the declared/expected type") prefixing arity errors, uncalled-attribute
+  misuse, and empty-topics rejects — incoherent user-facing messages the
+  task's own tests could not catch (tautological intent assertion).
+- Decision: registry discipline is "no renumber, no delete, no meaning
+  reversal" — not "no edits". Sanctioned: (a) SPT3020's wording widened from
+  chain-type-constructor arity to general call arity (every existing emission
+  remains a valid instance); (b) one new 1xxx code added for "env API used
+  with an unsupported call shape"; (c) type-argument-shape rejects use
+  SPT3013, matching the Task 6 annotation-shape ruling. Genuine type
+  disagreements stay on SPT3018.
+- Why: diagnostic codes are frozen public API precisely so their meanings can
+  be trusted; shipping wrong-in-kind codes would freeze the incoherence.
+- Reversal cost: trivial pre-release (codes unpublished); the widened SPT3020
+  wording cannot be re-narrowed after release without abandoning emissions.
