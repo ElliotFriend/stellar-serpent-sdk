@@ -195,3 +195,35 @@ Format:
   be trusted; shipping wrong-in-kind codes would freeze the incoherence.
 - Reversal cost: trivial pre-release (codes unpublished); the widened SPT3020
   wording cannot be re-narrowed after release without abandoning emissions.
+
+## 2026-08-27 Ownership is flow-insensitive per function (M1-C Task 10)
+- Context: Task 7b's alias pass was order-sensitive (alias facts recorded as
+  the checker reached each statement), unsound in loop bodies. Task 10's
+  assembly runs a syntactic pre-pass per function collecting every alias and
+  escape fact before any statement is checked.
+- Decision: ownership classification is flow-insensitive-conservative over
+  the whole function body. User-visible consequence: mutating a container and
+  aliasing/embedding it later IN STRAIGHT-LINE CODE now rejects too (SPT1034
+  with a rebind/slice-copy rewrite), even though the tiers would agree there.
+  Also: a container iterated by a for loop may not be mutated anywhere in the
+  function (the hidden iterator handle is an alias).
+- Why: soundness in loops requires facts before the body is walked; a region-
+  sensitive analysis is real dataflow work M1 does not need. Reject-rather-
+  than-approximate matches spec §1; every reject carries a compiling rewrite.
+- Reversal cost: relaxing to region-sensitivity later is additive (accepts
+  strictly grow); no on-chain artifact depends on it.
+
+## 2026-08-27 compile_module outputs: two host-fn sets, floor over reachable
+- Context: dossier §C.1 described one host-fn set. HostCall names alone omit
+  fail_with_error (Raise) and obj_cmp (Compare), and D chooses between forms
+  (vec_new vs vec_new_from_linear_memory).
+- Decision: host_fns_used (exact) + host_fns_reachable (superset incl. D's
+  choices); the protocol floor is computed over REACHABLE. runtime_parts_needed
+  names (overflow_check, u128_mul, i128_neg, i128_floordiv, i128_mod) are
+  C-coined pending D's ratification; the i256 helpers D's 128-bit div/rem may
+  reach are in neither set (documented, all ungated today, pinned by test).
+- Why: floor over the superset is the safe direction — over-approximation can
+  only raise a floor, never under-declare; verified none of the omitted
+  conversions is gated above base.
+- Reversal cost: collapsing to one set later is a field deletion; D not yet
+  written, so zero consumers break.
