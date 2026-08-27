@@ -20,12 +20,22 @@ oracle the compiler will be proven against:
 
 **Homogeneity asymmetry (deliberate).** `Vec` enforces its element type at
 runtime, so a `Vec` is homogeneous by construction; that is serpent's authoring
-constraint, not a host rule. `Map` does *not* enforce its key or value type at
-runtime: the host allows heterogeneous keys and `val_cmp` totally orders them
-(a `U32` key sorts before a `Bytes` key before a `Symbol` key, whatever their
-payloads), so rejecting them here would be inventing a restriction the chain
-does not have. `Map`'s declared types still drive `mypy --strict` and supply the
-element types for `keys()`/`values()`.
+constraint, not a host rule. `Map` does *not* enforce its declared key or value
+type at runtime: the host allows heterogeneous keys and `val_cmp` totally orders
+them (a `U32` key sorts before a `Bytes` key before a `Symbol` key, whatever
+their payloads), so rejecting them here would be inventing a restriction the
+chain does not have. `Map`'s declared types still drive `mypy --strict` and
+supply the element types for `keys()`/`values()` whenever the contents actually
+satisfy them.
+
+What `Map` *does* enforce at runtime is **chain-ness**: a key or value with no
+`_SCVAL_RANK`/`_cmp_payload` raises `TypeError` on the way in, whatever the map's
+size. Without that, an empty map accepts a key its binary search never compared
+(the search returns before calling `val_cmp`), and every later operation on that
+map raises. Consequently `keys()`/`values()` can always fall back to the
+permissive `ChainValue` element type for a heterogeneous map, so the returned
+`Vec` satisfies its own invariant: every `Vec` operation works on its own
+contents.
 
 **Deferred:** `Vec` and `Map` carry their `ScValType` ranks (16 and 17), so they
 order correctly against every scalar, but comparing two containers *of the same
@@ -39,7 +49,7 @@ import copy as _copy
 from collections.abc import Iterable, Iterator
 from typing import Any, ClassVar, Generic, TypeVar
 
-from serpent.types._ordering import ChainValue, val_cmp
+from serpent.types._ordering import ChainValue, require_chain_value, val_cmp
 from serpent.types.numeric import U32
 
 T = TypeVar("T", bound=ChainValue)
@@ -193,16 +203,21 @@ class Vec(Generic[T]):
         return Vec(self._element_type, [_copy.deepcopy(item, memo) for item in self._items])
 
 
-def _vec_of(element_type: type[T], items: list[T]) -> Vec[T]:
-    """Build a `Vec` without re-validating its elements.
+def _element_type_for(declared: type[Any], items: list[Any]) -> type[Any]:
+    """The most specific element type that every item actually satisfies.
 
-    Used by `Map.keys()`/`values()`, where a legitimately heterogeneous `Map`
-    would otherwise fail the `Vec` element check.
+    `Map.keys()`/`values()` normally hand back the declared type, but a
+    legitimately heterogeneous `Map` must not produce a `Vec` that lies about
+    its own contents: a `Vec` claiming `element_type is U32` while holding a
+    `Symbol` would fail its own `slice`/`append`/`first_index_of`. When the
+    entries do not all satisfy the declared type, the honest answer is the
+    permissive `ChainValue` protocol, which every chain value satisfies (`Map`
+    validates chain-ness on the way in), so every `Vec` operation keeps working
+    on the result.
     """
-    vec: Vec[T] = Vec.__new__(Vec)
-    vec._element_type = element_type
-    vec._items = list(items)
-    return vec
+    if all(isinstance(item, declared) for item in items):
+        return declared
+    return ChainValue
 
 
 class Map(Generic[K, V]):
@@ -249,7 +264,13 @@ class Map(Generic[K, V]):
     # --- internals -----------------------------------------------------------
 
     def _search(self, key: K) -> tuple[int, bool]:
-        """Binary search by `val_cmp`: `(insertion point, found)`."""
+        """Binary search by `val_cmp`: `(insertion point, found)`.
+
+        The key is validated first: on an empty (or single-branch) map the
+        search can return without ever calling `val_cmp`, and a key that slipped
+        in uncompared would make every later operation raise.
+        """
+        require_chain_value(key)
         lo, hi = 0, len(self._pairs)
         while lo < hi:
             mid = (lo + hi) // 2
@@ -271,6 +292,7 @@ class Map(Generic[K, V]):
     # --- host-shaped API -----------------------------------------------------
 
     def set(self, key: K, value: V) -> None:
+        require_chain_value(value)
         index, found = self._search(key)
         if found:
             self._pairs[index] = (key, value)
@@ -294,10 +316,20 @@ class Map(Generic[K, V]):
         del self._pairs[index]
 
     def keys(self) -> Vec[K]:
-        return _vec_of(self._key_type, [key for key, _ in self._pairs])
+        """The keys in `val_cmp` order.
+
+        Built through the validating `Vec` constructor, with an element type
+        that the contents actually satisfy -- see `_element_type_for`.
+        """
+        items: list[K] = [key for key, _ in self._pairs]
+        keys_vec: Vec[K] = Vec(_element_type_for(self._key_type, items), items)
+        return keys_vec
 
     def values(self) -> Vec[V]:
-        return _vec_of(self._value_type, [value for _, value in self._pairs])
+        """The values, in key order (same element-type rule as `keys()`)."""
+        items: list[V] = [value for _, value in self._pairs]
+        values_vec: Vec[V] = Vec(_element_type_for(self._value_type, items), items)
+        return values_vec
 
     def key_by_pos(self, position: int) -> K:
         self._require_position(position)

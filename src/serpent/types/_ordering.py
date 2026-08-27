@@ -17,9 +17,10 @@ import cycles and makes every new chain type (Task 8's `Address`, later the
 containers' nested ordering) a purely additive change.
 """
 
-from typing import ClassVar, Protocol
+from typing import ClassVar, Protocol, runtime_checkable
 
 
+@runtime_checkable
 class ChainValue(Protocol):
     """Structural view of a chain value, as `val_cmp` needs it.
 
@@ -37,6 +38,19 @@ def _rank_of(value: ChainValue) -> int:
     if not isinstance(rank, int):
         raise TypeError(f"not a chain value (no _SCVAL_RANK): {value!r}")
     return rank
+
+
+def require_chain_value(value: ChainValue) -> None:
+    """Raise `TypeError` unless `value` is a chain value.
+
+    The same check `val_cmp` applies, available on its own for callers that must
+    reject a non-chain value *before* any comparison happens -- `Map`, whose
+    binary search never calls `val_cmp` on an empty map and would otherwise let
+    an uncomparable key in.
+    """
+    _rank_of(value)
+    if not callable(getattr(value, "_cmp_payload", None)):
+        raise TypeError(f"not a chain value (no _cmp_payload): {value!r}")
 
 
 def val_cmp(a: ChainValue, b: ChainValue) -> int:

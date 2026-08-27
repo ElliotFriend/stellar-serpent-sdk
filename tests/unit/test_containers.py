@@ -333,6 +333,65 @@ def test_map_allows_mixed_type_keys_ordered_by_rank() -> None:
     assert m.has(Bytes(b"a")) and not m.has(Bytes(b"b"))
 
 
+def test_map_rejects_non_chain_keys_and_values_at_every_size() -> None:
+    # The poisoning sequence: on an empty map the binary search returns before
+    # calling val_cmp, so a raw int used to slip in and break every later call.
+    m: Map[Any, Any] = Map(U32, U32)
+    with pytest.raises(TypeError, match="chain value"):
+        m.set(5, U32(1))
+    with pytest.raises(TypeError, match="chain value"):
+        m.set(None, U32(1))
+    assert len(m) == 0
+    # Same answer on an empty map as on a populated one -- TypeError, not KeyError.
+    with pytest.raises(TypeError, match="chain value"):
+        m.get(5)
+    with pytest.raises(TypeError, match="chain value"):
+        m.has(5)
+    with pytest.raises(TypeError, match="chain value"):
+        m.del_(5)
+    m.set(U32(1), U32(1))
+    with pytest.raises(TypeError, match="chain value"):
+        m.get(5)
+    with pytest.raises(TypeError, match="chain value"):
+        m.set("nope", U32(2))
+    # Values must be chain values too, and the map stays fully usable.
+    with pytest.raises(TypeError, match="chain value"):
+        m.set(U32(2), 5)
+    with pytest.raises(TypeError, match="chain value"):
+        Map(U32, U32, [(5, U32(1))])  # type: ignore[type-var]
+    assert len(m) == 1 and m.get(U32(1)) == U32(1)
+    m.set(U32(2), U32(2))
+    assert [k.value for k in m] == [1, 2]
+
+
+def test_heterogeneous_map_keys_and_values_satisfy_the_vec_invariant() -> None:
+    m: Map[Any, Any] = Map(U32, U32)
+    m.set(Symbol("a"), Symbol("s"))
+    m.set(U32(97), U32(1))
+    m.set(Bytes(b"a"), Bytes(b"b"))
+    for vec in (m.keys(), m.values()):
+        # Honest element type: the Vec never claims a type its contents fail.
+        assert vec.element_type is not U32
+        assert all(isinstance(item, vec.element_type) for item in vec)
+        assert [type(item).__name__ for item in vec] == ["U32", "Bytes", "Symbol"]
+        # Every Vec operation works on the Vec's own contents.
+        assert list(vec.slice(0, 2)) == list(vec)[:2]
+        assert copy.copy(vec) == vec and copy.deepcopy(vec) == vec
+        assert vec.first_index_of(vec.get(0)) == U32(0)
+        assert vec.first_index_of(vec.get(2)) == U32(2)
+        vec.append(copy.copy(vec))
+        assert len(vec) == 6
+        vec.push_back(U32(0))  # deepening the mixture still works
+        assert len(vec) == 7
+        with pytest.raises(TypeError, match="element"):
+            vec.push_back(5)  # Vec[Any] here, so only the runtime check catches it
+    # A homogeneous map still reports its declared types.
+    h: Map[U32, Symbol] = Map(U32, Symbol)
+    h.set(U32(1), Symbol("one"))
+    assert h.keys().element_type is U32 and h.values().element_type is Symbol
+    assert Map(U32, U32).keys().element_type is U32  # empty: nothing to violate
+
+
 def test_map_equality_and_hashability() -> None:
     a: Map[Symbol, U32] = Map(Symbol, U32)
     b: Map[Symbol, U32] = Map(Symbol, U32)
