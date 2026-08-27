@@ -19,6 +19,11 @@ type checking with the decorator treated as an identity function:
   the `errorcode(...)` form.
 * `@contracttype` / `@contractevent` are `@dataclass_transform()`-annotated,
   so kwargs construction type-checks against the field annotations.
+* `@contractevent` classes inherit `Event`, so `Transfer(...).publish(env)`
+  resolves to a method the checker can actually see. The same rule in reverse
+  is why `_serpent_type_` is *never* read through `getattr` in typed code: a
+  decorator-installed attribute is invisible, so it is metadata for the
+  compiler, not part of the authoring surface.
 * `@contract` methods take `self` first, which is what makes them ordinary,
   strict-clean Python methods (the compiler ignores `self`).
 
@@ -37,10 +42,10 @@ import dataclasses
 import inspect
 import types
 import typing
-from typing import Any, TypeVar, cast, dataclass_transform
+from typing import Any, NoReturn, TypeVar, cast, dataclass_transform
 
 from serpent import val
-from serpent.env import Env
+from serpent.env import Event
 from serpent.errors import RESERVED_CODE_MIN, ContractError
 from serpent.types import Map, Vec
 from serpent.types._base import _ChainValue
@@ -116,15 +121,7 @@ def contracterror(cls: type[_T]) -> type[_T]:
         if name.startswith("_"):
             continue
         if not isinstance(value, _ErrorCode):
-            # ValueError, not TypeError (TRY004): this is a malformed
-            # *declaration*, and every decoration-site failure in this module
-            # is a ValueError so authors can catch one class of error.
-            raise ValueError(  # noqa: TRY004
-                f"{cls.__name__}.{name}: @contracterror members must be declared "
-                f"as `{name} = errorcode(N)`, not `{name} = {value!r}`. "
-                "A bare value is inferred as its Python type by static checkers, "
-                f"so `raise {cls.__name__}.{name}` would fail mypy --strict."
-            )
+            _reject_bare_member(cls, name, value)
         code = value.code
         if not 0 <= code < RESERVED_CODE_MIN:
             raise ValueError(
@@ -140,11 +137,34 @@ def contracterror(cls: type[_T]) -> type[_T]:
         seen[code] = name
         cases.append((name, code))
 
+    if not cases:
+        raise ValueError(
+            f"{cls.__name__}: @contracterror needs at least one member "
+            f"(`NAME = errorcode(N)`); an empty error enum contributes nothing "
+            "to the contract spec"
+        )
+
     for name, code in cases:
         setattr(cls, name, _make_error_class(cls, name, code))
 
     setattr(cls, _METADATA_ATTR, {"kind": "error_enum", "cases": cases})
     return cls
+
+
+def _reject_bare_member(cls: type[Any], name: str, value: object) -> NoReturn:
+    """Reject a member that is not an `errorcode(...)` placeholder.
+
+    A `ValueError` rather than a `TypeError`: every decoration-site failure in
+    this module is a `ValueError`, so an author can catch one class of error.
+    Lives in its own function so the raise is not lexically inside an
+    `isinstance` guard, which is what would otherwise read as a type check.
+    """
+    raise ValueError(
+        f"{cls.__name__}.{name}: @contracterror members must be declared "
+        f"as `{name} = errorcode(N)`, not `{name} = {value!r}`. "
+        "A bare value is inferred as its Python type by static checkers, "
+        f"so `raise {cls.__name__}.{name}` would fail mypy --strict."
+    )
 
 
 def _make_error_class(owner: type[Any], name: str, code: int) -> type[ContractError]:
@@ -180,45 +200,55 @@ def contracttype(cls: type[_T]) -> type[_T]:
 def contractevent(cls: type[_T]) -> type[_T]:
     """Declare a contract event.
 
-    Same field rules and frozen-dataclass treatment as `@contracttype`, plus
-    a `publish(env)` method. Emission needs the host bridge, so `publish`
-    raises `NotImplementedError("sub-plan E")` for now.
-
-    Static-visibility caveat: because a decorator cannot add members a type
-    checker can see, `publish` is installed at runtime only. Sub-plan E gives
-    it a statically visible home.
+    Same field rules and frozen-dataclass treatment as `@contracttype`. The
+    class **must** inherit `serpent.env.Event`, which is where `publish` comes
+    from: a decorator cannot add a member a type checker can see, so
+    `Transfer(...).publish(env)` only type-checks if `publish` is inherited
+    from a real base class.
     """
-    decorated = _build_record(cls, "event")
-    # One shared function object, installed unbound on every event class: it
-    # must not be renamed per class, or the last decorated event would rewrite
-    # every earlier one's `__qualname__`.
-    #
-    # setattr, not attribute assignment (B010): `decorated` is `type[_T]`, so a
-    # direct assignment is an attr-defined error under mypy --strict.
-    setattr(decorated, "publish", _event_publish)  # noqa: B010
-    return decorated
-
-
-def _event_publish(self: object, env: Env) -> None:
-    """Emit this event via the host's `contract_event`."""
-    raise NotImplementedError("sub-plan E")
+    if Event not in cls.__mro__:
+        raise ValueError(
+            f"{cls.__name__}: @contractevent classes must inherit `Event` "
+            f"(`class {cls.__name__}(Event):`). `publish` is inherited from it "
+            "-- a decorator cannot add a method that mypy can see."
+        )
+    return _build_record(cls, "event")
 
 
 def _build_record(cls: type[_T], kind: str) -> type[_T]:
     """The shared `@contracttype`/`@contractevent` body."""
+    _reject_redecoration(cls)
     fields: list[tuple[str, object]] = []
     for name, annotation in _annotations_of(cls).items():
         _check_name(cls, name, "field")
         if not _is_contract_annotation(annotation):
             raise ValueError(
                 f"{cls.__name__}.{name}: annotation {_render(annotation)} is not a "
-                "chain type, a serpent-decorated class, or `X | None`"
+                "chain type, a `@contracttype` struct, or `X | None` of one"
             )
         fields.append((name, annotation))
 
     decorated = dataclasses.dataclass(frozen=True, eq=True)(cls)
     setattr(decorated, _METADATA_ATTR, {"kind": kind, "fields": fields})
     return decorated
+
+
+def _reject_redecoration(cls: type[Any]) -> None:
+    """Refuse a class that already carries serpent metadata of its own.
+
+    Stacking `@contracttype` on an already-decorated class otherwise fails
+    deep inside `dataclasses` with `TypeError: cannot inherit frozen dataclass
+    from a non-frozen one` (or silently re-runs the transform). `vars(cls)`,
+    not `getattr`, so that a *subclass* of a decorated struct is not mistaken
+    for a re-decoration of it.
+    """
+    if _METADATA_ATTR in vars(cls):
+        existing: dict[str, Any] = vars(cls)[_METADATA_ATTR]
+        raise ValueError(
+            f"{cls.__name__}: already declared as a serpent "
+            f"{existing.get('kind', 'type')}; apply exactly one serpent "
+            "decorator per class"
+        )
 
 
 def contract(cls: type[_T]) -> type[_T]:
@@ -243,12 +273,7 @@ def contract(cls: type[_T]) -> type[_T]:
         if name.startswith("_") and name != "__init__":
             continue
         if isinstance(member, staticmethod | classmethod):
-            # ValueError for consistency with every other decoration-site
-            # failure here (TRY004 would prefer TypeError).
-            raise ValueError(  # noqa: TRY004
-                f"{cls.__name__}.{name}: contract methods are plain methods taking "
-                "`self` first; staticmethod/classmethod are not exportable"
-            )
+            _reject_bound_method(cls, name, member)
         if not inspect.isfunction(member):
             continue
         if name != "__init__":
@@ -259,12 +284,36 @@ def contract(cls: type[_T]) -> type[_T]:
     return cls
 
 
+def _reject_bound_method(cls: type[Any], name: str, member: object) -> NoReturn:
+    """Reject a `staticmethod`/`classmethod` where an export is expected.
+
+    A `ValueError` for consistency with every other decoration-site failure,
+    and in its own function so the raise is not lexically inside an
+    `isinstance` guard.
+    """
+    kind = type(member).__name__
+    raise ValueError(
+        f"{cls.__name__}.{name}: contract methods are plain methods taking `self` "
+        f"first; {kind} is not exportable (the host invokes an export with the "
+        "contract instance, and the compiler ignores `self`)"
+    )
+
+
 def _check_method(
     cls: type[Any], name: str, func: Any
 ) -> tuple[str, list[tuple[str, object]], object]:
-    """Validate one method's signature; return its metadata entry."""
+    """Validate one method's signature; return its metadata entry.
+
+    Presence of an annotation is read off `inspect.signature` (which reports
+    what was *written*), while the annotation's value is read off
+    `typing.get_type_hints` (which resolves it to a real type object). That
+    split is what makes the recorded metadata identical whether or not the
+    contract module uses `from __future__ import annotations` -- under PEP 563
+    every annotation would otherwise be recorded as a string.
+    """
     signature = inspect.signature(func)
     parameters = list(signature.parameters.values())
+    hints = _annotations_of(func)
 
     if not parameters or parameters[0].name != "self":
         first = parameters[0].name if parameters else "<none>"
@@ -276,22 +325,41 @@ def _check_method(
 
     params: list[tuple[str, object]] = []
     for parameter in parameters[1:]:
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            raise ValueError(
+                f"{cls.__name__}.{name}: `*{parameter.name}` is not allowed -- a "
+                "contract export has a fixed arity in contractspecv0, so a "
+                "variadic parameter has nothing to compile to"
+            )
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            raise ValueError(
+                f"{cls.__name__}.{name}: `**{parameter.name}` is not allowed -- the "
+                "host invokes exports positionally, so keyword collection has "
+                "nothing to compile to"
+            )
+        if parameter.default is not inspect.Parameter.empty:
+            raise ValueError(
+                f"{cls.__name__}.{name}: parameter {parameter.name!r} has a default "
+                "value, which contractspecv0 cannot express -- every argument of an "
+                "export is required, so callers must pass it explicitly"
+            )
         if parameter.annotation is inspect.Parameter.empty:
             raise ValueError(
                 f"{cls.__name__}.{name}: parameter {parameter.name!r} needs a type "
                 "annotation -- exported signatures are compiled into contractspecv0"
             )
-        params.append((parameter.name, parameter.annotation))
+        params.append((parameter.name, hints[parameter.name]))
 
-    returns = signature.return_annotation
-    if returns is inspect.Signature.empty:
+    if signature.return_annotation is inspect.Signature.empty:
         raise ValueError(
             f"{cls.__name__}.{name}: the return type needs an annotation "
             "(use `-> None` for a method that returns nothing)"
         )
-    # `"None"` covers a contract module that uses `from __future__ import
-    # annotations`, where every annotation reaches us as a string.
-    if name == "__init__" and returns not in (None, types.NoneType, "None"):
+    # `get_type_hints` normalizes a `-> None` annotation to `NoneType`, so this
+    # holds for a PEP 563 module too, where the raw annotation is the str
+    # `"None"`.
+    returns = hints["return"]
+    if name == "__init__" and returns is not types.NoneType:
         raise ValueError(
             f"{cls.__name__}.__init__ must be annotated `-> None` (got "
             f"{_render(returns)}); it compiles to the `__constructor` export, "
@@ -319,19 +387,33 @@ def _check_name(cls: type[Any], name: str, what: str) -> None:
         )
 
 
-def _annotations_of(cls: type[Any]) -> dict[str, Any]:
-    """Resolved annotations, with an unresolvable name reported at the class."""
+def _annotations_of(owner: Any) -> dict[str, Any]:
+    """Annotations of a class or function, resolved to real type objects.
+
+    Always goes through `typing.get_type_hints`, so a contract module that
+    uses `from __future__ import annotations` (PEP 563, where every annotation
+    is a string at runtime) yields exactly the same result as one that does
+    not. An unresolvable name is reported against the owner instead of leaking
+    a bare `NameError`.
+    """
     try:
-        return typing.get_type_hints(cls)
+        return typing.get_type_hints(owner)
     except NameError as exc:
         raise ValueError(
-            f"{cls.__name__}: cannot resolve field annotations ({exc}). "
-            "Field types must be importable at the module level."
+            f"{owner.__qualname__}: cannot resolve annotations ({exc}). "
+            "Annotated types must be resolvable at the module level."
         ) from exc
 
 
 def _is_contract_annotation(annotation: object) -> bool:
-    """A chain type, a serpent-decorated class, or `X | None` of one."""
+    """A chain type, a `@contracttype` struct, or `X | None` of one.
+
+    Structs only: an error enum, a contract class or an event type is not a
+    value that can sit in a field, so each is rejected here rather than
+    producing nonsense in the contract spec. `vars(...)`, not `getattr`,
+    closes the inheritance leak -- an undecorated subclass of a struct
+    inherits `_serpent_type_` but is not itself declared.
+    """
     origin = typing.get_origin(annotation)
     if origin is typing.Union or origin is types.UnionType:
         args = [a for a in typing.get_args(annotation) if a is not types.NoneType]
@@ -343,7 +425,8 @@ def _is_contract_annotation(annotation: object) -> bool:
         return False
     if issubclass(annotation, _ChainValue | Vec | Map):
         return True
-    return hasattr(annotation, _METADATA_ATTR)
+    metadata = vars(annotation).get(_METADATA_ATTR)
+    return isinstance(metadata, dict) and metadata.get("kind") == "struct"
 
 
 def _render(annotation: object) -> str:
