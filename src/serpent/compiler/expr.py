@@ -40,14 +40,26 @@ of an arithmetic or comparison operator, a `Bool` argument, a condition
 (MJ-12's `while True:`), or -- from Task 6 -- an annotated local or a return
 type. With no `expected`, a bare literal is a reject naming the wrap.
 
+## `Subscript` (MJ-13) is owned HERE; the recognition tables are not
+
+Task 7b took ownership of `Subscript` in this module rather than in
+`recognize.py`, because `recognize.py` imports `check_expr` and the reverse
+import would be a cycle. The four MJ-13 cases therefore live in
+`_check_subscript` below, and the one host function they reach (`bytes_get`)
+is named the same way `len()`'s already are (`_LEN_HOST_FN`) -- by name (B2),
+never by export code.
+
 ## What this module does NOT own
 
-`Subscript` (MJ-13), container/struct construction and their method tables
-(Task 7b), the `Env` recognition table (Task 7a), and internal calls (Task 8).
-Every one of those reaches a single `_deferred` helper that emits MJ-11's
-catch-all code with a note naming the owning task -- a clean located
-diagnostic, never a traceback (F.2.5) -- and every call site is marked with a
-`TASK-7A`/`TASK-7B`/`TASK-8` comment so the owning task can find them all.
+Container/struct construction and their method tables, struct field reads (all
+`recognize.py`, Task 7b), the `Env` recognition table (Task 7a), and internal
+calls (Task 8). Every one of those reaches a single `_deferred` helper that
+emits MJ-11's catch-all code with a note naming the owning task -- a clean
+located diagnostic, never a traceback (F.2.5) -- and every call site is marked
+with a `TASK-7A`/`TASK-7B`/`TASK-8` comment. Those markers stay until the task
+that WIRES this module to `recognize.py` lands: 7b implemented the checking,
+but the two modules are joined by the later assembly task, not by an import
+here.
 """
 
 from __future__ import annotations
@@ -100,7 +112,13 @@ from serpent.types import (
     bytes_n,
 )
 
-__all__ = ["NODE_KIND_CODES", "check_condition", "check_expr", "fold_literal"]
+__all__ = [
+    "NODE_KIND_CODES",
+    "check_condition",
+    "check_expr",
+    "fold_literal",
+    "oracle_class",
+]
 
 #: `code -> message_intent`, so every diagnostic carries its registry row's own
 #: wording (the convention `loader.py`/`types_.py`/`ctx.py` already follow).
@@ -275,6 +293,13 @@ _LEN_HOST_FN: Final[dict[TyTag, str]] = {
     TyTag.BYTES: "bytes_len",
     TyTag.BYTES_N: "bytes_len",
 }
+
+#: The one host function MJ-13's supported subscript reaches: `Bytes[i]` ->
+#: `bytes_get` -> `U32` (SS C.4). Named here rather than in `recognize.py`'s
+#: table for the import-cycle reason in the module docstring; the container
+#: completeness assertion lists it as reached-from-`expr.py`, exactly as it
+#: does for the `_LEN_HOST_FN` names above.
+_BYTES_GET_HOST_FN: Final[str] = "bytes_get"
 
 _BINARY_OPS: Final[dict[type[ast.operator], BinaryOp]] = {
     ast.Add: BinaryOp.ADD,
@@ -616,7 +641,16 @@ def _wrap_help(value: object) -> str:
     return "wrap the literal in one of serpent's chain types"
 
 
-def _oracle_class(ty: Ty) -> type | None:
+def oracle_class(ty: Ty) -> type | None:
+    """The tier-1 class that VALIDATES (and, for `recognize.py`'s MJ-15 key
+    ordering, REPRESENTS) a literal of type `ty` -- `None` for a `Ty` with no
+    single literal form (`Vec`/`Map`/`Struct`/`Option`/`Void`).
+
+    Public because Task 7b's `MakeMap` literal-key pre-sort has to build the
+    same tier-1 values this module builds to validate a literal: MJ-15 orders
+    keys by the ORACLE's `val_cmp`, and re-deriving the `Ty -> class` mapping
+    there would be a second place for the same truth (B8).
+    """
     if ty.tag is TyTag.BYTES_N:
         assert ty.n is not None
         return bytes_n(ty.n)
@@ -696,7 +730,7 @@ def _coerce_literal(value: object, loc: Loc, ctx: FuncCtx, expected: Ty | None) 
         assert expected.elem is not None
         return _coerce_literal(value, loc, ctx, expected.elem)
 
-    cls = _oracle_class(expected)
+    cls = oracle_class(expected)
     if cls is None:
         _error(
             ctx,
@@ -951,10 +985,29 @@ def _check_error_member(
     return _invalid(loc)
 
 
-# --- Subscript (MJ-13: Task 7b owns this) ------------------------------------
+# --- Subscript (MJ-13) -------------------------------------------------------
 
 
 def _check_subscript(node: ast.Subscript, ctx: FuncCtx) -> IRExpr:
+    """MJ-13's four cases, in the order their diagnostics are most honest in.
+
+    1. **The annotation-only generic form in a value position** (`Vec[U32]`):
+       `SPT3014`. In an ANNOTATION this shape never reaches here at all -- it
+       is resolved by Task 4's `resolve_annotation`, which is the only place
+       that knows the position is an annotation.
+    2. **A slice** (`b[a:b]`, `v[a:b]`): `SPT1013` pointing at the
+       `.slice(lo, hi)` method (E18). Reported from the SHAPE alone, without
+       checking the receiver, so the rewrite is named even when the receiver
+       itself is something the checker would reject for another reason.
+    3. **A negative LITERAL index** (`b[-1]`): `SPT3011` (D6). Only a literal
+       -- F.1.7 is explicit that C must not claim to have statically proved
+       anything about a COMPUTED negative index, which is a runtime trap on
+       both tiers.
+    4. **`Bytes[i]`/`BytesN[i]`**: the one supported subscript, lowering to
+       `bytes_get` -> `U32` (SS C.4's `Bytes` ops row). `Vec`/`Map` have no
+       `__getitem__` at tier 1 at all, so their subscript is MJ-11's catch-all
+       with `.get(...)` named in `help`.
+    """
     loc = Loc.from_node(ctx.path, node)
     base = node.value
     if isinstance(base, ast.Name):
@@ -968,9 +1021,74 @@ def _check_subscript(node: ast.Subscript, ctx: FuncCtx) -> IRExpr:
                 help=(f"in a value position use the construction form, e.g. {base.id}(U32, [...])"),
             )
             return _invalid(loc)
-    # TASK-7B: `Bytes[i]` -> bytes_get, slices -> the .slice(lo, hi) rewrite,
-    # negative literal indices (D6), and the alias-sensitive forms (E11).
-    return _deferred(node, ctx, "Task 7b", "subscripting")
+
+    if isinstance(node.slice, ast.Slice):
+        _error(
+            ctx,
+            "SPT1013",
+            loc,
+            "a sub-range is taken with the .slice(lo, hi) method, never a subscript slice",
+            help="take the sub-range with .slice(lo, hi), e.g. v.slice(U32(0), U32(2))",
+        )
+        return _invalid(loc)
+
+    index_literal = _literal_value(node.slice)
+    if isinstance(index_literal, int) and not isinstance(index_literal, bool) and index_literal < 0:
+        _error(
+            ctx,
+            "SPT3011",
+            loc,
+            f"`{index_literal}` is not an index the host can take (it indexes with a u32)",
+            help="index from the front, or compute the index explicitly, e.g. len(b) - U32(1)",
+        )
+        return _invalid(loc)
+
+    receiver = check_expr(base, ctx)
+    if _failed(receiver):
+        return _invalid(loc)
+
+    if receiver.ty.tag in _BYTES_FAMILY_TAGS:
+        index = check_expr(node.slice, ctx, expected=Ty.U32)
+        if _failed(index):
+            return _invalid(loc)
+        if index.ty != Ty.U32:
+            _error(
+                ctx,
+                "SPT3018",
+                loc,
+                f"a {receiver.ty.render()} index must be U32, not {index.ty.render()}",
+            )
+            return _invalid(loc)
+        return HostCall(loc=loc, ty=Ty.U32, fn_name=_BYTES_GET_HOST_FN, args=(receiver, index))
+
+    if receiver.ty.tag is TyTag.VEC:
+        _error(
+            ctx,
+            _FALLBACK_CODE,
+            loc,
+            f"a {receiver.ty.render()} element is not read with a subscript",
+            help="read an element with .get(i), e.g. v.get(U32(0))",
+        )
+        return _invalid(loc)
+
+    if receiver.ty.tag is TyTag.MAP:
+        _error(
+            ctx,
+            _FALLBACK_CODE,
+            loc,
+            f"a {receiver.ty.render()} value is not read with a subscript",
+            help="read a value with .get(k), e.g. m.get(Symbol('total'))",
+        )
+        return _invalid(loc)
+
+    _error(
+        ctx,
+        _FALLBACK_CODE,
+        loc,
+        f"{receiver.ty.render()} cannot be subscripted",
+        help="subscripting is defined for Bytes only; containers use .get(...)",
+    )
+    return _invalid(loc)
 
 
 # --- Call ---------------------------------------------------------------------
@@ -1008,7 +1126,9 @@ def _check_call(node: ast.Call, ctx: FuncCtx) -> IRExpr:
 
     obj = ctx.loaded.namespace.get(name)
     if obj is Vec or obj is Map:
-        # TASK-7B: Vec(T[, items]) / Map(K, V[, pairs]) (D2/A13, MJ-15).
+        # TASK-7B: `recognize.recognize_call` checks Vec(T[, items]) /
+        # Map(K, V[, pairs]) (D2/A13, MJ-15); this dispatch reaches it once
+        # the assembly task joins the two modules.
         return _deferred(node, ctx, "Task 7b", f"`{name}(...)` construction")
     if isinstance(obj, type):
         metadata = vars(obj).get(_METADATA_ATTR)

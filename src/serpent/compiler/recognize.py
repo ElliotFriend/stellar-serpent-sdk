@@ -1,14 +1,16 @@
-"""The Env-API recognition table: dossier SS C.4, Task 7a.
+"""The recognition table: dossier SS C.4 (Tasks 7a and 7b).
 
-`src/serpent/env.py` is the AUTHORING surface -- `env.storage()...`,
-`env.ledger()...`, `env.events()...`, `addr.require_auth()...` -- and this
+`src/serpent/env.py` and `src/serpent/types/` are the AUTHORING surface --
+`env.storage()...`, `env.ledger()...`, `addr.require_auth()`, `Vec(U32, [...])`,
+`v.push_back(x)`, `m.get(k)`, `Balance(amount=...)`, `bal.amount` -- and this
 module is where C recognizes that surface's exact AST shapes and lowers each
-one to the IR's single escape hatch, `HostCall` (SS C.1). It covers env,
-storage, ledger, events and auth ONLY; container/struct construction and
-their method tables are Task 7b's, and internal calls are Task 8's (see the
-`TASK-7A`-marked call sites `expr.py` already leaves for this module to fill
-in, in `_check_attribute`/`_check_call`, once a later task wires the two
-together -- this task's own scope is `recognize.py` and its tests only).
+one to the IR (SS C.1's single escape hatch `HostCall`, plus the `MakeVec`/
+`MakeMap`/`MakeStruct`/`FieldGet` nodes SS C.2 already declares for the
+container and struct shapes). Internal calls are Task 8's, and `Subscript` is
+`expr.py`'s (MJ-13, for the import-cycle reason that module's docstring gives).
+The `TASK-7A`/`TASK-7B`-marked call sites in `expr.py` are where a later
+assembly task joins the two modules; nothing here imports back into that
+dispatch.
 
 ## `RECOGNIZED`: C authors the mapping table itself (MJ-3)
 
@@ -16,11 +18,26 @@ together -- this task's own scope is `recognize.py` and its tests only).
 "which host function(s) does this Python surface shape reach" -- every
 lowering function below looks its OWN target name(s) up in this table rather
 than hardcoding them a second time, so the table and the code can never
-silently drift apart. dossier SS C.4's inventory for this surface (storage,
-ledger, events, auth -- eleven host functions) is the ALLOWED TARGET SET:
-`test_recognize_env.py`'s completeness assertion checks both directions --
-every target `RECOGNIZED` names is a real key of `_host.functions_by_name`,
-and no host function outside that eleven-name inventory is referenced here.
+silently drift apart. Each row declares its `family`, which is what splits the
+two completeness assertions:
+
+* `family="env"` -- dossier SS C.4's storage/ledger/events/auth inventory,
+  eleven host functions, exactly `ENV_HOST_FN_TARGETS`
+  (`test_recognize_env.py` checks both directions).
+* `family="container"` -- SS C.4's Vec/Map/Bytes/struct inventory.
+  `CONTAINER_HOST_FN_TARGETS` is what the rows reach and
+  `UNREACHED_CONTAINER_HOST_FNS` names, WITH A REASON, every inventory member
+  no row reaches: the ruled trio with no authoring surface at all
+  (`vec_front`/`vec_back`/`vec_last_index_of`), the `*_len` family reached from
+  `expr.py`'s `len()` instead (MJ-1), `bytes_get` reached from `expr.py`'s
+  subscript (MJ-13), and `string_len`/`symbol_len`, which MJ-1's ruling makes
+  unreachable on purpose. `test_containers_frontend.py` asserts the union is
+  EXACTLY the dossier inventory, so neither direction can drift.
+
+A second, differential assertion covers the container method rows: every one
+must name a REAL method of the tier-1 class (`Vec`/`Map`/`Bytes`). Recognizing
+a surface the oracle has no method for would be an "oracle-unrunnable accept",
+the exact failure MJ-1's `len()` scoping ruling exists to avoid.
 
 ## The three-way split at an `env.<name>` (or `<bucket>.<name>`) attribute
 
@@ -68,6 +85,36 @@ are not type mismatches at all:
 `_both_u32`'s threshold/extend_to check, the get-default `default` value's
 type, and the Address/Vec receiver-type checks in `_recognize_require_auth`.
 
+## Containers: the functional-host-op guard (E11) and MJ-15's key ordering
+
+Two decisions C owns outright live in the container half:
+
+* **Mutation is a REBIND, and only where C owns the binding** (E11/BL-3,
+  F.1's #1 silent divergence). The host's ops are functional --
+  `vec_push_back(v, x) -> VecObject` -- while `types.Vec.push_back` mutates in
+  place, so `v.push_back(x)` is lowerable only as `v = vec_push_back(v, x)`.
+  That rebind is a STATEMENT, so mutation is recognized through
+  `recognize_mutation` (returning the existing `SetLocal` node -- no new IR
+  node was needed) and is legal only when the receiver is an unaliased local
+  slot whose `Ownership` is `OWNED`. `classify_binding`/`note_local_binding`
+  are the standalone, table-tested pass that decides ownership; every other
+  receiver -- an aliased local, an unclassified local, a parameter, a field
+  read, an element read, or a TEMPORARY (`Vec(U32).pop_back()`) -- is
+  `SPT1034`, carrying the functional-host-op explanation as a note and a
+  rewrite in `help`. A mutator reached in a VALUE position is the same reject:
+  an expression has no binding to rewrite (and tier 1's mutators return
+  `None`, so `x = v.push_back(y)` is not valid there either).
+* **`MakeMap`'s literal-key order** (MJ-15). When every key AND value is a
+  compile-time literal and the ORACLE can totally order the keys
+  (`static_map_order`, which delegates to tier 1's own `val_cmp` -- rank, then
+  payload), C hands D the pairs already in the host's key order and sets
+  `all_static=True` so `map_new_from_linear_memory` can be used directly.
+  Otherwise `all_static=False`, SOURCE order is preserved untouched (F.1.12:
+  any C-side reordering of a `Map` literal is observable on chain, and the
+  value expressions' evaluation order is observable too), and D falls back to
+  `map_new` + `map_put`, letting the host order them. C never invents an order
+  the oracle cannot check (A15/E3 -- struct keys are exactly that case).
+
 ## What this module deliberately does NOT decide
 
 The missing-key runtime trap for `<bucket>.get(key, T)` with no `default`
@@ -87,35 +134,66 @@ IR shape the frozen SS C.2 node inventory has no node for (there is no
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
+from functools import cmp_to_key
+from typing import Any
 
 from serpent import errors, val
 from serpent._host import STORAGE_TYPE, functions_by_name
 from serpent.compiler import codes
-from serpent.compiler.ctx import FuncCtx
+from serpent.compiler.ctx import FuncCtx, Ownership
 from serpent.compiler.diagnostics import Loc
-from serpent.compiler.expr import check_expr
+from serpent.compiler.expr import check_expr, oracle_class
 from serpent.compiler.ir import (
     Const,
+    FieldGet,
     HostCall,
     IfExp,
     IRExpr,
+    IRStmt,
+    LocalRef,
+    MakeMap,
+    MakeStruct,
     MakeTopics,
+    MakeVec,
+    Nop,
+    ParamRef,
     RawScalar,
     RawScalarKind,
+    SetLocal,
 )
 from serpent.compiler.types_ import Ty, TyTag, resolve_annotation
 from serpent.decorators import _METADATA_ATTR
 
+# `val_cmp` is the ORACLE's own cross-type ordering (rank, then payload) and is
+# what MJ-15 names for the `MakeMap` key pre-sort. It is not re-exported from
+# `serpent.types`, so this is a deliberate private-name import -- the same
+# discipline `_METADATA_ATTR` above already follows: reuse the one
+# implementation rather than restate a model A15 calls explicitly partial.
+from serpent.types import Map as _MapType
+from serpent.types import Vec as _VecType
+from serpent.types._ordering import val_cmp
+
 __all__ = [
+    "BYTES_METHODS",
+    "CONTAINER_HOST_FN_TARGETS",
     "ENV_HOST_FN_TARGETS",
     "KNOWN_FUTURE_ENV_NAMES",
+    "MAP_METHODS",
     "RECOGNIZED",
+    "UNREACHED_CONTAINER_HOST_FNS",
+    "VEC_METHODS",
+    "BindingSource",
     "HostCallSpec",
     "SurfaceKind",
+    "classify_binding",
+    "note_local_binding",
     "recognize_attribute",
     "recognize_call",
+    "recognize_mutation",
+    "static_map_order",
 ]
 
 #: `code -> message_intent`, matching every other checker module's convention
@@ -123,9 +201,19 @@ __all__ = [
 #: registry row's own wording as the message's first clause.
 _INTENT: dict[str, str] = {entry.code: entry.message_intent for entry in codes.REGISTRY}
 
+#: MJ-11's catch-all, for the container shapes no other row describes: an
+#: items/entries argument that is not a display written in place (D2/A13).
+_FALLBACK_CODE = "SPT1037"
+
 #: `help:` text for the SPT1xxx codes this module raises (mandatory --
 #: `Diagnostics.error` rejects an SPT1xxx diagnostic with no `help`, F.2.11).
+#: `SPT1034`'s entry is the LAST-RESORT default: every real emission passes a
+#: receiver-specific `help` (see `_mutation_help`).
 _HELP: dict[str, str] = {
+    "SPT1034": (
+        "mutate only a local this method owns, and let C rebind it (v = vec_push_back(v, x))"
+    ),
+    "SPT1037": "rewrite the expression using the serpent subset",
     "SPT1032": "use env.events().publish(topics, data) instead",
     "SPT1033": "this Env surface is deferred to M2; there is no rewrite available yet",
     "SPT1035": "pass the argument positionally, or by the name the recognized API uses",
@@ -147,11 +235,24 @@ class SurfaceKind(Enum):
     lowering SS C.4 spells out for `<bucket>.get(key, T, default=d)`.
     `REJECT`: never reaches a host function at all -- `Event.publish(env)`
     (E12), rejected pointing at sub-plan E.
+
+    The container rows add four shapes (Task 7b). `MUTATOR`: a functional host
+    op plus the E11 rebind, i.e. `SetLocal(slot, HostCall(...))` -- a
+    STATEMENT, which is why it is reached through `recognize_mutation` and not
+    through `recognize_call`. `MAKE_VEC`/`MAKE_MAP`/`MAKE_STRUCT`/`FIELD_GET`:
+    the SS C.2 nodes of those names, whose `host_fns` record which host
+    functions D can reach when it lowers them (D chooses between the
+    linear-memory form and the build-up form -- MJ-15/`all_static`).
     """
 
     HOST_CALL = auto()
     GET_DEFAULT = auto()
     REJECT = auto()
+    MUTATOR = auto()
+    MAKE_VEC = auto()
+    MAKE_MAP = auto()
+    MAKE_STRUCT = auto()
+    FIELD_GET = auto()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -175,6 +276,11 @@ class HostCallSpec:
     host_fns: tuple[str, ...] = ()
     reject_code: str | None = None
     missing_value_code: int | None = None
+    #: Which SS C.4 inventory this row belongs to, and therefore which
+    #: completeness assertion owns it: `"env"` (Task 7a: storage/ledger/
+    #: events/auth) or `"container"` (Task 7b: Vec/Map/Bytes/struct). Default
+    #: `"env"` so the Task 7a rows read exactly as they were authored.
+    family: str = "env"
 
 
 RECOGNIZED: dict[str, HostCallSpec] = {
@@ -244,14 +350,187 @@ RECOGNIZED: dict[str, HostCallSpec] = {
         kind=SurfaceKind.REJECT,
         reject_code="SPT1032",
     ),
+    # --- containers and structs (Task 7b) ---------------------------------
+    "vec.new": HostCallSpec(
+        surface="Vec(T[, [items]])",
+        kind=SurfaceKind.MAKE_VEC,
+        host_fns=("vec_new", "vec_push_back", "vec_new_from_linear_memory"),
+        family="container",
+    ),
+    "vec.push_back": HostCallSpec(
+        surface="v.push_back(value)",
+        kind=SurfaceKind.MUTATOR,
+        host_fns=("vec_push_back",),
+        family="container",
+    ),
+    "vec.push_front": HostCallSpec(
+        surface="v.push_front(value)",
+        kind=SurfaceKind.MUTATOR,
+        host_fns=("vec_push_front",),
+        family="container",
+    ),
+    "vec.pop_back": HostCallSpec(
+        surface="v.pop_back()",
+        kind=SurfaceKind.MUTATOR,
+        host_fns=("vec_pop_back",),
+        family="container",
+    ),
+    "vec.pop_front": HostCallSpec(
+        surface="v.pop_front()",
+        kind=SurfaceKind.MUTATOR,
+        host_fns=("vec_pop_front",),
+        family="container",
+    ),
+    "vec.get": HostCallSpec(
+        surface="v.get(index)",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("vec_get",),
+        family="container",
+    ),
+    "vec.put": HostCallSpec(
+        surface="v.put(index, value)",
+        kind=SurfaceKind.MUTATOR,
+        host_fns=("vec_put",),
+        family="container",
+    ),
+    "vec.del_": HostCallSpec(
+        surface="v.del_(index)",
+        kind=SurfaceKind.MUTATOR,
+        host_fns=("vec_del",),
+        family="container",
+    ),
+    "vec.insert": HostCallSpec(
+        surface="v.insert(index, value)",
+        kind=SurfaceKind.MUTATOR,
+        host_fns=("vec_insert",),
+        family="container",
+    ),
+    "vec.append": HostCallSpec(
+        surface="v.append(other)",
+        kind=SurfaceKind.MUTATOR,
+        host_fns=("vec_append",),
+        family="container",
+    ),
+    "vec.slice": HostCallSpec(
+        surface="v.slice(lo, hi)",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("vec_slice",),
+        family="container",
+    ),
+    "vec.first_index_of": HostCallSpec(
+        surface="v.first_index_of(value)",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("vec_first_index_of",),
+        family="container",
+    ),
+    "map.new": HostCallSpec(
+        surface="Map(K, V[, [(k, v), ...]])",
+        kind=SurfaceKind.MAKE_MAP,
+        host_fns=("map_new", "map_put", "map_new_from_linear_memory"),
+        family="container",
+    ),
+    "map.set": HostCallSpec(
+        surface="m.set(key, value)",
+        kind=SurfaceKind.MUTATOR,
+        host_fns=("map_put",),
+        family="container",
+    ),
+    "map.get": HostCallSpec(
+        surface="m.get(key)",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("map_get",),
+        family="container",
+    ),
+    "map.has": HostCallSpec(
+        surface="m.has(key)",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("map_has",),
+        family="container",
+    ),
+    "map.del_": HostCallSpec(
+        surface="m.del_(key)",
+        kind=SurfaceKind.MUTATOR,
+        host_fns=("map_del",),
+        family="container",
+    ),
+    "map.keys": HostCallSpec(
+        surface="m.keys()",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("map_keys",),
+        family="container",
+    ),
+    "map.values": HostCallSpec(
+        surface="m.values()",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("map_values",),
+        family="container",
+    ),
+    "map.key_by_pos": HostCallSpec(
+        surface="m.key_by_pos(position)",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("map_key_by_pos",),
+        family="container",
+    ),
+    "map.val_by_pos": HostCallSpec(
+        surface="m.val_by_pos(position)",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("map_val_by_pos",),
+        family="container",
+    ),
+    "bytes.slice": HostCallSpec(
+        surface="b.slice(lo, hi)",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("bytes_slice",),
+        family="container",
+    ),
+    "struct.new": HostCallSpec(
+        # kwargs only, and C owns the ascending-byte-string field sort (P7):
+        # `map_new_from_linear_memory` needs the key descriptors in that order
+        # at COMPILE time, and the wrong layout validates then panics on-chain
+        # (F.1.13).
+        surface="MyStruct(field=value, ...)",
+        kind=SurfaceKind.MAKE_STRUCT,
+        host_fns=("map_new_from_linear_memory",),
+        family="container",
+    ),
+    "struct.field": HostCallSpec(
+        # SS C.4's struct-field-read row: the field's `Symbol` key (built with
+        # `symbol_new_from_linear_memory` when it is over 9 characters -- D's
+        # data-layout choice), then `map_get`.
+        surface="value.field",
+        kind=SurfaceKind.FIELD_GET,
+        host_fns=("map_get", "symbol_new_from_linear_memory"),
+        family="container",
+    ),
 }
 
-#: The union of every `RECOGNIZED` row's `host_fns` -- dossier SS C.4's
+#: The union of the `family="env"` rows' `host_fns` -- dossier SS C.4's
 #: env/storage/ledger/events/auth inventory, eleven names, checked against
 #: `_host.functions_by_name` by the completeness test (both directions).
 ENV_HOST_FN_TARGETS: frozenset[str] = frozenset(
-    fn for spec in RECOGNIZED.values() for fn in spec.host_fns
+    fn for spec in RECOGNIZED.values() if spec.family == "env" for fn in spec.host_fns
 )
+
+#: The union of the `family="container"` rows' `host_fns` -- the reached half
+#: of SS C.4's Vec/Map/Bytes/struct inventory.
+CONTAINER_HOST_FN_TARGETS: frozenset[str] = frozenset(
+    fn for spec in RECOGNIZED.values() if spec.family == "container" for fn in spec.host_fns
+)
+
+#: The OTHER half, with the reason each name is not reached by a row -- what
+#: makes the container completeness assertion checkable in both directions
+#: without silently tolerating a missing row (MJ-3).
+UNREACHED_CONTAINER_HOST_FNS: Mapping[str, str] = {
+    "vec_front": "no authoring surface: types.Vec has no front() method (ruled)",
+    "vec_back": "no authoring surface: types.Vec has no back() method (ruled)",
+    "vec_last_index_of": ("no authoring surface: types.Vec has only first_index_of() (ruled)"),
+    "vec_len": "reached from expr.py's len() (MJ-1's ruled scope), not from a row",
+    "map_len": "reached from expr.py's len() (MJ-1's ruled scope), not from a row",
+    "bytes_len": "reached from expr.py's len() (MJ-1's ruled scope), not from a row",
+    "bytes_get": "reached from expr.py's Bytes[i] subscript (MJ-13), not from a row",
+    "string_len": "unreachable by ruling: len(String) is a compile reject (MJ-1)",
+    "symbol_len": "unreachable by ruling: len(Symbol) is a compile reject (MJ-1)",
+}
 
 #: M2/future Env surfaces (dossier SS C.4's "Recognized but not lowerable in
 #: M1" list, minus the ledger-nested names -- see `_LEDGER_FUTURE_METHODS`):
@@ -365,19 +644,28 @@ def _bind(
 
 
 def recognize_call(node: ast.Call, ctx: FuncCtx) -> IRExpr | None:
-    """Recognize one `ast.Call` as part of the env/storage/ledger/events/auth
-    surface, returning its lowered `IRExpr`.
+    """Recognize one `ast.Call` as part of the surfaces this module owns --
+    env/storage/ledger/events/auth (Task 7a) and container/struct
+    construction plus the container READER methods (Task 7b) -- returning its
+    lowered `IRExpr`.
 
     Returns `None` when `node` is not shaped like anything this module
-    recognizes at all -- the caller (eventually `expr.py`'s `_check_call`,
-    Task 7a/7b's integration) should then try Task 7b's container/struct
-    method tables. Once the SHAPE is recognized (a real storage/ledger/
-    events/auth call, however malformed), this function ALWAYS returns an
-    `IRExpr` -- diagnosing through `ctx.sink` and returning the `Ty.Invalid`
-    placeholder (sink convention, minor 13) rather than falling through, so a
-    typo in a real env call is never silently treated as "not applicable".
+    recognizes at all: a chain-type constructor (`expr.py`'s), an internal
+    call (Task 8's), a struct method that does not exist, or a container
+    method name on a non-container receiver. Once the SHAPE is recognized
+    (a real env call or a real container/struct call, however malformed), this
+    function ALWAYS returns an `IRExpr` -- diagnosing through `ctx.sink` and
+    returning the `Ty.Invalid` placeholder (sink convention, minor 13) rather
+    than falling through, so a typo in a real call is never silently treated
+    as "not applicable".
+
+    MUTATING container methods are deliberately NOT lowered here: their
+    lowering is a rebind (a statement), so they belong to
+    `recognize_mutation` and reaching one in a value position is `SPT1034`.
     """
     func = node.func
+    if isinstance(func, ast.Name):
+        return _recognize_construction(node, ctx, func.id)
     if not isinstance(func, ast.Attribute):
         return None
     method = func.attr
@@ -399,8 +687,14 @@ def recognize_call(node: ast.Call, ctx: FuncCtx) -> IRExpr | None:
     if method in ("require_auth", "require_auth_for_args"):
         return _recognize_require_auth(node, ctx, method, base)
 
+    # BEFORE the container tables: `get`/`set`/`has`/`del_` are method names
+    # both surfaces use, and `env.get(...)` is an Env mistake (SPT2006), not a
+    # container one.
     if isinstance(base, ast.Name) and base.id == "env":
         return _recognize_env_top_level(ctx, Loc.from_node(ctx.path, node), method)
+
+    if method in _CONTAINER_METHOD_NAMES:
+        return _recognize_container_method(node, ctx, method, base)
 
     return None
 
@@ -416,10 +710,26 @@ def recognize_attribute(node: ast.Attribute, ctx: FuncCtx) -> IRExpr | None:
     all -- a bare `env.storage` with no `()`, or `env.logs`/`env.frobnicate`
     -- which is exactly where SS C.4's future-name-vs-unknown-name split
     (`SPT1033` vs `SPT2006`) is observable on its own, without a call.
+
+    It ALSO owns struct field reads (Task 7b, SS C.4's struct-field-read row),
+    which is the one attribute shape that needs the base's TYPE rather than
+    its syntax: any name can be a field name, so the base is checked and a
+    `Ty.Struct` receiver becomes a `FieldGet`. A base that checks cleanly to
+    anything else returns `None` with the sink untouched (the caller may
+    re-check it, which is bounded by attribute-chain depth); a base whose own
+    checking FAILED returns the `Ty.Invalid` placeholder, because its
+    diagnostic is already in the sink and a `None` there would invite a
+    second, cascaded one.
     """
-    if not (isinstance(node.value, ast.Name) and node.value.id == "env"):
-        return None
-    return _recognize_env_top_level(ctx, Loc.from_node(ctx.path, node), node.attr)
+    loc = Loc.from_node(ctx.path, node)
+    if isinstance(node.value, ast.Name) and node.value.id == "env":
+        return _recognize_env_top_level(ctx, loc, node.attr)
+    base = _check_value(node.value, ctx)
+    if _failed(base):
+        return _invalid(loc)
+    if base.ty.tag is TyTag.STRUCT:
+        return _recognize_field_get(node, ctx, loc, base)
+    return None
 
 
 def _recognize_env_top_level(ctx: FuncCtx, loc: Loc, name: str) -> IRExpr:
@@ -533,8 +843,8 @@ def _storage_set(node: ast.Call, ctx: FuncCtx, loc: Loc, bucket: str) -> IRExpr:
     bound = _bind(node, ctx, loc, RECOGNIZED["storage.set"].surface, ("key", "value"))
     if bound is None:
         return _invalid(loc)
-    key = check_expr(bound["key"], ctx)
-    value = check_expr(bound["value"], ctx)
+    key = _check_value(bound["key"], ctx)
+    value = _check_value(bound["value"], ctx)
     if _failed(key) or _failed(value):
         return _invalid(loc)
     (fn_name,) = RECOGNIZED["storage.set"].host_fns
@@ -550,7 +860,7 @@ def _storage_has(node: ast.Call, ctx: FuncCtx, loc: Loc, bucket: str) -> IRExpr:
     bound = _bind(node, ctx, loc, RECOGNIZED["storage.has"].surface, ("key",))
     if bound is None:
         return _invalid(loc)
-    key = check_expr(bound["key"], ctx)
+    key = _check_value(bound["key"], ctx)
     if _failed(key):
         return _invalid(loc)
     (fn_name,) = RECOGNIZED["storage.has"].host_fns
@@ -565,7 +875,7 @@ def _storage_del(node: ast.Call, ctx: FuncCtx, loc: Loc, bucket: str) -> IRExpr:
     bound = _bind(node, ctx, loc, RECOGNIZED["storage.del_"].surface, ("key",))
     if bound is None:
         return _invalid(loc)
-    key = check_expr(bound["key"], ctx)
+    key = _check_value(bound["key"], ctx)
     if _failed(key):
         return _invalid(loc)
     (fn_name,) = RECOGNIZED["storage.del_"].host_fns
@@ -609,7 +919,7 @@ def _storage_get(node: ast.Call, ctx: FuncCtx, loc: Loc, bucket: str) -> IRExpr:
     if target_ty is None:
         return _invalid(loc)
 
-    key = check_expr(bound["key"], ctx)
+    key = _check_value(bound["key"], ctx)
     if _failed(key):
         return _invalid(loc)
 
@@ -622,7 +932,7 @@ def _storage_get(node: ast.Call, ctx: FuncCtx, loc: Loc, bucket: str) -> IRExpr:
         (fn_name,) = RECOGNIZED["storage.get"].host_fns
         return HostCall(loc=loc, ty=target_ty, fn_name=fn_name, args=(key, imm))
 
-    default_expr = check_expr(bound["default"], ctx, expected=target_ty)
+    default_expr = _check_value(bound["default"], ctx, expected=target_ty)
     if _failed(default_expr):
         return _invalid(loc)
     if default_expr.ty != target_ty:
@@ -646,8 +956,8 @@ def _storage_extend_ttl(node: ast.Call, ctx: FuncCtx, loc: Loc, bucket: str) -> 
         bound = _bind(node, ctx, loc, spec.surface, ("threshold", "extend_to"))
         if bound is None:
             return _invalid(loc)
-        threshold = check_expr(bound["threshold"], ctx, expected=Ty.U32)
-        extend_to = check_expr(bound["extend_to"], ctx, expected=Ty.U32)
+        threshold = _check_value(bound["threshold"], ctx, expected=Ty.U32)
+        extend_to = _check_value(bound["extend_to"], ctx, expected=Ty.U32)
         if _failed(threshold) or _failed(extend_to):
             return _invalid(loc)
         if not _both_u32(ctx, loc, threshold, extend_to):
@@ -659,9 +969,9 @@ def _storage_extend_ttl(node: ast.Call, ctx: FuncCtx, loc: Loc, bucket: str) -> 
     bound = _bind(node, ctx, loc, spec.surface, ("key", "threshold", "extend_to"))
     if bound is None:
         return _invalid(loc)
-    key = check_expr(bound["key"], ctx)
-    threshold = check_expr(bound["threshold"], ctx, expected=Ty.U32)
-    extend_to = check_expr(bound["extend_to"], ctx, expected=Ty.U32)
+    key = _check_value(bound["key"], ctx)
+    threshold = _check_value(bound["threshold"], ctx, expected=Ty.U32)
+    extend_to = _check_value(bound["extend_to"], ctx, expected=Ty.U32)
     if _failed(key) or _failed(threshold) or _failed(extend_to):
         return _invalid(loc)
     if not _both_u32(ctx, loc, threshold, extend_to):
@@ -761,7 +1071,7 @@ def _events_publish(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
         )
         return _invalid(loc)
 
-    topic_irs = [check_expr(elt, ctx) for elt in topics_node.elts]
+    topic_irs = [_check_value(elt, ctx) for elt in topics_node.elts]
     if any(_failed(topic) for topic in topic_irs):
         return _invalid(loc)
 
@@ -778,7 +1088,7 @@ def _events_publish(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
         )
         return _invalid(loc)
 
-    data = check_expr(bound["data"], ctx)
+    data = _check_value(bound["data"], ctx)
     if _failed(data):
         return _invalid(loc)
 
@@ -810,7 +1120,7 @@ def _reject_event_publish(node: ast.Call, ctx: FuncCtx) -> IRExpr:
 
 def _recognize_require_auth(node: ast.Call, ctx: FuncCtx, method: str, base: ast.expr) -> IRExpr:
     loc = Loc.from_node(ctx.path, node)
-    addr = check_expr(base, ctx)
+    addr = _check_value(base, ctx)
     if _failed(addr):
         return _invalid(loc)
     if addr.ty != Ty.Address:
@@ -831,7 +1141,7 @@ def _recognize_require_auth(node: ast.Call, ctx: FuncCtx, method: str, base: ast
     bound = _bind(node, ctx, loc, spec.surface, ("args",))
     if bound is None:
         return _invalid(loc)
-    args_expr = check_expr(bound["args"], ctx)
+    args_expr = _check_value(bound["args"], ctx)
     if _failed(args_expr):
         return _invalid(loc)
     if args_expr.ty.tag is not TyTag.VEC:
@@ -844,6 +1154,950 @@ def _recognize_require_auth(node: ast.Call, ctx: FuncCtx, method: str, base: ast
         return _invalid(loc)
     (fn_name,) = spec.host_fns
     return HostCall(loc=loc, ty=Ty.Void, fn_name=fn_name, args=(addr, args_expr))
+
+
+# --- containers and structs: the method tables (MJ-3, Task 7b) --------------
+
+#: `method name -> row key`, one table per receiver family, authored from the
+#: REAL tier-1 API (`types/containers.py`, `types/buffers.py`). The
+#: differential test walks these dicts and asserts each name is a real method
+#: of the tier-1 class, so a row can never recognize a surface the oracle
+#: cannot run. `Vec` has no `front`/`back`/`last_index_of` and no `len`
+#: method (`len()` is the builtin, MJ-1), which is why those host functions
+#: appear only in `UNREACHED_CONTAINER_HOST_FNS`.
+VEC_METHODS: Mapping[str, str] = {
+    "push_back": "vec.push_back",
+    "push_front": "vec.push_front",
+    "pop_back": "vec.pop_back",
+    "pop_front": "vec.pop_front",
+    "get": "vec.get",
+    "put": "vec.put",
+    "del_": "vec.del_",
+    "insert": "vec.insert",
+    "append": "vec.append",
+    "slice": "vec.slice",
+    "first_index_of": "vec.first_index_of",
+}
+
+MAP_METHODS: Mapping[str, str] = {
+    "set": "map.set",
+    "get": "map.get",
+    "has": "map.has",
+    "del_": "map.del_",
+    "keys": "map.keys",
+    "values": "map.values",
+    "key_by_pos": "map.key_by_pos",
+    "val_by_pos": "map.val_by_pos",
+}
+
+#: `Bytes` is immutable, so its only row is the sub-range READER. The method
+#: itself is a RULED tier-1 addition landing in Task 8 (E18/MJ-1: E18's
+#: method-form slicing needs a method to name), which is why the differential
+#: test's `bytes.slice` row is xfail until then.
+BYTES_METHODS: Mapping[str, str] = {"slice": "bytes.slice"}
+
+#: The syntactic gate: only an attribute call whose method name appears here is
+#: even considered a container surface, so an unrelated method call
+#: (`key.some_struct_method()`) is still "not recognized at all" and the
+#: receiver is never checked for it.
+_CONTAINER_METHOD_NAMES: frozenset[str] = (
+    frozenset(VEC_METHODS) | frozenset(MAP_METHODS) | frozenset(BYTES_METHODS)
+)
+
+#: Receiver tags that have a method table at all.
+_CONTAINER_TAGS: frozenset[TyTag] = frozenset({TyTag.VEC, TyTag.MAP, TyTag.BYTES, TyTag.BYTES_N})
+
+#: The tags whose values are MUTABLE at tier 1 -- the ones E11's alias
+#: analysis tracks. `Bytes` has no mutating method and a `@contracttype` struct
+#: is a frozen dataclass, so neither can ever need a rebind.
+_MUTABLE_TAGS: frozenset[TyTag] = frozenset({TyTag.VEC, TyTag.MAP})
+
+
+class _ArgKind(Enum):
+    """What a container method's argument must be typed as, RELATIVE to the
+    receiver (whose `Ty` carries the element/key/value types)."""
+
+    INDEX = auto()
+    ELEM = auto()
+    KEY = auto()
+    VALUE = auto()
+    SAME = auto()
+
+
+class _ResultKind(Enum):
+    """What a container method's result is typed as, relative to the receiver.
+
+    `BOOL` is `Map.has`: tier 1 answers a PLAIN python `bool` there while the
+    host's `map_has` returns a chain `Bool` (F.1.5's named asymmetry). The
+    compiler has one `Bool`, so it types this precisely as the chain one and
+    the divergence is one-way and documented, exactly like `len()` (E19).
+    """
+
+    RECEIVER = auto()
+    ELEM = auto()
+    KEY = auto()
+    VALUE = auto()
+    VEC_OF_KEYS = auto()
+    VEC_OF_VALUES = auto()
+    OPTION_U32 = auto()
+    BOOL = auto()
+    BYTES = auto()
+
+
+@dataclass(frozen=True, kw_only=True)
+class _MethodShape:
+    """One method row's call shape: the tier-1 PARAMETER NAMES (so a keyword
+    argument is accepted under the name the real API uses, minor 8), the type
+    each argument must have, and the result type."""
+
+    params: tuple[str, ...]
+    args: tuple[_ArgKind, ...]
+    result: _ResultKind
+
+
+_METHOD_SHAPES: Mapping[str, _MethodShape] = {
+    "vec.push_back": _MethodShape(
+        params=("value",), args=(_ArgKind.ELEM,), result=_ResultKind.RECEIVER
+    ),
+    "vec.push_front": _MethodShape(
+        params=("value",), args=(_ArgKind.ELEM,), result=_ResultKind.RECEIVER
+    ),
+    "vec.pop_back": _MethodShape(params=(), args=(), result=_ResultKind.RECEIVER),
+    "vec.pop_front": _MethodShape(params=(), args=(), result=_ResultKind.RECEIVER),
+    "vec.get": _MethodShape(params=("index",), args=(_ArgKind.INDEX,), result=_ResultKind.ELEM),
+    "vec.put": _MethodShape(
+        params=("index", "value"),
+        args=(_ArgKind.INDEX, _ArgKind.ELEM),
+        result=_ResultKind.RECEIVER,
+    ),
+    "vec.del_": _MethodShape(
+        params=("index",), args=(_ArgKind.INDEX,), result=_ResultKind.RECEIVER
+    ),
+    "vec.insert": _MethodShape(
+        params=("index", "value"),
+        args=(_ArgKind.INDEX, _ArgKind.ELEM),
+        result=_ResultKind.RECEIVER,
+    ),
+    "vec.append": _MethodShape(
+        params=("other",), args=(_ArgKind.SAME,), result=_ResultKind.RECEIVER
+    ),
+    "vec.slice": _MethodShape(
+        params=("lo", "hi"),
+        args=(_ArgKind.INDEX, _ArgKind.INDEX),
+        result=_ResultKind.RECEIVER,
+    ),
+    "vec.first_index_of": _MethodShape(
+        params=("value",), args=(_ArgKind.ELEM,), result=_ResultKind.OPTION_U32
+    ),
+    "map.set": _MethodShape(
+        params=("key", "value"),
+        args=(_ArgKind.KEY, _ArgKind.VALUE),
+        result=_ResultKind.RECEIVER,
+    ),
+    "map.get": _MethodShape(params=("key",), args=(_ArgKind.KEY,), result=_ResultKind.VALUE),
+    "map.has": _MethodShape(params=("key",), args=(_ArgKind.KEY,), result=_ResultKind.BOOL),
+    "map.del_": _MethodShape(params=("key",), args=(_ArgKind.KEY,), result=_ResultKind.RECEIVER),
+    "map.keys": _MethodShape(params=(), args=(), result=_ResultKind.VEC_OF_KEYS),
+    "map.values": _MethodShape(params=(), args=(), result=_ResultKind.VEC_OF_VALUES),
+    "map.key_by_pos": _MethodShape(
+        params=("position",), args=(_ArgKind.INDEX,), result=_ResultKind.KEY
+    ),
+    "map.val_by_pos": _MethodShape(
+        params=("position",), args=(_ArgKind.INDEX,), result=_ResultKind.VALUE
+    ),
+    "bytes.slice": _MethodShape(
+        params=("lo", "hi"),
+        args=(_ArgKind.INDEX, _ArgKind.INDEX),
+        result=_ResultKind.BYTES,
+    ),
+}
+
+
+def _resolve_container_row(recv_ty: Ty, method: str) -> str | None:
+    """The row key for `<recv_ty>.<method>`, or `None` when that receiver has
+    no such method (`m.push_back(...)`)."""
+    if recv_ty.tag is TyTag.VEC:
+        return VEC_METHODS.get(method)
+    if recv_ty.tag is TyTag.MAP:
+        return MAP_METHODS.get(method)
+    if recv_ty.tag in (TyTag.BYTES, TyTag.BYTES_N):
+        return BYTES_METHODS.get(method)
+    return None
+
+
+def _methods_of(recv_ty: Ty) -> tuple[str, ...]:
+    if recv_ty.tag is TyTag.VEC:
+        return tuple(VEC_METHODS)
+    if recv_ty.tag is TyTag.MAP:
+        return tuple(MAP_METHODS)
+    return tuple(BYTES_METHODS)
+
+
+def _expected_arg_ty(kind: _ArgKind, recv_ty: Ty) -> Ty:
+    if kind is _ArgKind.INDEX:
+        return Ty.U32
+    if kind is _ArgKind.SAME:
+        return recv_ty
+    if kind is _ArgKind.ELEM:
+        assert recv_ty.elem is not None
+        return recv_ty.elem
+    if kind is _ArgKind.KEY:
+        assert recv_ty.key is not None
+        return recv_ty.key
+    assert recv_ty.value is not None
+    return recv_ty.value
+
+
+def _result_ty(kind: _ResultKind, recv_ty: Ty) -> Ty:
+    if kind is _ResultKind.RECEIVER:
+        return recv_ty
+    if kind is _ResultKind.ELEM:
+        assert recv_ty.elem is not None
+        return recv_ty.elem
+    if kind is _ResultKind.KEY:
+        assert recv_ty.key is not None
+        return recv_ty.key
+    if kind is _ResultKind.VALUE:
+        assert recv_ty.value is not None
+        return recv_ty.value
+    if kind is _ResultKind.VEC_OF_KEYS:
+        assert recv_ty.key is not None
+        return Ty.Vec(recv_ty.key)
+    if kind is _ResultKind.VEC_OF_VALUES:
+        assert recv_ty.value is not None
+        return Ty.Vec(recv_ty.value)
+    if kind is _ResultKind.OPTION_U32:
+        # `vec_first_index_of` returns the host's `Option<u32>` (a `Val`), and
+        # tier 1 returns `U32 | None` -- the same shape.
+        return Ty.Option(Ty.U32)
+    if kind is _ResultKind.BOOL:
+        return Ty.Bool
+    # `bytes_slice` hands back a variable-length BytesObject even for a
+    # fixed-length receiver: a sub-range of a Bytes32 is not a Bytes32.
+    return Ty.Bytes
+
+
+def _assignable(value: Ty, declared: Ty) -> bool:
+    """Whether a `value`-typed expression may be stored where `declared` is
+    required -- container elements, map keys/values, and struct fields.
+
+    This is F.1.8's asymmetry, and it is deliberately NOT `expr.py`'s
+    `_comparable`: tier 1's element/key check is `isinstance`, so a
+    fixed-length `BytesN` IS accepted where plain `Bytes` is declared (a
+    `Bytes32` is a `Bytes`), while a plain `Bytes` where `Bytes32` is declared
+    is a tier-1 `TypeError` -- even though the host would happily accept it.
+    C reproduces the ORACLE's strictness, never the host's permissiveness.
+
+    The `Option` clause mirrors `expr.py`'s own literal rule: a `T` where
+    `T | None` is declared is the ordinary widening (a struct field annotated
+    `Symbol | None` takes a `Symbol`).
+    """
+    if value == declared:
+        return True
+    if declared.tag is TyTag.BYTES and value.tag is TyTag.BYTES_N:
+        return True
+    if declared.tag is TyTag.VEC and value.tag is TyTag.VEC:
+        assert declared.elem is not None and value.elem is not None
+        return _assignable(value.elem, declared.elem)
+    if declared.tag is TyTag.OPTION and value.tag is not TyTag.OPTION:
+        assert declared.elem is not None
+        return _assignable(value, declared.elem)
+    return False
+
+
+def _check_value(node: ast.expr, ctx: FuncCtx, *, expected: Ty | None = None) -> IRExpr:
+    """Check one sub-expression, letting THIS module's own surfaces be reached
+    inside it.
+
+    `expr.py`'s dispatch cannot call into this module (it would be an import
+    cycle -- see that module's docstring), so a container construction, a
+    container method, or a struct field read nested inside a recognized call
+    (`env.storage().instance().set(k, Vec(U32, [...]))`, `m.get(k).get(i)`)
+    has to be routed here explicitly until the assembly task joins the two
+    dispatches. `check_expr` remains the fallback for everything else, and
+    `expected` is passed through for literal coercion (S3).
+    """
+    if isinstance(node, ast.Call):
+        recognized = recognize_call(node, ctx)
+        if recognized is not None:
+            return recognized
+    elif isinstance(node, ast.Attribute):
+        recognized = recognize_attribute(node, ctx)
+        if recognized is not None:
+            return recognized
+    return check_expr(node, ctx, expected=expected)
+
+
+# --- container construction (D2/A13) ----------------------------------------
+
+
+def _recognize_construction(node: ast.Call, ctx: FuncCtx, name: str) -> IRExpr | None:
+    """`Vec(T[, items])`, `Map(K, V[, entries])`, `MyStruct(field=...)`.
+
+    Returns `None` for any other `name(...)` call -- a chain-type constructor
+    (`U32(5)`), an event construction, a helper call -- none of which is this
+    module's surface.
+    """
+    obj = ctx.loaded.namespace.get(name)
+    loc = Loc.from_node(ctx.path, node)
+    if obj is _VecType:
+        return _vec_construction(node, ctx, loc)
+    if obj is _MapType:
+        return _map_construction(node, ctx, loc)
+    if isinstance(obj, type):
+        metadata = vars(obj).get(_METADATA_ATTR)
+        if isinstance(metadata, dict) and metadata.get("kind") == "struct":
+            return _struct_construction(node, ctx, loc, name, metadata)
+    return None
+
+
+def _display_items(
+    node: ast.expr | None, ctx: FuncCtx, loc: Loc, example: str
+) -> list[ast.expr] | None:
+    """The elements of a LIST DISPLAY argument, or `None` after reporting.
+
+    D2/A13: a list display is a value only in these two positions, so the
+    items argument must be spelled literally -- there is no iterable protocol
+    on chain to accept anything else.
+    """
+    if node is None:
+        return []
+    if not isinstance(node, ast.List):
+        _error(
+            ctx,
+            _FALLBACK_CODE,
+            loc,
+            "the items must be a list display written in place",
+            help=f"pass a list display, e.g. {example}",
+        )
+        return None
+    return list(node.elts)
+
+
+def _vec_construction(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
+    spec = RECOGNIZED["vec.new"]
+    bound = _bind(node, ctx, loc, spec.surface, ("element_type",), optional=("items",))
+    if bound is None:
+        return _invalid(loc)
+    elem_ty = _resolve_type_arg(bound["element_type"], ctx, loc)
+    if elem_ty is None:
+        return _invalid(loc)
+
+    elements = _display_items(bound.get("items"), ctx, loc, f"Vec({elem_ty.render()}, [...])")
+    if elements is None:
+        return _invalid(loc)
+
+    items: list[IRExpr] = []
+    for element in elements:
+        item = _check_value(element, ctx, expected=elem_ty)
+        if _failed(item):
+            return _invalid(loc)
+        if not _assignable(item.ty, elem_ty):
+            _error(
+                ctx,
+                "SPT3018",
+                loc,
+                f"item is {item.ty.render()}, not {elem_ty.render()}",
+            )
+            return _invalid(loc)
+        items.append(item)
+
+    return MakeVec(
+        loc=loc,
+        ty=Ty.Vec(elem_ty),
+        elem_ty=elem_ty,
+        items=tuple(items),
+        all_static=_all_static(items),
+    )
+
+
+def _map_construction(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
+    spec = RECOGNIZED["map.new"]
+    bound = _bind(node, ctx, loc, spec.surface, ("key_type", "value_type"), optional=("entries",))
+    if bound is None:
+        return _invalid(loc)
+    key_ty = _resolve_type_arg(bound["key_type"], ctx, loc)
+    if key_ty is None:
+        return _invalid(loc)
+    value_ty = _resolve_type_arg(bound["value_type"], ctx, loc)
+    if value_ty is None:
+        return _invalid(loc)
+
+    example = f"Map({key_ty.render()}, {value_ty.render()}, [(k, v)])"
+    elements = _display_items(bound.get("entries"), ctx, loc, example)
+    if elements is None:
+        return _invalid(loc)
+
+    pairs: list[tuple[IRExpr, IRExpr]] = []
+    for element in elements:
+        if not isinstance(element, ast.Tuple) or len(element.elts) != 2:
+            _error(
+                ctx,
+                _FALLBACK_CODE,
+                loc,
+                "each entry must be a (key, value) tuple written in place",
+                help=f"pass (key, value) tuples, e.g. {example}",
+            )
+            return _invalid(loc)
+        key_node, value_node = element.elts
+        key = _check_value(key_node, ctx, expected=key_ty)
+        if _failed(key):
+            return _invalid(loc)
+        if not _assignable(key.ty, key_ty):
+            _error(ctx, "SPT3018", loc, f"key is {key.ty.render()}, not {key_ty.render()}")
+            return _invalid(loc)
+        value = _check_value(value_node, ctx, expected=value_ty)
+        if _failed(value):
+            return _invalid(loc)
+        if not _assignable(value.ty, value_ty):
+            _error(ctx, "SPT3018", loc, f"value is {value.ty.render()}, not {value_ty.render()}")
+            return _invalid(loc)
+        pairs.append((key, value))
+
+    ordered, all_static = _order_map_pairs(tuple(pairs))
+    return MakeMap(
+        loc=loc,
+        ty=Ty.Map(key_ty, value_ty),
+        key_ty=key_ty,
+        value_ty=value_ty,
+        pairs=ordered,
+        all_static=all_static,
+    )
+
+
+def _all_static(nodes: Sequence[IRExpr]) -> bool:
+    """MJ-15/`MakeVec.all_static`: whether D can lay the items out in linear
+    memory. An EMPTY container is deliberately NOT static -- there is nothing
+    to lay out, and `vec_new`/`map_new` is the honest lowering. A `ConstRef`
+    (a module-level chain constant, P5) is conservatively not counted: it is a
+    compile-time value, but treating it as one here would commit D to a data
+    layout decision C has not proven, and the fallback path is always sound.
+    """
+    return bool(nodes) and all(isinstance(item, Const) for item in nodes)
+
+
+def static_map_order(keys: Sequence[IRExpr]) -> tuple[int, ...] | None:
+    """MJ-15: the indices of `keys` in the HOST's key order, or `None` when C
+    cannot totally order them.
+
+    The ordering is delegated to the oracle's own `val_cmp` (`ScValType` rank,
+    then the within-type payload -- A8/A14) by rebuilding the tier-1 value of
+    each literal key, exactly as `expr.py` rebuilds one to validate a literal.
+    `None` comes back for a key that is not a literal at all, a key type with
+    no tier-1 literal form (a struct -- E3's "not modelled in tier 1"), and any
+    pair `val_cmp` itself refuses (a `Vec`/`Map` key, whose within-type
+    ordering tier 1 leaves deferred). A15 forbids inventing an order the
+    oracle cannot check, so the caller must then leave the map to the host.
+    """
+    values: list[Any] = []
+    for key in keys:
+        if not isinstance(key, Const):
+            return None
+        cls = oracle_class(key.ty)
+        if cls is None:
+            return None
+        try:
+            values.append(cls(key.py_value))
+        except Exception:  # noqa: BLE001 -- the literal was already validated;
+            # a constructor that refuses it here is a reason to decline the
+            # pre-sort, never a second diagnostic (or a traceback, F.2.5).
+            return None
+
+    def compare(left: int, right: int) -> int:
+        return val_cmp(values[left], values[right])
+
+    try:
+        return tuple(sorted(range(len(values)), key=cmp_to_key(compare)))
+    except (TypeError, NotImplementedError):
+        return None
+
+
+def _order_map_pairs(
+    pairs: tuple[tuple[IRExpr, IRExpr], ...],
+) -> tuple[tuple[tuple[IRExpr, IRExpr], ...], bool]:
+    """`(pairs in the order D receives them, all_static)`.
+
+    Reordering happens ONLY when every key and value is a literal and the
+    oracle could order the keys: F.1.12 makes a `Map` literal's order
+    observable on chain, and the evaluation order of non-literal value
+    expressions (which can trap or spend budget) is observable too. So the
+    non-static path hands back SOURCE order untouched and D lets the host
+    sort.
+    """
+    keys = [key for key, _ in pairs]
+    values = [value for _, value in pairs]
+    if not (_all_static(keys) and _all_static(values)):
+        return pairs, False
+    order = static_map_order(keys)
+    if order is None:
+        return pairs, False
+    return tuple(pairs[index] for index in order), True
+
+
+# --- struct construction (kwargs only) and field reads ----------------------
+
+
+def _struct_fields(ctx: FuncCtx, name: str) -> Sequence[tuple[str, Any]] | None:
+    """A declared struct's `(field name, resolved annotation)` pairs in
+    DECLARATION order, straight from `_serpent_type_` (A19/B9)."""
+    for decl in ctx.loaded.decorated_types_in_order:
+        if decl.name == name and decl.kind == "struct":
+            fields = decl.metadata.get("fields")
+            if isinstance(fields, list):
+                return [(str(field_name), annotation) for field_name, annotation in fields]
+    return None
+
+
+def _struct_construction(
+    node: ast.Call, ctx: FuncCtx, loc: Loc, name: str, metadata: Mapping[str, Any]
+) -> IRExpr:
+    """`MyStruct(field=value, ...)`: KEYWORDS ONLY, every field required.
+
+    Keywords only because a struct is a `Map<Symbol, V>` on chain (S9) whose
+    field order is the SORTED one, not the declaration one -- positional
+    arguments would make the source order look meaningful when it is not. The
+    field sort itself is C's (P7): `map_new_from_linear_memory` needs the key
+    descriptors ascending as byte strings at compile time, and the wrong
+    layout validates and then panics on-chain (F.1.13). The values are checked
+    in DECLARATION order (the order the author wrote is the order any
+    diagnostic reads best in) and the resulting pairs are sorted after.
+    """
+    declared = metadata.get("fields")
+    assert isinstance(declared, list), f"@contracttype {name} carries no field list"
+    fields: list[tuple[str, Any]] = [
+        (str(field_name), annotation) for field_name, annotation in declared
+    ]
+    names = [field_name for field_name, _ in fields]
+
+    if node.args:
+        _error(
+            ctx,
+            "SPT3020",
+            loc,
+            f"`{name}(...)` takes keyword arguments only, got {len(node.args)} positional",
+            help=f"name every field, e.g. {name}({names[0]}=...)" if names else None,
+        )
+        return _invalid(loc)
+
+    supplied: dict[str, ast.expr] = {}
+    for keyword in node.keywords:
+        if keyword.arg is None:
+            _error(ctx, "SPT1035", loc, f"`**` unpacking is not a way to build `{name}`")
+            return _invalid(loc)
+        if keyword.arg not in names:
+            _error(
+                ctx,
+                "SPT3020",
+                loc,
+                f"`{keyword.arg}` is not a field of `{name}`",
+                help=f"the declared fields are: {', '.join(names)}",
+            )
+            return _invalid(loc)
+        if keyword.arg in supplied:
+            _error(ctx, "SPT3020", loc, f"`{name}` got multiple values for `{keyword.arg}`")
+            return _invalid(loc)
+        supplied[keyword.arg] = keyword.value
+
+    missing = [field_name for field_name in names if field_name not in supplied]
+    if missing:
+        _error(
+            ctx,
+            "SPT3020",
+            loc,
+            f"`{name}` is missing field(s): {', '.join(missing)}",
+        )
+        return _invalid(loc)
+
+    built: list[tuple[str, IRExpr]] = []
+    for field_name, annotation in fields:
+        field_ty = resolve_annotation(annotation, ctx.loaded, loc, ctx.sink)
+        if field_ty is None:
+            return _invalid(loc)
+        value = _check_value(supplied[field_name], ctx, expected=field_ty)
+        if _failed(value):
+            return _invalid(loc)
+        if not _assignable(value.ty, field_ty):
+            _error(
+                ctx,
+                "SPT3018",
+                loc,
+                f"field `{field_name}` is {value.ty.render()}, not {field_ty.render()}",
+            )
+            return _invalid(loc)
+        built.append((field_name, value))
+
+    built.sort(key=lambda item: item[0].encode())
+    return MakeStruct(loc=loc, ty=Ty.Struct(name), struct_name=name, fields=tuple(built))
+
+
+def _recognize_field_get(node: ast.Attribute, ctx: FuncCtx, loc: Loc, base: IRExpr) -> IRExpr:
+    """`value.field` on a `@contracttype` value: a `Symbol` key, then `map_get`
+    (SS C.4's struct-field-read row)."""
+    assert base.ty.name is not None
+    struct_name = base.ty.name
+    fields = _struct_fields(ctx, struct_name)
+    assert fields is not None, (
+        f"Ty.Struct({struct_name!r}) resolved outside this module's declared-type "
+        "inventory; resolve_annotation already refuses that (F.1.14)"
+    )
+    for field_name, annotation in fields:
+        if field_name == node.attr:
+            field_ty = resolve_annotation(annotation, ctx.loaded, loc, ctx.sink)
+            if field_ty is None:
+                return _invalid(loc)
+            return FieldGet(
+                loc=loc, ty=field_ty, obj=base, field=field_name, struct_name=struct_name
+            )
+    _error(
+        ctx,
+        "SPT2001",
+        loc,
+        f"`{struct_name}` has no field `{node.attr}`",
+        help=f"the declared fields are: {', '.join(name for name, _ in fields)}",
+    )
+    return _invalid(loc)
+
+
+# --- container methods: readers (value position) ----------------------------
+
+
+def _bound_args(
+    node: ast.Call, ctx: FuncCtx, loc: Loc, row: str, recv: IRExpr
+) -> tuple[IRExpr, ...] | None:
+    """Bind and type-check one method row's arguments, or `None` after
+    reporting. Shared by the reader and the mutator paths so a method's call
+    shape is checked in exactly one place."""
+    spec = RECOGNIZED[row]
+    shape = _METHOD_SHAPES[row]
+    bound = _bind(node, ctx, loc, spec.surface, shape.params)
+    if bound is None:
+        return None
+    args: list[IRExpr] = []
+    for param, kind in zip(shape.params, shape.args, strict=True):
+        declared = _expected_arg_ty(kind, recv.ty)
+        value = _check_value(bound[param], ctx, expected=declared)
+        if _failed(value):
+            return None
+        if not _assignable(value.ty, declared):
+            _error(
+                ctx,
+                "SPT3018",
+                loc,
+                f"`{param}` is {value.ty.render()}, not {declared.render()}",
+            )
+            return None
+        args.append(value)
+    return tuple(args)
+
+
+def _recognize_container_method(
+    node: ast.Call, ctx: FuncCtx, method: str, base: ast.expr
+) -> IRExpr | None:
+    """A container method in a VALUE position.
+
+    Returns `None` when the receiver turns out not to be a container at all
+    (a struct method call, `amt.get(0)`), leaving the sink untouched -- the
+    method NAME alone is not enough to claim the surface, and the receiver's
+    type is the only way to know.
+    """
+    loc = Loc.from_node(ctx.path, node)
+    recv = _check_value(base, ctx)
+    if _failed(recv):
+        # Committed: the receiver's own diagnostic is already in the sink, so
+        # returning `None` here would invite a second, cascaded one.
+        return _invalid(loc)
+    if recv.ty.tag not in _CONTAINER_TAGS:
+        return None
+
+    row = _resolve_container_row(recv.ty, method)
+    if row is None:
+        _error(
+            ctx,
+            "SPT2001",
+            loc,
+            f"`{recv.ty.render()}` has no method `{method}`",
+            help=f"it supports: {', '.join(_methods_of(recv.ty))}",
+        )
+        return _invalid(loc)
+
+    spec = RECOGNIZED[row]
+    if spec.kind is SurfaceKind.MUTATOR:
+        return _reject_mutator_in_value_position(ctx, loc, row)
+
+    args = _bound_args(node, ctx, loc, row, recv)
+    if args is None:
+        return _invalid(loc)
+    (fn_name,) = spec.host_fns
+    return HostCall(
+        loc=loc,
+        ty=_result_ty(_METHOD_SHAPES[row].result, recv.ty),
+        fn_name=fn_name,
+        args=(recv, *args),
+    )
+
+
+# --- the E11 alias-analysis pass (BL-3) -------------------------------------
+
+#: Host functions whose result is a BRAND-NEW container. Tier 1 agrees: both
+#: `Map.keys`/`Map.values` build a fresh `Vec` through the validating
+#: constructor and `Vec.slice` returns a new `Vec`, so a local bound from one
+#: of these is genuinely the only reference and is safe to rebind.
+_FRESH_CONTAINER_FNS: frozenset[str] = frozenset({"vec_slice", "map_keys", "map_values"})
+
+#: Host functions that hand back something the RECEIVER still holds. At tier 1
+#: `Vec.get`/`Map.get`/`key_by_pos`/`val_by_pos` return the very object stored
+#: inside the container, so mutating the result in place edits the container at
+#: tier 1 and cannot on chain (the rebind touches only the local) -- E11's
+#: divergence, one level down.
+_ELEMENT_FNS: frozenset[str] = frozenset({"vec_get", "map_get", "map_key_by_pos", "map_val_by_pos"})
+
+_FUNCTIONAL_OP_NOTE = (
+    "the host's container operations are functional -- vec_push_back(v, x) returns a NEW "
+    "VecObject -- while types.Vec.push_back mutates in place, so C lowers a mutation to a "
+    "rebind of the receiver's own binding (E11). Wherever C does not own that binding the "
+    "two tiers silently disagree: after `a = b`, `a.push_back(x)` also changes `b` at "
+    "tier 1 and cannot on chain"
+)
+
+
+class BindingSource(Enum):
+    """Where a container-typed expression's binding came from (E11).
+
+    `CONSTRUCTION` and `FRESH_HOST_RESULT` are the only two that can be
+    `Ownership.OWNED`; every other source is a reference C cannot prove
+    exclusive, so it is `ALIASED` and mutation through it is a reject.
+    """
+
+    CONSTRUCTION = auto()
+    FRESH_HOST_RESULT = auto()
+    LOCAL_ALIAS = auto()
+    PARAM = auto()
+    FIELD = auto()
+    ELEMENT = auto()
+    OTHER = auto()
+
+
+_OWNED_SOURCES: frozenset[BindingSource] = frozenset(
+    {BindingSource.CONSTRUCTION, BindingSource.FRESH_HOST_RESULT}
+)
+
+
+def classify_binding(value: IRExpr) -> BindingSource:
+    """Classify one container-typed expression by where its handle came from.
+
+    A `HostCall` this module does not classify explicitly falls to `OTHER`,
+    which is `ALIASED`: a new host function reaching the IR must be ADDED to
+    `_FRESH_CONTAINER_FNS` deliberately, so the default answer is the
+    conservative one (a reject) rather than an unsound rebind.
+    """
+    if isinstance(value, (MakeVec, MakeMap)):
+        return BindingSource.CONSTRUCTION
+    if isinstance(value, HostCall):
+        if value.fn_name in _FRESH_CONTAINER_FNS:
+            return BindingSource.FRESH_HOST_RESULT
+        if value.fn_name in _ELEMENT_FNS:
+            return BindingSource.ELEMENT
+        return BindingSource.OTHER
+    if isinstance(value, LocalRef):
+        return BindingSource.LOCAL_ALIAS
+    if isinstance(value, ParamRef):
+        return BindingSource.PARAM
+    if isinstance(value, FieldGet):
+        return BindingSource.FIELD
+    return BindingSource.OTHER
+
+
+def note_local_binding(slot: int, value: IRExpr, ctx: FuncCtx) -> Ownership | None:
+    """Record what binding `slot` to `value` means for E11, and return the
+    `Ownership` recorded (`None` when `value` is not a mutable container type,
+    which is most bindings -- nothing to track).
+
+    `a = b` where `b` names another container local marks BOTH slots
+    `ALIASED`, not just `a`: after that assignment the two names share one
+    object at tier 1, so rebinding EITHER of them would diverge. Rebinding a
+    slot from a fresh value restores `OWNED` (the old alias relationship is
+    gone), while the other name stays `ALIASED` -- C cannot prove no third
+    reference exists, and the conservative answer is a reject, not a silent
+    rebind.
+    """
+    if value.ty.tag not in _MUTABLE_TAGS:
+        return None
+    source = classify_binding(value)
+    if source is BindingSource.LOCAL_ALIAS:
+        assert isinstance(value, LocalRef)
+        ctx.alias_sets.mark_aliased(value.slot)
+        ctx.alias_sets.mark_aliased(slot)
+        return Ownership.ALIASED
+    if source in _OWNED_SOURCES:
+        ctx.alias_sets.mark_owned(slot)
+        return Ownership.OWNED
+    ctx.alias_sets.mark_aliased(slot)
+    return Ownership.ALIASED
+
+
+def _mutation_help(recv: IRExpr, *, temporary: bool) -> str:
+    if temporary:
+        return (
+            "bind the container to a local first and mutate that: `v = Vec(U32, [...])` on "
+            "one line, `v.push_back(x)` on the next -- C then rebinds v for you"
+        )
+    if recv.ty.tag is TyTag.VEC:
+        return (
+            "mutate only a local this method owns: take a copy you own with "
+            "`v = <container>.slice(U32(0), len(<container>))`, then `v.push_back(...)` -- "
+            "C rebinds v (v = vec_push_back(v, x)) for you"
+        )
+    return (
+        "mutate only a local this method owns: build it with `m = Map(K, V)` and `set(...)` "
+        "into it -- C rebinds it for you. A Map reached through a parameter, a field, or "
+        "another local cannot be mutated in place in M1"
+    )
+
+
+def _mutation_slot(recv: IRExpr, ctx: FuncCtx, loc: Loc, surface: str) -> int | None:
+    """The local slot a mutation may rebind, or `None` after reporting
+    `SPT1034` (E11/BL-3: mutation is legal ONLY on an unaliased local whose
+    binding C owns)."""
+    if isinstance(recv, LocalRef):
+        ownership = ctx.alias_sets.ownership_of(recv.slot)
+        if ownership is Ownership.OWNED:
+            return recv.slot
+        detail = (
+            f"`{recv.name}` is aliased to another binding"
+            if ownership is Ownership.ALIASED
+            # No entry at all: an unclassified slot is not KNOWN to be owned.
+            # Failing loudly here is deliberate -- a later task that forgets to
+            # run `note_local_binding` gets a reject, never a silent unsound
+            # rebind of the highest-severity divergence in the frontend.
+            else f"`{recv.name}` has no binding C has classified as its own"
+        )
+        _error(
+            ctx,
+            "SPT1034",
+            loc,
+            f"`{surface}` cannot mutate it: {detail}",
+            help=_mutation_help(recv, temporary=False),
+            notes=(_FUNCTIONAL_OP_NOTE,),
+        )
+        return None
+
+    source = classify_binding(recv)
+    if source is BindingSource.PARAM:
+        detail = "the receiver is a parameter, whose binding belongs to the caller"
+    elif source is BindingSource.FIELD:
+        detail = "the receiver is a struct field read, which is a copy C does not own"
+    elif source is BindingSource.ELEMENT:
+        detail = (
+            "the receiver is an element read, which hands back the value the container "
+            "itself still holds"
+        )
+    else:
+        detail = "the receiver is a temporary with no binding to rebind"
+    _error(
+        ctx,
+        "SPT1034",
+        loc,
+        f"`{surface}` cannot mutate it: {detail}",
+        help=_mutation_help(
+            recv, temporary=source not in (BindingSource.PARAM, BindingSource.FIELD)
+        ),
+        notes=(_FUNCTIONAL_OP_NOTE,),
+    )
+    return None
+
+
+def _reject_mutator_in_value_position(ctx: FuncCtx, loc: Loc, row: str) -> IRExpr:
+    """A mutator reached as a VALUE.
+
+    There is no binding to rewrite in an expression position, and tier 1
+    agrees the shape is wrong: its mutators return `None`, so
+    `x = v.push_back(y)` is not valid Python against the authoring surface
+    either. `pop_back`/`pop_front` get their own `help`, because tier 1 DOES
+    return the popped element there while the host's `vec_pop_back` returns
+    the new `Vec` -- reading the element first is the rewrite that works.
+    """
+    surface = RECOGNIZED[row].surface
+    if row in ("vec.pop_back", "vec.pop_front"):
+        help_text = (
+            "read the element first -- `x = v.get(U32(0))` for pop_front, "
+            "`x = v.get(len(v) - U32(1))` for pop_back -- then pop on a line of its own"
+        )
+    else:
+        help_text = (
+            f"put `{surface}` on a line of its own; C lowers it to a rebind of the "
+            "receiver (v = vec_push_back(v, x))"
+        )
+    _error(
+        ctx,
+        "SPT1034",
+        loc,
+        f"`{surface}` mutates its receiver, so it is supported only as a statement of its own",
+        help=help_text,
+        notes=(_FUNCTIONAL_OP_NOTE,),
+    )
+    return _invalid(loc)
+
+
+def _is_env_surface(node: ast.expr) -> bool:
+    """Whether `node` is one of Task 7a's own receivers -- which matters
+    because `get`/`has`/`set`/`del_` are method names BOTH surfaces use."""
+    return (
+        _match_storage_bucket(node) is not None
+        or _match_no_arg_chain(node, "ledger")
+        or _match_no_arg_chain(node, "events")
+        or _is_env_name(node)
+    )
+
+
+def recognize_mutation(node: ast.Call, ctx: FuncCtx) -> IRStmt | None:
+    """Recognize a container mutation in STATEMENT position, lowering it to
+    E11's rebind: `v.push_back(x)` -> `SetLocal(slot, vec_push_back(v, x))`.
+
+    Returns `None` when `node` is not a container mutation at all (a reader, a
+    construction, an env call, a method the receiver does not have) so the
+    caller can fall through to ordinary expression-statement checking, and a
+    `Nop` after reporting -- the statement lowers to nothing, and a compile
+    with diagnostics never reaches D anyway (SS C.2).
+
+    `SetLocal` rather than a new IR node is the whole point: the rebind is an
+    ordinary assignment to the slot C already owns, so there is no way for a
+    consumer to receive the mutation and miss the rebind.
+
+    **Hand-off note for the task that wires the statement checker to this
+    module:** the guard passes only for a slot whose `Ownership` is `OWNED`,
+    and nothing sets that but `note_local_binding`. So the statement checker
+    must call `note_local_binding(slot, value, ctx)` at EVERY local binding
+    (`Assign`, `AnnAssign`, and a desugared `for` target) before a mutation
+    can be accepted. An unclassified slot is a reject, so a missing call
+    shows up as a loud, located diagnostic rather than an unsound rebind.
+    """
+    func = node.func
+    if not isinstance(func, ast.Attribute) or func.attr not in _CONTAINER_METHOD_NAMES:
+        return None
+    if _is_env_surface(func.value):
+        return None
+
+    loc = Loc.from_node(ctx.path, node)
+    recv = _check_value(func.value, ctx)
+    if _failed(recv):
+        return Nop(loc=loc)
+    row = _resolve_container_row(recv.ty, func.attr)
+    if row is None or RECOGNIZED[row].kind is not SurfaceKind.MUTATOR:
+        return None
+
+    spec = RECOGNIZED[row]
+    args = _bound_args(node, ctx, loc, row, recv)
+    if args is None:
+        return Nop(loc=loc)
+    slot = _mutation_slot(recv, ctx, loc, spec.surface)
+    if slot is None:
+        return Nop(loc=loc)
+    (fn_name,) = spec.host_fns
+    return SetLocal(
+        loc=loc,
+        slot=slot,
+        value=HostCall(loc=loc, ty=recv.ty, fn_name=fn_name, args=(recv, *args)),
+    )
 
 
 # --- completeness support (MJ-3; the assertion itself lives in the test) -----

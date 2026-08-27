@@ -1260,13 +1260,15 @@ def test_unsupported_expression_constructs(source: str, code: str) -> None:
     _assert_reject(_reject(source), code, "")
 
 
-def test_subscript_is_deferred_to_task_7b() -> None:
-    """MJ-13: `Bytes[i]`, slices, and the alias-sensitive forms are Task 7b's.
-    Until then the dispatch must still produce a clean, located diagnostic."""
-    diag = _reject("by[0]")
-    assert diag.code == "SPT1037"
-    assert diag.help
-    assert any("7b" in note for note in diag.notes), diag.notes
+def test_subscript_is_no_longer_deferred() -> None:
+    """MJ-13 landed in Task 7b: `Bytes[i]` lowers here now (`bytes_get` ->
+    `U32`), and the slice/negative-literal/annotation-form rejects come with
+    it. The full four-case matrix lives in `test_containers_frontend.py`; this
+    row only pins that the Task 5 placeholder is gone."""
+    ctx = _ctx()
+    node = check_expr(ast.parse("by[0]", mode="eval").body, ctx)
+    assert not ctx.sink, [d.message for d in ctx.sink.diagnostics]
+    assert node.ty == Ty.U32
 
 
 # --- exhaustive dispatch (MJ-11) --------------------------------------------
@@ -1445,14 +1447,13 @@ def test_cases_py_reject_case_is_rejected(name: str, source: str, code: str) -> 
         # Wrapped in Bool(...) in cases.py, per its truthiness convention.
         ("symbol_does_not_coerce_from_str", 'Bool(Symbol("abc") == "abc")'),
         ("bytes_does_not_coerce_from_raw_bytes", 'Bool(Bytes(b"abc") == b"abc")'),
+        # The fourth case: a negative LITERAL index, rejected by MJ-13's
+        # subscript checking as of Task 7b (D6/SPT3011).
+        ("bytes_negative_index_traps", 'Bytes(b"ab")[-1]'),
     ],
 )
 def test_tier1_only_expression_cases_are_rejected(name: str, source: str) -> None:
-    """F.2.2: `tier1_only` must mean "the frontend rejects it".
-
-    The fourth `tier1_only` case (`bytes_negative_index_traps`) is a
-    Subscript, which MJ-13 assigns to Task 7b.
-    """
+    """F.2.2: `tier1_only` must mean "the frontend rejects it" -- all four."""
     from tests.semantics.cases import CASES
 
     by_name = {case.name: case for case in CASES}

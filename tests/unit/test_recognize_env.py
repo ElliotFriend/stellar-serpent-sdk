@@ -210,12 +210,21 @@ _EXPECTED_ROWS: frozenset[str] = frozenset(
 
 
 def test_recognized_has_every_expected_row() -> None:
-    assert set(RECOGNIZED) == _EXPECTED_ROWS
+    """Exactly these rows carry `family="env"`.
+
+    Task 7b added the container/struct rows to the SAME table (MJ-3: one
+    source of truth for the surface -> host-fn mapping), so this assertion is
+    scoped by `family` rather than over the whole table -- their own exactness
+    assertion lives in `test_containers_frontend.py`.
+    """
+    env_rows = {key for key, spec in RECOGNIZED.items() if spec.family == "env"}
+    assert env_rows == _EXPECTED_ROWS
 
 
 def test_recognized_rows_are_internally_consistent() -> None:
     for key, spec in RECOGNIZED.items():
         assert isinstance(spec, HostCallSpec)
+        assert spec.family in ("env", "container"), key
         if spec.kind is SurfaceKind.REJECT:
             assert spec.host_fns == (), key
             assert spec.reject_code is not None, key
@@ -224,7 +233,9 @@ def test_recognized_rows_are_internally_consistent() -> None:
             assert len(spec.host_fns) == 2, key
             assert spec.reject_code is None, key
         else:
-            assert spec.kind is SurfaceKind.HOST_CALL
+            # Every other kind -- `HOST_CALL` and Task 7b's container shapes
+            # (`MUTATOR`/`MAKE_VEC`/`MAKE_MAP`/`MAKE_STRUCT`/`FIELD_GET`) --
+            # names at least one host function and rejects nothing.
             assert len(spec.host_fns) >= 1, key
             assert spec.reject_code is None, key
 
@@ -567,8 +578,11 @@ def test_recognize_call_returns_none_for_an_unrelated_call() -> None:
 
 
 def test_recognize_attribute_returns_none_for_a_non_env_base() -> None:
+    """A base that is neither `env` nor a struct is not this function's
+    surface. (`key.owner` -- a struct FIELD read -- became `recognize_
+    attribute`'s in Task 7b, and is tested in `test_containers_frontend.py`.)"""
     ctx = _ctx()
-    node = recognize_attribute(_parse_attr("key.owner"), ctx)
+    node = recognize_attribute(_parse_attr("amt.whatever"), ctx)
     assert node is None
     assert not ctx.sink
 
