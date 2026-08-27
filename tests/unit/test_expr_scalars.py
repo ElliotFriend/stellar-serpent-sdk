@@ -613,12 +613,16 @@ def test_self_attribute_read_is_rejected_as_state(source: str) -> None:
     assert "storage" in (diag.help or "")
 
 
-def test_self_method_call_is_an_internal_call_for_task_8() -> None:
-    """A private METHOD is E8-supported (an InternalCall on a non-exported
-    wasm function), so it defers rather than rejecting outright."""
+def test_a_self_method_call_is_resolved_against_the_contract() -> None:
+    """A private METHOD is E8-supported (an `InternalCall` on a non-exported
+    wasm function), which Task 8 landed -- so `self.<attr>(...)` is resolved
+    against the contract's own methods rather than deferred. This module's
+    fixture contract declares no `_helper`, so the honest answer here is
+    "not a method of this contract"; the supported and rejected E8 shapes
+    (a private method, an export called through `self`) are covered in
+    `test_decls.py`, which is where a declaration table exists."""
     diag = _reject("self._helper(a)")
-    assert diag.code == "SPT1037"
-    assert any("Task 8" in note for note in diag.notes), diag.notes
+    _assert_reject(diag, "SPT2001", "_helper")
 
 
 def test_bare_chain_type_name_in_a_value_position_is_rejected() -> None:

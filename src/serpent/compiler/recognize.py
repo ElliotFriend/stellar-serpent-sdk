@@ -142,7 +142,7 @@ IR shape the frozen SS C.2 node inventory has no node for (there is no
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import cmp_to_key
@@ -151,7 +151,7 @@ from typing import Any
 from serpent import errors, val
 from serpent._host import STORAGE_TYPE, functions_by_name
 from serpent.compiler import codes
-from serpent.compiler.ctx import FuncCtx, Ownership
+from serpent.compiler.ctx import MUTABLE_TAGS, FuncCtx, Ownership
 from serpent.compiler.diagnostics import Loc
 from serpent.compiler.expr import check_expr, oracle_class
 from serpent.compiler.ir import (
@@ -1218,9 +1218,10 @@ _CONTAINER_METHOD_NAMES: frozenset[str] = (
 _CONTAINER_TAGS: frozenset[TyTag] = frozenset({TyTag.VEC, TyTag.MAP, TyTag.BYTES, TyTag.BYTES_N})
 
 #: The tags whose values are MUTABLE at tier 1 -- the ones E11's alias
-#: analysis tracks. `Bytes` has no mutating method and a `@contracttype` struct
-#: is a frozen dataclass, so neither can ever need a rebind.
-_MUTABLE_TAGS: frozenset[TyTag] = frozenset({TyTag.VEC, TyTag.MAP})
+#: analysis tracks -- imported from `ctx.py`, where the alias STATE and its
+#: shared escape walk live (Task 8 moved both down so `expr.py`'s
+#: internal-call site can reach them without importing this module).
+_MUTABLE_TAGS: frozenset[TyTag] = MUTABLE_TAGS
 
 
 class _ArgKind(Enum):
@@ -1994,23 +1995,6 @@ def classify_binding(value: IRExpr) -> BindingSource:
     return BindingSource.OTHER
 
 
-def _escaping_locals(value: IRExpr) -> Iterator[LocalRef]:
-    """Every local whose own handle `value` can BE.
-
-    A `LocalRef` is the local itself; an `IfExp` can be either arm. Everything
-    else -- a `HostCall`, a `Make*` node, a `FieldGet` -- produces a NEW value
-    from its operands, so a local mentioned inside one of those does not escape
-    through it. That precision matters: treating any nested mention as an
-    escape would reject `w = Vec(U32, [v.get(U32(0))]); v.push_back(x)`, where
-    only an ELEMENT of `v` was copied out and both tiers agree.
-    """
-    if isinstance(value, LocalRef):
-        yield value
-    elif isinstance(value, IfExp):
-        yield from _escaping_locals(value.then)
-        yield from _escaping_locals(value.orelse)
-
-
 def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx) -> None:
     """Mark every container local whose handle ESCAPES into `values` as
     `ALIASED` (E11, review fix round 1's Critical 1).
@@ -2044,11 +2028,15 @@ def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx) -> None:
     container type can be requested), but Task 8's wiring must route that
     lowering's result through the same escape handling if it becomes
     reachable.
+
+    **The walk itself lives on `AliasTable.mark_escapes` (`ctx.py`)**, because
+    Task 8's internal-call site in `expr.py` needs the same rule and cannot
+    import this module (`recognize` imports `check_expr`). This function stays
+    the documented entry point -- and the place the "which positions are NOT
+    escapes" ruling above is recorded -- while there is exactly one copy of
+    the "which locals can this expression BE" walk.
     """
-    for value in values:
-        for ref in _escaping_locals(value):
-            if ref.ty.tag in _MUTABLE_TAGS:
-                ctx.alias_sets.mark_aliased(ref.slot)
+    ctx.alias_sets.mark_escapes(values)
 
 
 def note_local_binding(slot: int, value: IRExpr, ctx: FuncCtx) -> Ownership | None:
@@ -2250,11 +2238,13 @@ def recognize_mutation(node: ast.Call, ctx: FuncCtx) -> IRStmt | None:
     where the checker happens to be. Per-statement calls then only ever narrow
     from a state that was already conservative.
 
-    One escape position does not exist yet and is Task 8's to wire: an
-    `InternalCall` ARGUMENT (E8's module-level helpers and private methods). A
-    callee can embed a passed local in a container of its own, so a container
-    argument to an internal call must go through `note_escapes` the same way a
-    mutation argument does -- conservatively, without inspecting the callee.
+    One escape position lives outside this module: an `InternalCall` ARGUMENT
+    (E8's module-level helpers and private methods). A callee can embed a
+    passed local in a container of its own, so a container argument to an
+    internal call is treated as an escape the same way a mutation argument is
+    -- conservatively, without inspecting the callee. Task 8 wired it at
+    `expr.py`'s internal-call site, through `AliasTable.mark_escapes` (the
+    same walk this function delegates to).
 
     An unclassified slot is a reject, so a missing call shows up as a loud,
     located diagnostic rather than an unsound rebind.

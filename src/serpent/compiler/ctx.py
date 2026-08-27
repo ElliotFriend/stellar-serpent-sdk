@@ -19,30 +19,49 @@ Three pieces of per-function STATE live alongside `FuncCtx`:
   `LocalSlot.definitely_assigned` is the state that analysis reads and
   writes, not the analysis itself.
 * `AliasTable` -- the E11 alias-analysis STATE (which container-typed local
-  slots are C-owned vs. aliased). The analysis that decides ownership
-  transitions is Task 7b's (E11/BL-3); this module defines only where that
-  answer lives.
+  slots are C-owned vs. aliased), plus the one walk that state has to share:
+  `mark_escapes`, "every mutable-container local this expression can BE loses
+  ownership". The analysis that DECIDES ownership transitions is Task 7b's
+  (`recognize.note_local_binding`/`note_escapes`, E11/BL-3); the walk lives
+  here because Task 8 needs it too, from `expr.py`'s internal-call site, and
+  `expr.py` cannot import `recognize.py` (that module imports `check_expr`).
+  A second copy of a five-line soundness walk is exactly the drift this file
+  exists to prevent, so there is one copy and `recognize.note_escapes`
+  delegates to it.
 * `Ownership` -- the two-value answer `AliasTable` tracks.
+* `InternalSig` -- the CALL-SITE view of an internal call target (E8): a
+  module-level helper or a private method, resolved once by
+  `decls.check_declarations` and consumed by `expr.py`. It lives here for the
+  same reason `FuncCtx` does (MJ-10): `expr.py` is below `decls.py` in the
+  import order, so the shape they share has to be defined below both.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from serpent.compiler import codes
 from serpent.compiler.diagnostics import Diagnostics, Loc
+from serpent.compiler.ir import IfExp, IRExpr, LocalRef
 from serpent.compiler.loader import LoadedModule
-from serpent.compiler.types_ import Ty
+from serpent.compiler.types_ import Ty, TyTag
 
 __all__ = [
+    "MUTABLE_TAGS",
     "AliasTable",
     "FuncCtx",
+    "InternalSig",
     "LocalSlot",
     "Ownership",
     "SlotTable",
 ]
+
+#: The tags whose values are MUTABLE at tier 1 -- the ones E11's alias
+#: analysis tracks. `Bytes` has no mutating method and a `@contracttype` struct
+#: is a frozen dataclass, so neither can ever need a rebind.
+MUTABLE_TAGS: frozenset[TyTag] = frozenset({TyTag.VEC, TyTag.MAP})
 
 #: `code -> message_intent`, matching `loader.py`/`types_.py`'s convention.
 _INTENT: dict[str, str] = {entry.code: entry.message_intent for entry in codes.REGISTRY}
@@ -178,17 +197,35 @@ class Ownership(Enum):
     ALIASED = auto()
 
 
+def _escaping_locals(value: IRExpr) -> Iterator[LocalRef]:
+    """Every local whose own handle `value` can BE.
+
+    A `LocalRef` is the local itself; an `IfExp` can be either arm. Everything
+    else -- a `HostCall`, a `Make*` node, a `FieldGet` -- produces a NEW value
+    from its operands, so a local mentioned inside one of those does not escape
+    through it. That precision matters: treating any nested mention as an
+    escape would reject `w = Vec(U32, [v.get(U32(0))]); v.push_back(x)`, where
+    only an ELEMENT of `v` was copied out and both tiers agree.
+    """
+    if isinstance(value, LocalRef):
+        yield value
+    elif isinstance(value, IfExp):
+        yield from _escaping_locals(value.then)
+        yield from _escaping_locals(value.orelse)
+
+
 @dataclass
 class AliasTable:
     """Per-function E11 state: container-typed LOCAL slot -> `Ownership`.
 
-    This module defines only the state and its accessors. The PASS that
-    decides when a slot's binding is `OWNED` vs. `ALIASED` -- construction is
-    `OWNED`; `a = b` where `b` names a container-typed local makes `a`
-    `ALIASED`; a parameter, a field-get result, and a subscript result are
-    never `OWNED`; a temporary receiver such as `Vec(U32).pop_back()` has no
-    slot at all and is rejected before it would ever reach this table -- is
-    Task 7b's (E11/BL-3).
+    This module defines the state, its accessors, and the one walk that
+    several callers share (`mark_escapes`). The PASS that decides when a
+    slot's binding is `OWNED` vs. `ALIASED` -- construction is `OWNED`;
+    `a = b` where `b` names a container-typed local makes `a` `ALIASED`; a
+    parameter, a field-get result, and a subscript result are never `OWNED`; a
+    temporary receiver such as `Vec(U32).pop_back()` has no slot at all and is
+    rejected before it would ever reach this table -- is Task 7b's
+    (`recognize.note_local_binding`, E11/BL-3).
 
     A slot with no entry here is simply "not yet classified" rather than
     defaulting to either `Ownership`, so Task 7b's pass (and any test of it)
@@ -203,9 +240,74 @@ class AliasTable:
     def mark_aliased(self, slot: int) -> None:
         self._ownership[slot] = Ownership.ALIASED
 
+    def mark_escapes(self, values: Iterable[IRExpr]) -> None:
+        """Mark every mutable-container local whose handle ESCAPES into
+        `values` as `ALIASED` (E11).
+
+        A local stops being exclusively C's the moment its handle is stored
+        somewhere else -- an item of a `Vec`, a key or value of a `Map`, a
+        field of a struct, an argument of a MUTATION, or an argument of an
+        INTERNAL CALL (E8: a callee can embed a passed local in a container of
+        its own, and C classifies conservatively without inspecting the
+        callee). After any of those, tier 1 sees a later `own.push_back(x)`
+        through the container that now holds the same object, and on chain it
+        cannot: the rebind touches only `own`.
+
+        `recognize.note_escapes` is the documented entry point for this rule
+        (it carries the full rationale, including the three recognized
+        argument positions that deliberately do NOT count as escapes); it
+        delegates here so the WALK exists once. `expr.py`'s internal-call site
+        calls this method directly, because it cannot import `recognize.py`.
+        """
+        for value in values:
+            for ref in _escaping_locals(value):
+                if ref.ty.tag in MUTABLE_TAGS:
+                    self.mark_aliased(ref.slot)
+
     def ownership_of(self, slot: int) -> Ownership | None:
         """`None` means "not (yet) known to be a container-typed slot"."""
         return self._ownership.get(slot)
+
+
+@dataclass(frozen=True)
+class InternalSig:
+    """One internal-call target's signature, as a CALL SITE needs it (E8).
+
+    An internal call is a module-level helper (`bump(env, amount)`) or a
+    private, underscore-prefixed method (`self._bump(env, amount)`) -- both
+    compile to a non-exported wasm function, and both are `InternalCall` in
+    the IR. `decls.check_declarations` resolves every target ONCE, reporting
+    any bad declaration against the declaration itself, and hands the result
+    to `FuncCtx.internal_sigs`; `expr.py` then only ever consumes it, so a
+    broken callee cannot produce one diagnostic per call site.
+
+    * `surface` is how the call is SPELLED -- the bare name for a helper,
+      `self.<name>` for a private method. It is the table's key, which also
+      means a helper and a private method of the same name are distinct
+      surfaces (`decls` rejects that collision separately: both compile to one
+      internal-function namespace).
+    * `fn_name` is what `InternalCall.fn_name` carries: the target's Python
+      name (`FuncIR.export_name` is unused for an INTERNAL function).
+    * `params` drops `self` AND a leading `env: Env` (SS C.3), exactly like
+      `FuncCtx.params` -- so `takes_env` is what tells a call site that the
+      source must pass `env` in that position, and that the argument
+      contributes NO IR node (there is no `Env` value on chain).
+    * `decl_loc` locates the callee's own declaration, for a diagnostic that
+      needs to name it.
+    """
+
+    surface: str
+    fn_name: str
+    params: tuple[tuple[str, Ty, Loc], ...]
+    ret: Ty
+    takes_env: bool
+    decl_loc: Loc
+
+    def render(self) -> str:
+        """The signature as a diagnostic can spell it back to the author."""
+        names = ["env"] if self.takes_env else []
+        names += [f"{name}: {ty.render()}" for name, ty, _loc in self.params]
+        return f"{self.surface}({', '.join(names)}) -> {self.ret.render()}"
 
 
 @dataclass
@@ -243,6 +345,16 @@ class FuncCtx:
       concern, not this context's).
     * `path` -- the source file path, for building `Loc`s while checking this
       function's body.
+    * `internal_sigs` -- `surface -> InternalSig` for every internal-call
+      target the module declares (E8), keyed as the call is spelled (`bump`,
+      `self._bump`). Built once by `decls.check_declarations`; DEFAULTS TO
+      EMPTY, which means "this context was built without a declaration pass",
+      and an internal call then resolves to nothing. The default exists so a
+      unit test that only exercises expression checking need not build a
+      declaration table, not as a licence for the assembly task to skip it:
+      `decls` reports a bad callee declaration ONCE, against the declaration,
+      and a call site that finds no signature for a target that DOES exist
+      stays silent rather than cascading.
     """
 
     loaded: LoadedModule
@@ -254,3 +366,4 @@ class FuncCtx:
     alias_sets: AliasTable
     fn_name: str
     path: str
+    internal_sigs: Mapping[str, InternalSig] = field(default_factory=dict)

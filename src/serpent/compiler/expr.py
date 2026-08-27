@@ -49,17 +49,28 @@ import would be a cycle. The four MJ-13 cases therefore live in
 is named the same way `len()`'s already are (`_LEN_HOST_FN`) -- by name (B2),
 never by export code.
 
+## Internal calls (E8) ARE owned here (Task 8)
+
+`double(env, x)` (a module-level helper) and `self._fee(env, x)` (a private
+method) both lower to `InternalCall` in `_check_internal_call` below. The
+signatures come from `FuncCtx.internal_sigs`, which `decls.check_declarations`
+fills in: this module never resolves a callee's declaration itself, so a
+broken helper is reported ONCE, against its own `def`, instead of once per call
+site -- and `decls.py` can import `check_expr` (for a module constant's value)
+without an import cycle.
+
 ## What this module does NOT own
 
 Container/struct construction and their method tables, struct field reads (all
-`recognize.py`, Task 7b), the `Env` recognition table (Task 7a), and internal
-calls (Task 8). Every one of those reaches a single `_deferred` helper that
-emits MJ-11's catch-all code with a note naming the owning task -- a clean
-located diagnostic, never a traceback (F.2.5) -- and every call site is marked
-with a `TASK-7A`/`TASK-7B`/`TASK-8` comment. Those markers stay until the task
-that WIRES this module to `recognize.py` lands: 7b implemented the checking,
-but the two modules are joined by the later assembly task, not by an import
-here.
+`recognize.py`, Task 7b) and the `Env` recognition table (Task 7a). Both reach
+a single `_deferred` helper that emits MJ-11's catch-all code with a note
+naming the owning task -- a clean located diagnostic, never a traceback
+(F.2.5) -- and every call site is marked with a `TASK-7A`/`TASK-7B` comment.
+Those markers stay until the task that WIRES this module to `recognize.py`
+lands: 7b implemented the checking, but the two modules are joined by the later
+assembly task, not by an import here. When that wiring happens, the
+internal-call branches must stay AHEAD of it -- see the ordering note in
+`_check_call`.
 """
 
 from __future__ import annotations
@@ -71,7 +82,7 @@ from collections.abc import Callable
 from typing import Any, Final
 
 from serpent.compiler import codes
-from serpent.compiler.ctx import FuncCtx
+from serpent.compiler.ctx import FuncCtx, InternalSig
 from serpent.compiler.diagnostics import Loc
 from serpent.compiler.ir import (
     Binary,
@@ -84,6 +95,7 @@ from serpent.compiler.ir import (
     ConstRef,
     HostCall,
     IfExp,
+    InternalCall,
     IRExpr,
     IsZero,
     LocalRef,
@@ -1108,10 +1120,21 @@ def _check_call(node: ast.Call, ctx: FuncCtx) -> IRExpr:
     func = node.func
     if isinstance(func, ast.Attribute):
         if isinstance(func.value, ast.Name) and func.value.id == "self":
-            # TASK-8: a private method call is E8-SUPPORTED (an InternalCall on
-            # a non-exported wasm function) -- unlike a `self.<attr>` read,
+            # A private method call is E8-SUPPORTED (an InternalCall on a
+            # non-exported wasm function) -- unlike a `self.<attr>` read,
             # which SPT2002 rejects outright in `_check_attribute`.
-            return _deferred(node, ctx, "Task 8", f"the call to `self.{func.attr}`")
+            #
+            # WIRING ORDER (carried review finding, Task 7b round 1): this
+            # branch must stay BEFORE any dispatch into
+            # `recognize.recognize_call`. `get`/`set`/`has`/`del_`/`slice` are
+            # CONTAINER method names, so a `self.get(...)` reaching the
+            # container table first would be checked as a container surface
+            # with `self` as its receiver and reported as an unrelated
+            # receiver error instead of E8's own rule. Pinned by
+            # `test_decls.py::test_calling_an_exported_method_through_self_is_
+            # rejected`, which goes through `check_expr` -- the only entry a
+            # call site has -- so re-ordering the dispatch fails that test.
+            return _check_self_call(node, ctx, loc, func.attr)
         # TASK-7A: `env.storage().get(...)`, `addr.require_auth()`.
         # TASK-7B: container/struct methods; `Event(...).publish(env)` (E12).
         return _deferred(node, ctx, "Task 7a/7b", "a method call")
@@ -1148,8 +1171,19 @@ def _check_call(node: ast.Call, ctx: FuncCtx) -> IRExpr:
         return _check_chain_constructor(node, ctx, loc, name, obj)
 
     if any(helper.name == name for helper in ctx.loaded.helpers):
-        # TASK-8: module-level helpers and private methods (E8, InternalCall).
-        return _deferred(node, ctx, "Task 8", f"the call to `{name}`")
+        # A module-level helper: an InternalCall on a non-exported wasm
+        # function (E8). Reached before the builtin/undefined-name paths, and
+        # -- like the `self.` branch above -- before any container dispatch a
+        # later task adds, so a helper named `get` is a helper.
+        sig = ctx.internal_sigs.get(name)
+        if sig is None:
+            # The helper exists but has no signature: its own declaration was
+            # rejected and that diagnostic is already in the sink (or this
+            # `FuncCtx` was built with no declaration table at all -- see
+            # `FuncCtx.internal_sigs`). A second diagnostic here would be a
+            # cascade.
+            return _invalid(loc)
+        return _check_internal_call(node, ctx, loc, sig)
 
     # Before the builtin table, because a parameter may legitimately be named
     # `id` or `type` and "that is a value, not a callable" is the true error.
@@ -1170,6 +1204,174 @@ def _check_call(node: ast.Call, ctx: FuncCtx) -> IRExpr:
 
     _error(ctx, "SPT2001", loc, f"`{name}` is not defined in this contract")
     return _invalid(loc)
+
+
+def _check_self_call(node: ast.Call, ctx: FuncCtx, loc: Loc, attr: str) -> IRExpr:
+    """`self.<attr>(...)`: a private-method InternalCall, or a reject (E8).
+
+    E8 (b) admits module-level helpers and PRIVATE (underscore-prefixed)
+    methods as internal functions. An EXPORT called through `self` is refused
+    on purpose: the host is what invokes an export (with its own ABI prologue
+    and its own frame), so `self.transfer(...)` would either duplicate that
+    prologue or silently become a different function than the one the spec
+    describes. Naming the rewrite -- extract the shared step -- is the useful
+    answer, and it is the answer this diagnostic gives.
+
+    `self` also has to EXIST: a module-level helper's body has no `self` at
+    all, so `self._fee(...)` there is a `NameError` at tier 1 while the
+    compiled internal call would work perfectly on chain -- an
+    oracle-unrunnable accept (A18), and the one shape of it this dispatch could
+    have introduced. Availability is decided from the enclosing function's own
+    name: `self` is in scope exactly inside a method of the `@contract` class.
+    """
+    methods = _contract_method_names(ctx)
+    if ctx.fn_name not in methods:
+        _error(
+            ctx,
+            "SPT2001",
+            loc,
+            f"`self` is not defined in `{ctx.fn_name}`",
+            help=(
+                "a module-level function has no `self`; call another module-level helper, "
+                "or move the step into one"
+            ),
+            notes=("`self` exists only inside a method of the @contract class",),
+        )
+        return _invalid(loc)
+
+    sig = ctx.internal_sigs.get(f"self.{attr}")
+    if sig is not None:
+        return _check_internal_call(node, ctx, loc, sig)
+
+    if attr in methods and not attr.startswith("_"):
+        _error(
+            ctx,
+            _FALLBACK_CODE,
+            loc,
+            f"`self.{attr}(...)` calls an exported method, which is not supported",
+            help=(
+                "move the shared step into a module-level helper or a private "
+                f"`_`-prefixed method and call that from both, e.g. `self._{attr}(env, ...)`"
+            ),
+            notes=(
+                (
+                    "an export is invoked by the host, with its own ABI prologue; only "
+                    "module-level helpers and private methods compile to internal calls (E8)"
+                ),
+            ),
+        )
+        return _invalid(loc)
+    if attr in methods:
+        # A private method with no signature: its own declaration was rejected
+        # (or this `FuncCtx` carries no declaration table -- see
+        # `FuncCtx.internal_sigs`), so the diagnostic is already in the sink.
+        return _invalid(loc)
+    _error(ctx, "SPT2001", loc, f"`self.{attr}` is not a method of this contract")
+    return _invalid(loc)
+
+
+def _contract_method_names(ctx: FuncCtx) -> frozenset[str]:
+    """Every method the `@contract` class declares, from the AST view -- which
+    is the view that still has the PRIVATE methods (`_serpent_type_` records
+    exports only, since the decorator skips underscore names)."""
+    node = ctx.loaded.contract_node
+    if node is None:
+        return frozenset()
+    return frozenset(
+        member.name
+        for member in node.body
+        if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef)
+    )
+
+
+def _check_internal_call(node: ast.Call, ctx: FuncCtx, loc: Loc, sig: InternalSig) -> IRExpr:
+    """One call to a module-level helper or a private method (E8).
+
+    Three rules the shape has to satisfy, in the order a reader would ask
+    them:
+
+    1. **Positional only.** An internal call compiles to a wasm `call`, whose
+       arguments are positional; the recognized-API keyword forms
+       (`v.get(index=...)`) exist because those rows pin tier-1 parameter
+       NAMES, which an author-declared helper has no equivalent of.
+    2. **`env` is passed but never compiled.** A helper that declares
+       `env: Env` is called `double(env, x)` -- the same spelling the host
+       surface uses everywhere else in the compiler -- and that argument
+       contributes NO IR node, because there is no `Env` value on chain
+       (`FuncIR.params` drops it on the callee side for the same reason).
+    3. **Every other argument is a value of the declared parameter type**,
+       with literal coercion in that position (S3) and strict type equality
+       after it -- the same rule `stmt.py` applies at a `return` and at an
+       annotated local, which are the other two declared positions.
+
+    Finally, every container argument is an ESCAPE (E11): a callee can embed a
+    passed `Vec`/`Map` in a container of its own, and C classifies
+    conservatively rather than inspecting the callee -- so the local loses
+    ownership and a later `own.push_back(x)` on it is a reject instead of a
+    silent divergence from tier 1.
+    """
+    if node.keywords:
+        keyword = node.keywords[0].arg
+        _error(
+            ctx,
+            "SPT1035",
+            loc,
+            f"`{sig.surface}(...)` is called positionally (got `{keyword}=`)",
+            help=f"pass the arguments positionally, e.g. `{sig.render()}`",
+        )
+        return _invalid(loc)
+
+    args = list(node.args)
+    expected = len(sig.params) + (1 if sig.takes_env else 0)
+    if len(args) != expected:
+        _error(
+            ctx,
+            "SPT3020",
+            loc,
+            f"`{sig.render()}` takes {expected} argument(s), got {len(args)}",
+            help=f"pass every argument, positionally: `{sig.render()}`",
+        )
+        return _invalid(loc)
+
+    if sig.takes_env:
+        first = args.pop(0)
+        if not (isinstance(first, ast.Name) and first.id == "env"):
+            _error(
+                ctx,
+                "SPT1038",
+                loc,
+                f"`{sig.surface}(...)` takes the host handle `env` as its first argument",
+                help=f"pass `env` through: `{sig.render()}`",
+            )
+            return _invalid(loc)
+
+    checked: list[IRExpr] = []
+    failed = False
+    for (param_name, param_ty, _param_loc), arg in zip(sig.params, args, strict=True):
+        value = check_expr(arg, ctx, expected=param_ty)
+        if _failed(value):
+            failed = True
+            continue
+        if value.ty != param_ty:
+            _error(
+                ctx,
+                "SPT3018",
+                Loc.from_node(ctx.path, arg),
+                f"`{sig.surface}` takes {param_ty.render()} for `{param_name}`, "
+                f"but this value is {value.ty.render()}",
+            )
+            failed = True
+            continue
+        checked.append(value)
+
+    # E11/E8: a container handle passed to a callee may be stored by it.
+    # Marked BEFORE the failure return, the way `recognize_mutation` marks a
+    # mutation's arguments: the conservative answer must win even when the call
+    # as a whole did not check out.
+    ctx.alias_sets.mark_escapes(checked)
+    if failed:
+        return _invalid(loc)
+    return InternalCall(loc=loc, ty=sig.ret, fn_name=sig.fn_name, args=tuple(checked))
 
 
 def _single_arg(node: ast.Call, ctx: FuncCtx, loc: Loc, name: str) -> ast.expr | None:
