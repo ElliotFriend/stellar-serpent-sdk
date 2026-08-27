@@ -107,14 +107,69 @@ def test_every_case_is_classified_into_exactly_one_partition() -> None:
     assert len(_ACCEPTS) + len(_REJECTS) + len(_NOT_EXPRESSIBLE) == len(CASES)
 
 
-# --- "rejects": a located compile diagnostic, every time ---------------------
+# --- "rejects": a located compile diagnostic, on the RIGHT code -------------
+
+#: The diagnostic code each rejected case's `source` should draw, independent
+#: of whatever the compiler itself reports (fix round 1: asserting only
+#: `LocKind.NODE` let a case start failing for an unrelated wrong reason
+#: unnoticed -- a compensating passing test either way). Derived from the
+#: RULE each source violates -- `expr.py`'s dispatch plus `codes.py`'s own
+#: registry text -- not from re-running the case, same non-circularity
+#: discipline as `EXPECTED_TY` above:
+#: * SPT3003 -- `_check_binop`'s "operands must share the same chain-integer
+#:   type" family: cross-width, cross-signedness, a bare bool literal used as
+#:   an int operand, AND two operands of different chain types generally
+#:   (`Bool(True) + U32(1)` hits this same branch, not a bool-literal check --
+#:   neither side is a BARE bool literal, so it falls to the plain
+#:   `lhs.ty != rhs.ty` arm).
+#: * SPT3004 -- `_coerce_literal`/`_validate_literal`'s out-of-range-or-
+#:   invalid literal coercion: an out-of-range int, an empty/too-long
+#:   `Symbol`, a wrong-length `Bytes32`/`Bytes64`, a malformed `Address`
+#:   strkey -- one code for "this literal is not a valid instance of the
+#:   target type", however the oracle class's own validator says so.
+#: * SPT3005 -- `_check_binop`/`_check_unaryop`'s omitted-operator and
+#:   time-type-has-no-arithmetic branches (`**`, `&`, and `Timepoint`/
+#:   `Duration` arithmetic of any shape, D4).
+#: * SPT3011 -- `_check_subscript`'s negative-literal-index rule (D6).
+#: * SPT3016 -- `_check_compare`'s chain-value-vs-raw-str/bytes-literal-via-==
+#:   rule (E13/T4).
+#: * SPT1017 -- `_check_call`'s rejected-builtin dispatch (`divmod` is not
+#:   `RECOGNIZED_BUILTINS`, so it falls to the generic builtin-call reject).
+EXPECTED_CODE: dict[str, str] = {
+    "bool_leaks_as_int_operand": "SPT3003",
+    "out_of_range_int_operand_rejected": "SPT3004",
+    "cross_width_unsigned_add_rejected": "SPT3003",
+    "cross_signedness_add_rejected": "SPT3003",
+    "pow_operator_omitted": "SPT3005",
+    "divmod_operator_omitted": "SPT1017",
+    "bitwise_and_operator_omitted": "SPT3005",
+    "bool_has_no_arithmetic": "SPT3003",
+    "timepoint_plus_duration_rejected": "SPT3005",
+    "timepoint_plus_timepoint_rejected": "SPT3005",
+    "duration_unary_minus_rejected": "SPT3005",
+    "duration_times_int_rejected": "SPT3005",
+    "symbol_does_not_coerce_from_str": "SPT3016",
+    "bytes_does_not_coerce_from_raw_bytes": "SPT3016",
+    "bytes_negative_index_traps": "SPT3011",
+    "symbol_empty_rejected": "SPT3004",
+    "symbol_too_long_rejected": "SPT3004",
+    "bytes32_wrong_length_rejected": "SPT3004",
+    "bytes64_wrong_length_rejected": "SPT3004",
+    "address_rejects_malformed_strkey": "SPT3004",
+}
+
+
+def test_expected_code_covers_exactly_the_rejects_cases() -> None:
+    assert {case.name for case in _REJECTS} == set(EXPECTED_CODE)
 
 
 @pytest.mark.parametrize("case", _REJECTS, ids=[case.name for case in _REJECTS])
 def test_frontend_rejects_cases_are_located_compile_rejects(case: SemCase) -> None:
     with pytest.raises(CompileError) as info:
         compile_case(case)
-    assert any(d.loc.kind is LocKind.NODE for d in info.value.diagnostics), info.value.diagnostics
+    diagnostics = info.value.diagnostics
+    assert any(d.loc.kind is LocKind.NODE for d in diagnostics), diagnostics
+    assert EXPECTED_CODE[case.name] in [d.code for d in diagnostics], diagnostics
 
 
 # --- "accepts": compiles, and the IR type is the operand type (F.1.11) -------
@@ -231,8 +286,30 @@ def _walk_allowed(node: ast.expr) -> None:
     since `ast.iter_child_nodes` already skips the non-`expr` fields
     (`ast.operator`/`ast.cmpop`/`ast.unaryop`/`ast.boolop`/`ast.expr_context`
     are a separate node hierarchy the inventory need not name at all).
+
+    Fix round 1: a `BinOp`/`UnaryOp` reached HERE (i.e. NOT as a `Call`'s
+    direct argument, `_walk_call_argument`'s own position) must have a
+    chain-type ANCHOR somewhere in its subtree -- a `Call`/`Attribute`/
+    `Subscript`/`Name` that keeps it from folding down to a bare
+    plain-Python literal. A node that fully folds
+    (`fold_literal(node) is not None`) has no such anchor: it is the `1 + 2`
+    shape, which `_coerce_literal` rejects with SPT3008 ("no chain type in
+    this position") the instant it is not a `Call` argument -- there is no
+    OTHER position in the real grammar where a fully-literal BinOp/UnaryOp
+    stands on its own (the one other place a literal borrows an `expected`
+    type, the non-literal side of a mixed binary op, is not "fully literal"
+    in the first place: the compiler only reaches that arm when EXACTLY ONE
+    side is literal). Rejecting the fully-foldable shape everywhere but a
+    call argument is therefore what "not blanket-permit BinOp" actually
+    requires, not just documents.
     """
     _assert_supported_kind(node)
+    if isinstance(node, (ast.BinOp, ast.UnaryOp)) and fold_literal(node) is not None:
+        raise AssertionError(
+            f"{type(node).__name__} folds to a bare plain-Python literal with no chain-type "
+            f"anchor outside a Call argument -- compile_module rejects this shape (SPT3008, "
+            f"'has no chain type in this position'): {ast.dump(node)}"
+        )
     if isinstance(node, ast.Call):
         _assert_supported_kind(node.func)
         if isinstance(node.func, ast.Attribute):
@@ -271,3 +348,28 @@ def _walk_call_argument(node: ast.expr) -> None:
 def test_accepted_case_sources_stay_within_the_ast_allowlist(case: SemCase) -> None:
     tree = ast.parse(case.source, mode="eval")
     _walk_allowed(tree.body)
+
+
+# --- fix round 1: the walker must actually DISCRIMINATE, not blanket-permit --
+
+
+def test_the_walker_rejects_bare_literal_arithmetic_outside_a_call_argument() -> None:
+    """`1 + 2` is a `BinOp`, so a flat "BinOp is a supported kind" allowlist
+    would wave it through -- exactly the false confidence the ledgered
+    constraint warns about. It is not a `Call` argument (`_walk_call_
+    argument`'s own position, where `U32(2**32 - 1)`'s identical SHAPE is
+    legal), so `_walk_allowed` must reject it directly."""
+    tree = ast.parse("1 + 2", mode="eval")
+    with pytest.raises(AssertionError):
+        _walk_allowed(tree.body)
+
+
+def test_the_walker_agrees_with_a_real_compile_reject_on_bare_literal_arithmetic() -> None:
+    """The discrimination probe, tied to the real compiler decision it
+    claims to model: `x = 1 + 2` (the walker's `1 + 2`, wrapped exactly the
+    way `wrap_case` wraps every case) draws `compile_module`'s own SPT3008
+    ("has no chain type in this position") -- the same reject the walker's
+    `AssertionError` above is standing in for."""
+    with pytest.raises(CompileError) as info:
+        compile_module(wrap_case("1 + 2"), "semantics/probe_bare_literal_arithmetic.py")
+    assert "SPT3008" in [d.code for d in info.value.diagnostics]
