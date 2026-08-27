@@ -86,8 +86,7 @@ class Vec(Generic[T]):
     def __init__(self, element_type: type[T], items: Iterable[T] | None = None) -> None:
         if not isinstance(element_type, type):
             raise TypeError(
-                f"Vec() takes the element type as its first argument, "
-                f"not {element_type!r}"
+                f"Vec() takes the element type as its first argument, not {element_type!r}"
             )
         self._element_type = element_type
         self._items = []
@@ -104,16 +103,13 @@ class Vec(Generic[T]):
     def _check(self, value: T) -> T:
         if not isinstance(value, self._element_type):
             raise TypeError(
-                f"Vec element must be {self._element_type.__name__}, "
-                f"not {type(value).__name__}"
+                f"Vec element must be {self._element_type.__name__}, not {type(value).__name__}"
             )
         return value
 
     def _require_index(self, index: int) -> None:
         if not 0 <= index < len(self._items):
-            raise IndexError(
-                f"index {index} out of range for Vec of length {len(self._items)}"
-            )
+            raise IndexError(f"index {index} out of range for Vec of length {len(self._items)}")
 
     # --- host-shaped API -----------------------------------------------------
 
@@ -149,8 +145,7 @@ class Vec(Generic[T]):
         """Insert before `index`; `index == len(self)` appends (host `vec_insert`)."""
         if not 0 <= index <= len(self._items):
             raise IndexError(
-                f"index {index} out of range for inserting into a Vec of "
-                f"length {len(self._items)}"
+                f"index {index} out of range for inserting into a Vec of length {len(self._items)}"
             )
         self._items.insert(index, self._check(value))
 
@@ -166,9 +161,7 @@ class Vec(Generic[T]):
     def slice(self, lo: int, hi: int) -> "Vec[T]":
         """`self[lo:hi]` as a new `Vec`; the host traps rather than clamping."""
         if not 0 <= lo <= hi <= len(self._items):
-            raise IndexError(
-                f"slice({lo}, {hi}) out of range for Vec of length {len(self._items)}"
-            )
+            raise IndexError(f"slice({lo}, {hi}) out of range for Vec of length {len(self._items)}")
         return Vec(self._element_type, self._items[lo:hi])
 
     def first_index_of(self, value: T) -> U32 | None:
@@ -251,9 +244,7 @@ class Map(Generic[K, V]):
         entries: Iterable[tuple[K, V]] | None = None,
     ) -> None:
         if not isinstance(key_type, type) or not isinstance(value_type, type):
-            raise TypeError(
-                "Map() takes the key and value types as its first two arguments"
-            )
+            raise TypeError("Map() takes the key and value types as its first two arguments")
         self._key_type = key_type
         self._value_type = value_type
         self._pairs = []
@@ -293,9 +284,7 @@ class Map(Generic[K, V]):
 
     def _require_position(self, position: int) -> None:
         if not 0 <= position < len(self._pairs):
-            raise IndexError(
-                f"position {position} out of range for Map of size {len(self._pairs)}"
-            )
+            raise IndexError(f"position {position} out of range for Map of size {len(self._pairs)}")
 
     # --- host-shaped API -----------------------------------------------------
 
@@ -369,10 +358,7 @@ class Map(Generic[K, V]):
         raise NotImplementedError(_DEFERRED)
 
     def __repr__(self) -> str:
-        return (
-            f"Map({self._key_type.__name__}, {self._value_type.__name__}, "
-            f"{self._pairs!r})"
-        )
+        return f"Map({self._key_type.__name__}, {self._value_type.__name__}, {self._pairs!r})"
 
     def __copy__(self) -> "Map[K, V]":
         return Map(self._key_type, self._value_type, self._pairs)

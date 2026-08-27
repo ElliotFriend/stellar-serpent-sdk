@@ -30,7 +30,9 @@ def test_corrupt_checksum_rejected() -> None:
 def test_matches_stellar_sdk() -> None:
     from stellar_sdk import StrKey
 
-    assert _strkey.decode(_strkey.VERSION_ACCOUNT, ACCOUNT) == StrKey.decode_ed25519_public_key(ACCOUNT)
+    assert _strkey.decode(_strkey.VERSION_ACCOUNT, ACCOUNT) == StrKey.decode_ed25519_public_key(
+        ACCOUNT
+    )
     assert _strkey.decode(_strkey.VERSION_CONTRACT, CONTRACT) == StrKey.decode_contract(CONTRACT)
 
 
@@ -78,5 +80,7 @@ def test_round_trip_property_contract(payload: bytes) -> None:
 def test_encode_matches_stellar_sdk_differential(payload: bytes) -> None:
     from stellar_sdk import StrKey
 
-    assert _strkey.encode(_strkey.VERSION_ACCOUNT, payload) == StrKey.encode_ed25519_public_key(payload)
+    assert _strkey.encode(_strkey.VERSION_ACCOUNT, payload) == StrKey.encode_ed25519_public_key(
+        payload
+    )
     assert _strkey.encode(_strkey.VERSION_CONTRACT, payload) == StrKey.encode_contract(payload)

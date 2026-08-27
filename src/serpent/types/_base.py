@@ -98,14 +98,10 @@ class _ChainPayload(_ChainValue[_P]):
             other_payload: _ChainPayload[Any] = other
             if other_payload._SCVAL_RANK == self._SCVAL_RANK:
                 return other_payload._order_key()
-            raise TypeError(
-                f"cannot order {type(self).__name__} against {type(other).__name__}"
-            )
+            raise TypeError(f"cannot order {type(self).__name__} against {type(other).__name__}")
         if isinstance(other, _ChainValue):
             # Any other scalar chain value (today: the numeric family).
-            raise TypeError(
-                f"cannot order {type(self).__name__} against {type(other).__name__}"
-            )
+            raise TypeError(f"cannot order {type(self).__name__} against {type(other).__name__}")
         return None
 
     def __lt__(self, other: Self) -> bool:

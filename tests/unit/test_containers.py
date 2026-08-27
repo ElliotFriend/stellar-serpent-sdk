@@ -43,20 +43,20 @@ def test_full_rank_table() -> None:
     # One instance of every M1-A type, in ScValType order. Void=1 and Error=2 are
     # not chain value types in M1-A; U256=11/I256=12 are deferred to M2.
     ordered: list[ChainValue] = [
-        Bool(False),      # 0
-        U32(5),           # 3
-        I32(5),           # 4
-        U64(5),           # 5
-        I64(5),           # 6
-        Timepoint(5),     # 7
-        Duration(5),      # 8
-        U128(5),          # 9
-        I128(5),          # 10
-        Bytes(b"\xff"),   # 13
-        String("zzz"),    # 14
-        Symbol("a"),      # 15
-        Vec(U32),         # 16
-        Map(U32, U32),    # 17
+        Bool(False),  # 0
+        U32(5),  # 3
+        I32(5),  # 4
+        U64(5),  # 5
+        I64(5),  # 6
+        Timepoint(5),  # 7
+        Duration(5),  # 8
+        U128(5),  # 9
+        I128(5),  # 10
+        Bytes(b"\xff"),  # 13
+        String("zzz"),  # 14
+        Symbol("a"),  # 15
+        Vec(U32),  # 16
+        Map(U32, U32),  # 17
         Address(ACCOUNT),  # 18
     ]
     ranks = [v._SCVAL_RANK for v in ordered]
@@ -84,12 +84,12 @@ def test_val_cmp_within_a_type() -> None:
 
 def test_val_cmp_same_payload_different_rank_orders_by_rank() -> None:
     # Identical payloads: only the ScValType rank can break the tie.
-    assert val_cmp(U32(1), U64(1)) < 0            # 3 < 5
-    assert val_cmp(I128(1), U128(1)) > 0          # 10 > 9
+    assert val_cmp(U32(1), U64(1)) < 0  # 3 < 5
+    assert val_cmp(I128(1), U128(1)) > 0  # 10 > 9
     assert val_cmp(Timepoint(5), Duration(5)) < 0  # 7 < 8
-    assert val_cmp(Bytes(b"a"), String("a")) < 0   # 13 < 14, same UTF-8 payload
-    assert val_cmp(String("a"), Symbol("a")) < 0   # 14 < 15, same UTF-8 payload
-    assert val_cmp(Bool(True), U32(1)) < 0         # 0 < 3, both payload 1
+    assert val_cmp(Bytes(b"a"), String("a")) < 0  # 13 < 14, same UTF-8 payload
+    assert val_cmp(String("a"), Symbol("a")) < 0  # 14 < 15, same UTF-8 payload
+    assert val_cmp(Bool(True), U32(1)) < 0  # 0 < 3, both payload 1
 
 
 def test_val_cmp_is_a_total_order_on_the_supported_set() -> None:

@@ -110,14 +110,11 @@ class _ChainInt(_ChainScalar):
 
     def __init__(self, value: int) -> None:
         if not isinstance(value, int):
-            raise TypeError(
-                f"{type(self).__name__}() takes an int, not {type(value).__name__}"
-            )
+            raise TypeError(f"{type(self).__name__}() takes an int, not {type(value).__name__}")
         v = int(value)  # normalise bool -> int; `value` is always a true int
         if not self.MIN <= v <= self.MAX:
             raise ValueError(
-                f"{v} is out of range for {type(self).__name__} "
-                f"[{self.MIN}, {self.MAX}]"
+                f"{v} is out of range for {type(self).__name__} [{self.MIN}, {self.MAX}]"
             )
         object.__setattr__(self, "_payload", v)
 
@@ -143,9 +140,7 @@ class _ChainInt(_ChainScalar):
                 )
             return other._payload
         if isinstance(other, _ChainScalar):
-            raise TypeError(
-                f"cannot order {type(self).__name__} against {type(other).__name__}"
-            )
+            raise TypeError(f"cannot order {type(self).__name__} against {type(other).__name__}")
         if isinstance(other, int):
             return int(other)
         return None
@@ -329,8 +324,7 @@ class _ChainArith(_ChainInt):
             v = int(other)
             if not self.MIN <= v <= self.MAX:
                 raise ValueError(
-                    f"{v} is out of range for {type(self).__name__} "
-                    f"[{self.MIN}, {self.MAX}]"
+                    f"{v} is out of range for {type(self).__name__} [{self.MIN}, {self.MAX}]"
                 )
             return v
         return None

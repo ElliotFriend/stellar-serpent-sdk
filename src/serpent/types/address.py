@@ -49,9 +49,7 @@ class Address(_ChainPayload[str]):
             raise TypeError(f"Address() takes a str strkey, not {type(strkey).__name__}")
         prefix = _PREFIXES.get(strkey[:1])
         if prefix is None:
-            raise ValueError(
-                f"not an account (G...) or contract (C...) strkey: {strkey!r}"
-            )
+            raise ValueError(f"not an account (G...) or contract (C...) strkey: {strkey!r}")
         kind, version = prefix
         # Anything malformed past the prefix -- checksum, length, charset, or a
         # version byte that disagrees with the prefix -- raises the codec's own

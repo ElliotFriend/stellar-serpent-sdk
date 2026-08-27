@@ -100,9 +100,9 @@ def test_ordering_against_other_chain_types_raises() -> None:
     with pytest.raises(TypeError):
         _ = Address(ACCOUNT) < Bytes(b"a")  # type: ignore[operator]
     with pytest.raises(TypeError):
-        _ = Address(ACCOUNT) <= U32(1)      # type: ignore[operator]
+        _ = Address(ACCOUNT) <= U32(1)  # type: ignore[operator]
     with pytest.raises(TypeError):
-        _ = Address(ACCOUNT) > ACCOUNT      # type: ignore[operator]
+        _ = Address(ACCOUNT) > ACCOUNT  # type: ignore[operator]
 
 
 def test_val_cmp_places_address_after_every_other_type() -> None:

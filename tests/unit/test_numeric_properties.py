@@ -162,9 +162,7 @@ def test_val_round_trips_for_small_forms(cls: type[_ChainInt], data: st.DataObje
 
 @pytest.mark.parametrize("cls", INT_TYPES, ids=TYPE_IDS)
 @given(data=st.data())
-def test_comparisons_agree_with_int_comparisons(
-    cls: type[_ChainInt], data: st.DataObject
-) -> None:
+def test_comparisons_agree_with_int_comparisons(cls: type[_ChainInt], data: st.DataObject) -> None:
     a: int = data.draw(values_for(cls))
     b: int = data.draw(values_for(cls))
     x, y = cls(a), cls(b)
@@ -183,9 +181,7 @@ def test_comparisons_agree_with_int_comparisons(
 
 @pytest.mark.parametrize("cls", INT_TYPES, ids=TYPE_IDS)
 @given(data=st.data())
-def test_eq_hash_invariant_against_equal_ints(
-    cls: type[_ChainInt], data: st.DataObject
-) -> None:
+def test_eq_hash_invariant_against_equal_ints(cls: type[_ChainInt], data: st.DataObject) -> None:
     a: int = data.draw(values_for(cls))
     x = cls(a)
     assert (x == a) is True

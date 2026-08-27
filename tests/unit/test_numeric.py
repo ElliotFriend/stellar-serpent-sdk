@@ -77,7 +77,7 @@ def test_checked_arithmetic_overflow_raises() -> None:
     with pytest.raises(ArithmeticOverflow):
         I32(-(2**31)) - 1
     with pytest.raises(ArithmeticOverflow):
-        -U32(1)                      # unary minus out of range
+        -U32(1)  # unary minus out of range
     with pytest.raises(ArithmeticOverflow):
         -I32(-(2**31))
     assert -I32(5) == I32(-5)
@@ -111,11 +111,11 @@ def test_unary_minus_every_type() -> None:
 
 def test_truncating_division_semantics() -> None:
     # WASM div_s/rem_s truncate toward zero; Python floors. We match the chain.
-    assert I32(-7) // I32(2) == I32(-3)      # Python would say -4
-    assert I32(-7) % I32(2) == I32(-1)       # Python would say 1
+    assert I32(-7) // I32(2) == I32(-3)  # Python would say -4
+    assert I32(-7) % I32(2) == I32(-1)  # Python would say 1
     assert I32(7) // I32(-2) == I32(-3) and I32(7) % I32(-2) == I32(1)
     with pytest.raises(ArithmeticOverflow):
-        I32(-(2**31)) // I32(-1)             # overflows i32
+        I32(-(2**31)) // I32(-1)  # overflows i32
     assert I32(-(2**31)) % I32(-1) == I32(0)  # rem_s does NOT trap here
     with pytest.raises(ZeroDivisionError):
         U32(1) // U32(0)
@@ -149,7 +149,7 @@ def test_division_every_unsigned_type() -> None:
 
 def test_int_coercion_and_reflected_ops() -> None:
     assert (U32(5) + 3) == U32(8)
-    assert (3 + U32(5)) == U32(8)            # __radd__: sum() works
+    assert (3 + U32(5)) == U32(8)  # __radd__: sum() works
     assert sum([U32(1), U32(2)], start=U32(0)) == U32(3)
     with pytest.raises(ValueError):
         U32(5) + (2**32)
@@ -160,7 +160,7 @@ def test_reflected_ops_for_every_operator() -> None:
     assert 3 * U32(5) == U32(15)
     assert 7 // U32(2) == U32(3)
     assert 7 % U32(2) == U32(1)
-    assert -7 // I32(2) == I32(-3)           # truncating on the reflected path too
+    assert -7 // I32(2) == I32(-3)  # truncating on the reflected path too
     assert -7 % I32(2) == I32(-1)
     with pytest.raises(ArithmeticOverflow):
         0 - U32(1)
@@ -191,59 +191,59 @@ def test_out_of_range_int_operand_raises_value_error_on_either_side() -> None:
 
 def test_no_implicit_widening_in_arithmetic() -> None:
     with pytest.raises(TypeError):
-        U32(1) + U64(1)           # type: ignore[operator]
+        U32(1) + U64(1)  # type: ignore[operator]
     with pytest.raises(TypeError):
         Timepoint(1) + Duration(1)  # type: ignore[operator]
     with pytest.raises(TypeError):
-        U32(2) ** U32(3)          # type: ignore[operator]
+        U32(2) ** U32(3)  # type: ignore[operator]
 
 
 def test_no_implicit_narrowing_or_bool_mixing_in_arithmetic() -> None:
     with pytest.raises(TypeError):
-        U64(1) + U32(1)           # type: ignore[operator]
+        U64(1) + U32(1)  # type: ignore[operator]
     with pytest.raises(TypeError):
-        I64(1) * I32(2)           # type: ignore[operator]
+        I64(1) * I32(2)  # type: ignore[operator]
     with pytest.raises(TypeError):
         Duration(5) - Timepoint(1)  # type: ignore[operator]
     with pytest.raises(TypeError):
-        U32(1) * Bool(True)       # type: ignore[operator]
+        U32(1) * Bool(True)  # type: ignore[operator]
 
 
 def test_unsupported_operators_name_the_omission() -> None:
     with pytest.raises(TypeError, match=r"\*\*"):
-        U32(2) ** U32(3)          # type: ignore[operator]
+        U32(2) ** U32(3)  # type: ignore[operator]
     with pytest.raises(TypeError, match=r"\*\*"):
-        2 ** U32(3)               # type: ignore[operator]
+        2 ** U32(3)  # type: ignore[operator]
     with pytest.raises(TypeError, match="divmod"):
-        divmod(U32(7), U32(2))    # type: ignore[operator]
+        divmod(U32(7), U32(2))  # type: ignore[operator]
     with pytest.raises(TypeError, match="divmod"):
-        divmod(7, U32(2))         # type: ignore[operator]
+        divmod(7, U32(2))  # type: ignore[operator]
     with pytest.raises(TypeError, match="&"):
-        U32(1) & U32(2)           # type: ignore[operator]
+        U32(1) & U32(2)  # type: ignore[operator]
     with pytest.raises(TypeError, match=r"\|"):
-        U32(1) | U32(2)           # type: ignore[operator]
+        U32(1) | U32(2)  # type: ignore[operator]
     with pytest.raises(TypeError, match=r"\^"):
-        U32(1) ^ U32(2)           # type: ignore[operator]
+        U32(1) ^ U32(2)  # type: ignore[operator]
     with pytest.raises(TypeError, match="<<"):
-        U32(1) << 2               # type: ignore[operator]
+        U32(1) << 2  # type: ignore[operator]
     with pytest.raises(TypeError, match=">>"):
-        U32(1) >> 2               # type: ignore[operator]
+        U32(1) >> 2  # type: ignore[operator]
     with pytest.raises(TypeError, match="~"):
         ~U32(1)
     with pytest.raises(TypeError, match="&"):
-        1 & U32(2)                # type: ignore[operator]
+        1 & U32(2)  # type: ignore[operator]
     with pytest.raises(TypeError, match="<<"):
-        1 << U32(2)               # type: ignore[operator]
+        1 << U32(2)  # type: ignore[operator]
 
 
 def test_equality_never_raises_and_hash_contract() -> None:
     assert U32(1) == 1 and hash(U32(1)) == hash(1)
-    assert (U32(1) == U64(1)) is False        # foreign chain type: False, not TypeError
-    assert (U32(5) == 2**40) is False         # out-of-range int: False
-    assert U32(5) < 2**40                     # ordering vs any int is mathematical
+    assert (U32(1) == U64(1)) is False  # foreign chain type: False, not TypeError
+    assert (U32(5) == 2**40) is False  # out-of-range int: False
+    assert U32(5) < 2**40  # ordering vs any int is mathematical
     # mypy cannot type an int lookup in a dict[U32, str]; the eq/hash invariant it
     # exercises is exactly the point of the assertion, so the ignore stays narrow.
-    assert {U32(1): "a"}[1] == "a"            # type: ignore[index]  # eq/hash invariant holds
+    assert {U32(1): "a"}[1] == "a"  # type: ignore[index]  # eq/hash invariant holds
 
 
 def test_equality_matrix() -> None:
@@ -277,11 +277,11 @@ def test_ordering() -> None:
 
 def test_ordering_against_foreign_chain_types_raises() -> None:
     with pytest.raises(TypeError):
-        _ = U32(1) < U64(1)             # type: ignore[operator]
+        _ = U32(1) < U64(1)  # type: ignore[operator]
     with pytest.raises(TypeError):
         _ = Timepoint(1) <= Duration(1)  # type: ignore[operator]
     with pytest.raises(TypeError):
-        _ = U32(1) > Bool(True)         # type: ignore[operator]
+        _ = U32(1) > Bool(True)  # type: ignore[operator]
 
 
 def test_scval_ranks_follow_scval_type_order() -> None:
@@ -330,11 +330,11 @@ def test_bool_has_no_arithmetic() -> None:
     with pytest.raises(TypeError):
         Bool(True) + Bool(False)  # type: ignore[operator]
     with pytest.raises(TypeError):
-        Bool(True) + 1            # type: ignore[operator]
+        Bool(True) + 1  # type: ignore[operator]
     with pytest.raises(TypeError):
-        -Bool(True)               # type: ignore[operator]
+        -Bool(True)  # type: ignore[operator]
     with pytest.raises(TypeError):
-        _ = Bool(True) < 1        # type: ignore[operator]
+        _ = Bool(True) < 1  # type: ignore[operator]
 
 
 def test_i128_limbs_golden() -> None:
@@ -371,7 +371,9 @@ def test_duration_u64_bridge() -> None:
 def test_val_round_trip_and_object_form_boundary() -> None:
     assert U32(9).to_val() == val.pack_u32val(9)
     assert U32.from_val(val.pack_u32val(9)) == U32(9)
-    assert U64(val.MAX_SMALL_U64).to_val() == val.pack_small_u64(val.MAX_SMALL_U64, val.TAG_U64_SMALL)
+    assert U64(val.MAX_SMALL_U64).to_val() == val.pack_small_u64(
+        val.MAX_SMALL_U64, val.TAG_U64_SMALL
+    )
     with pytest.raises(NotImplementedError):
         U64(val.MAX_SMALL_U64 + 1).to_val()
 
@@ -459,24 +461,24 @@ def test_time_types_expose_no_arithmetic() -> None:
     with pytest.raises(TypeError, match="no arithmetic"):
         Timepoint(5) - Timepoint(1)  # type: ignore[operator]
     with pytest.raises(TypeError, match="no arithmetic"):
-        Duration(5) * Duration(2)    # type: ignore[operator]
+        Duration(5) * Duration(2)  # type: ignore[operator]
     with pytest.raises(TypeError, match="no arithmetic"):
-        Duration(5) // Duration(2)   # type: ignore[operator]
+        Duration(5) // Duration(2)  # type: ignore[operator]
     with pytest.raises(TypeError, match="no arithmetic"):
-        Duration(5) % Duration(2)    # type: ignore[operator]
+        Duration(5) % Duration(2)  # type: ignore[operator]
     with pytest.raises(TypeError, match="no arithmetic"):
         -Timepoint(1)
     with pytest.raises(TypeError, match="no arithmetic"):
         -Duration(1)
     # ... including against plain ints, on both sides.
     with pytest.raises(TypeError, match="to_u64"):
-        Timepoint(5) + 1             # type: ignore[operator]
+        Timepoint(5) + 1  # type: ignore[operator]
     with pytest.raises(TypeError, match="to_u64"):
-        1 + Timepoint(5)             # type: ignore[operator]
+        1 + Timepoint(5)  # type: ignore[operator]
     with pytest.raises(TypeError, match="to_u64"):
-        Duration(5) - 1              # type: ignore[operator]
+        Duration(5) - 1  # type: ignore[operator]
     with pytest.raises(TypeError, match="to_u64"):
-        10 // Duration(5)            # type: ignore[operator]
+        10 // Duration(5)  # type: ignore[operator]
 
 
 def test_time_types_keep_everything_except_arithmetic() -> None:

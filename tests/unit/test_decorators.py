@@ -255,6 +255,7 @@ def test_contracterror_metadata_and_no_partial_mutation() -> None:
         "kind": "error_enum",
         "cases": [("LimitExceeded", 7), ("Unauthorized", 2)],
     }
+
     class Broken:
         Good = errorcode(1)
         AlsoOne = errorcode(1)
@@ -411,7 +412,7 @@ def test_env_surface_is_complete_and_defers_to_sub_plan_e() -> None:
     with pytest.raises(NotImplementedError, match="sub-plan E"):
         Ledger().sequence()
     with pytest.raises(NotImplementedError, match="sub-plan E"):
-        Events().publish((Symbol('e'),), U32(1))
+        Events().publish((Symbol("e"),), U32(1))
 
 
 # --------------------------------------------------------------------------

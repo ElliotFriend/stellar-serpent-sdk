@@ -382,8 +382,7 @@ def _check_name(cls: type[Any], name: str, what: str) -> None:
         )
     if not val.is_valid_symbol(name):
         raise ValueError(
-            f"{cls.__name__}.{name}: {what} names must be valid Symbols "
-            "(a-z, A-Z, 0-9, _)"
+            f"{cls.__name__}.{name}: {what} names must be valid Symbols (a-z, A-Z, 0-9, _)"
         )
 
 

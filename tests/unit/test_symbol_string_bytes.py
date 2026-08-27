@@ -195,6 +195,7 @@ def test_bytes_n_factory_is_cached_and_length_checked() -> None:
 def test_bytes32_is_usable_as_an_annotation() -> None:
     # Must type-check under mypy --strict: there is no BytesN[32] subscript form.
     x: Bytes32 = Bytes32(b"\0" * 32)
+
     def take(b: Bytes32) -> int:
         return len(b)
 
@@ -242,13 +243,13 @@ def test_ordering_against_foreign_types_raises() -> None:
     with pytest.raises(TypeError):
         _ = Bytes(b"a") < Symbol("a")  # type: ignore[operator]
     with pytest.raises(TypeError):
-        _ = Symbol("a") < U32(1)       # type: ignore[operator]
+        _ = Symbol("a") < U32(1)  # type: ignore[operator]
     with pytest.raises(TypeError):
-        _ = Bytes(b"a") <= U64(1)      # type: ignore[operator]
+        _ = Bytes(b"a") <= U64(1)  # type: ignore[operator]
     with pytest.raises(TypeError):
-        _ = Symbol("a") < "b"          # type: ignore[operator]
+        _ = Symbol("a") < "b"  # type: ignore[operator]
     with pytest.raises(TypeError):
-        _ = Bytes(b"a") > b"a"         # type: ignore[operator]
+        _ = Bytes(b"a") > b"a"  # type: ignore[operator]
 
 
 def test_immutability_and_repr() -> None:

@@ -86,15 +86,12 @@ class Bytes(_ChainPayload[bytes]):
 
     def __init__(self, data: bytes) -> None:
         if not isinstance(data, (bytes, bytearray, memoryview)):
-            raise TypeError(
-                f"{type(self).__name__}() takes bytes, not {type(data).__name__}"
-            )
+            raise TypeError(f"{type(self).__name__}() takes bytes, not {type(data).__name__}")
         payload = bytes(data)  # copy: a caller's bytearray must not mutate us
         expected = self._LENGTH
         if expected is not None and len(payload) != expected:
             raise ValueError(
-                f"{type(self).__name__}() takes exactly {expected} bytes, "
-                f"got {len(payload)}"
+                f"{type(self).__name__}() takes exactly {expected} bytes, got {len(payload)}"
             )
         object.__setattr__(self, "_payload", payload)
 
