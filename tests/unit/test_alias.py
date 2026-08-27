@@ -34,6 +34,7 @@ from serpent._host import functions_by_name
 from serpent.compiler import codes
 from serpent.compiler.ctx import AliasTable, FuncCtx, Ownership, SlotTable
 from serpent.compiler.diagnostics import Diagnostic, Diagnostics, Loc
+from serpent.compiler.expr import check_expr
 from serpent.compiler.ir import (
     Const,
     FieldGet,
@@ -455,6 +456,97 @@ def test_note_escapes_marks_both_arms_of_a_conditional() -> None:
     )
     assert ctx.alias_sets.ownership_of(own.slot) is Ownership.ALIASED
     assert ctx.alias_sets.ownership_of(other.slot) is Ownership.ALIASED
+
+
+def _conditional(then: IRExpr, orelse: IRExpr, ty: Ty) -> IfExp:
+    return IfExp(
+        loc=_LOC,
+        ty=ty,
+        cond=Const(loc=_LOC, ty=Ty.Bool, py_value=True),
+        then=then,
+        orelse=orelse,
+    )
+
+
+def _local_ref(ctx: FuncCtx, name: str, ty: Ty) -> LocalRef:
+    return LocalRef(loc=_LOC, ty=ty, slot=_slot(ctx, name), name=name)
+
+
+def test_binding_a_conditional_aliases_both_arms() -> None:
+    """Fix round 2's hole: `w = own if flag else other` shares BOTH arms'
+    handles at tier 1, so classifying the VALUE alone (an `IfExp` is `OTHER`,
+    which only aliases the TARGET) left the arms reading `OWNED` and accepted
+    a later mutation of them."""
+    ctx = _ctx()
+    vec = Ty.Vec(Ty.U32)
+    own = _local_ref(ctx, "own", vec)
+    other = _local_ref(ctx, "nest", Ty.Vec(vec))
+    target = _slot(ctx, "unowned")
+
+    assert note_local_binding(target, _conditional(own, other, vec), ctx) is Ownership.ALIASED
+    assert ctx.alias_sets.ownership_of(target) is Ownership.ALIASED
+    assert ctx.alias_sets.ownership_of(own.slot) is Ownership.ALIASED
+    assert ctx.alias_sets.ownership_of(other.slot) is Ownership.ALIASED
+
+    for source in ("own.push_back(amt)", "nest.push_back(own)"):
+        ctx.sink = Diagnostics()
+        stmt = recognize_mutation(_parse_call(source), ctx)
+        assert isinstance(stmt, Nop), source
+        assert len(ctx.sink) == 1, [(d.code, d.message) for d in ctx.sink.diagnostics]
+        diag = ctx.sink.diagnostics[0]
+        _assert_reject(diag, "SPT1034", "aliased")
+        assert any("functional" in note for note in diag.notes), diag.notes
+
+
+def test_binding_a_conditional_whose_arms_are_the_same_local() -> None:
+    ctx = _ctx()
+    vec = Ty.Vec(Ty.U32)
+    own = _local_ref(ctx, "own", vec)
+    note_local_binding(_slot(ctx, "unowned"), _conditional(own, own, vec), ctx)
+    assert ctx.alias_sets.ownership_of(own.slot) is Ownership.ALIASED
+    assert isinstance(recognize_mutation(_parse_call("own.push_back(amt)"), ctx), Nop)
+
+
+def test_binding_a_conditional_over_maps_aliases_both_arms() -> None:
+    ctx = _ctx()
+    map_ty = Ty.Map(Ty.Symbol, Ty.U32)
+    ownmap = _local_ref(ctx, "ownmap", map_ty)
+    other = _local_ref(ctx, "mapofvec", Ty.Map(Ty.Symbol, Ty.Vec(Ty.U32)))
+    note_local_binding(_slot(ctx, "unowned"), _conditional(ownmap, other, map_ty), ctx)
+    assert ctx.alias_sets.ownership_of(ownmap.slot) is Ownership.ALIASED
+    assert ctx.alias_sets.ownership_of(other.slot) is Ownership.ALIASED
+    stmt = recognize_mutation(_parse_call("ownmap.set(sym, amt)"), ctx)
+    assert isinstance(stmt, Nop)
+    _assert_reject(ctx.sink.diagnostics[0], "SPT1034", "ownmap")
+
+
+def test_binding_a_conditional_the_checker_itself_built() -> None:
+    """The same hole through the real entry point: the `IfExp` here is the one
+    `check_expr` produces for `own if flag else aliased`, so the shape
+    `_escaping_locals` matches is the shape the checker actually emits."""
+    ctx = _ctx()
+    value = check_expr(ast.parse("own if amt > U32(0) else unowned", mode="eval").body, ctx)
+    assert not ctx.sink, [d.message for d in ctx.sink.diagnostics]
+    assert isinstance(value, IfExp)
+    note_local_binding(_slot(ctx, "aliased"), value, ctx)
+    assert ctx.alias_sets.ownership_of(_slot(ctx, "own")) is Ownership.ALIASED
+    stmt = recognize_mutation(_parse_call("own.push_back(amt)"), ctx)
+    assert isinstance(stmt, Nop)
+    _assert_reject(ctx.sink.diagnostics[0], "SPT1034", "own")
+
+
+def test_binding_a_host_result_aliases_nothing_else() -> None:
+    """The control: a `HostCall` right-hand side BUILDS a value, so routing
+    every RHS through `note_escapes` must not alias anything spuriously."""
+    ctx = _ctx()
+    value = recognize_call(_parse_call("pmv.values()"), ctx)
+    assert value is not None
+    assert not ctx.sink, [d.message for d in ctx.sink.diagnostics]
+    assert note_local_binding(_slot(ctx, "nest"), value, ctx) is Ownership.OWNED
+    assert ctx.alias_sets.ownership_of(_slot(ctx, "own")) is Ownership.OWNED
+    assert ctx.alias_sets.ownership_of(_slot(ctx, "ownmap")) is Ownership.OWNED
+    assert isinstance(recognize_mutation(_parse_call("own.push_back(amt)"), ctx), SetLocal)
+    assert isinstance(recognize_mutation(_parse_call("nest.push_back(own)"), ctx), SetLocal)
 
 
 def test_note_escapes_ignores_non_container_locals() -> None:

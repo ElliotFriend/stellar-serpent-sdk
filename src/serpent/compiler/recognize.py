@@ -2026,12 +2026,24 @@ def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx) -> None:
     one direction is "the container holds my object", the other is "I hold the
     container's object", and both have to be refused.
 
-    Two positions deliberately do NOT count as escapes: `<bucket>.set(k, v)`
-    and `events().publish(topics, data)`. Both serialize their argument out to
-    the host rather than storing a handle, and tier 1 has no shared-object
-    model to diverge from there at all (every `env.py` body raises
-    `NotImplementedError`, sub-plan E). If sub-plan E gives those surfaces real
-    tier-1 behaviour, they become escapes and belong in this hook.
+    Three recognized container-argument positions deliberately do NOT count as
+    escapes: `<bucket>.set(k, v)`, `events().publish(topics, data)`, and
+    `addr.require_auth_for_args(args)`. All three serialize their argument out
+    to the host rather than storing a handle, and tier 1 has no shared-object
+    model to diverge from at any of them (every `env.py` and
+    `types/address.py` body on those paths raises `NotImplementedError`,
+    sub-plan E). If sub-plan E gives those surfaces real tier-1 behaviour, they
+    become escapes and belong in this hook.
+
+    One further position belongs to the WIRING task rather than to this hook:
+    `<bucket>.get(key, T, default=d)` lowers to an `IfExp` whose `orelse` IS
+    `d` (SS C.4's GET_DEFAULT row), so a container local passed as `default`
+    can be the value of the whole expression -- exactly the conditional-arm
+    escape `_escaping_locals` already understands. It is unreachable today (a
+    `get`'s type argument must be a bare chain-type or struct name, so no
+    container type can be requested), but Task 8's wiring must route that
+    lowering's result through the same escape handling if it becomes
+    reachable.
     """
     for value in values:
         for ref in _escaping_locals(value):
@@ -2051,13 +2063,27 @@ def note_local_binding(slot: int, value: IRExpr, ctx: FuncCtx) -> Ownership | No
     gone), while the other name stays `ALIASED` -- C cannot prove no third
     reference exists, and the conservative answer is a reject, not a silent
     rebind.
+
+    **The right-hand side goes through `note_escapes` first** (review fix
+    round 2). `a = b` is only the simplest shape that shares a handle:
+    `w = own if flag else other` shares BOTH arms' handles, and classifying
+    the VALUE alone (an `IfExp` is `OTHER`, so the target is `ALIASED`) would
+    leave `own` and `other` reading `OWNED` and accept a later
+    `own.push_back(x)` -- E11's divergence again, one shape further out.
+    `_escaping_locals` already answers "which locals can this expression BE"
+    for exactly the value-preserving shapes (a bare `LocalRef`, either arm of
+    a conditional, and nothing for a `Make*`/`HostCall`/`FieldGet`, which
+    build new values), so routing every right-hand side through it subsumes
+    the `a = b` case rather than special-casing it.
     """
     if value.ty.tag not in _MUTABLE_TAGS:
         return None
+    # Any local the right-hand side can BE loses ownership, whatever the
+    # target ends up classified as.
+    note_escapes([value], ctx)
     source = classify_binding(value)
     if source is BindingSource.LOCAL_ALIAS:
-        assert isinstance(value, LocalRef)
-        ctx.alias_sets.mark_aliased(value.slot)
+        # `note_escapes` already marked the SOURCE slot; this marks the target.
         ctx.alias_sets.mark_aliased(slot)
         return Ownership.ALIASED
     if source in _OWNED_SOURCES:
@@ -2214,12 +2240,21 @@ def recognize_mutation(node: ast.Call, ctx: FuncCtx) -> IRStmt | None:
     statement-order walk accepts exactly the divergence E11 exists to reject.
     The wiring task must therefore run a SYNTACTIC PRE-PASS over the whole
     function body before checking any statement, collecting every alias and
-    escape fact -- `a = b` aliases (including tuple targets and `for` targets)
-    and the embedding escapes `note_escapes` documents (a local passed as a
-    `Vec`/`Map` item, a struct field value, or a mutation argument) -- so the
+    escape fact -- `a = b` aliases (including tuple targets and `for`
+    targets), a conditional expression on an assignment's right-hand side
+    (`w = own if flag else other` shares BOTH arms' handles, which is why
+    `note_local_binding` routes the value through `note_escapes`), and the
+    embedding escapes `note_escapes` documents (a local passed as a `Vec`/`Map`
+    item, a struct field value, or a mutation argument) -- so the
     classification is flow-insensitive-conservative rather than dependent on
     where the checker happens to be. Per-statement calls then only ever narrow
     from a state that was already conservative.
+
+    One escape position does not exist yet and is Task 8's to wire: an
+    `InternalCall` ARGUMENT (E8's module-level helpers and private methods). A
+    callee can embed a passed local in a container of its own, so a container
+    argument to an internal call must go through `note_escapes` the same way a
+    mutation argument does -- conservatively, without inspecting the callee.
 
     An unclassified slot is a reject, so a missing call shows up as a loud,
     located diagnostic rather than an unsound rebind.
