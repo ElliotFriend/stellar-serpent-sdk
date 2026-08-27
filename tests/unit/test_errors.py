@@ -23,6 +23,15 @@ def test_error_val_non_contract_type() -> None:
     assert val.error_type_of(v) == 2 and not val.is_contract_error_val(v)
 
 
+def test_error_val_validates_inputs() -> None:
+    with pytest.raises(ValueError):
+        val.error_val(0, error_type=0x1000000)  # error_type bleeds into the code field
+    with pytest.raises(ValueError):
+        val.error_val(-1)
+    with pytest.raises(ValueError):
+        val.error_val(2**32)
+
+
 def test_contract_error_base_is_abstract() -> None:
     with pytest.raises(TypeError):
         ContractError("nope")

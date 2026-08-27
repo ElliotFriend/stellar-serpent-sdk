@@ -252,6 +252,10 @@ ERROR_TYPE_AUTH = 9
 
 
 def error_val(code: int, error_type: int = ERROR_TYPE_CONTRACT) -> int:
+    if not 0 <= code <= 0xFFFF_FFFF:
+        raise ValueError(f"error code does not fit u32: {code}")
+    if not 0 <= error_type <= ERROR_TYPE_AUTH:
+        raise ValueError(f"error_type out of range 0..{ERROR_TYPE_AUTH}: {error_type}")
     return from_major_minor_tag(code, error_type, TAG_ERROR)
 
 
