@@ -626,7 +626,23 @@ class ModuleIR(IRNode):
     """A whole compiled contract module (SS C.2).
 
     `imports` is the set of `serpent.__all__` names the module imported (A22),
-    kept for the AST/metadata cross-check (F.1.14). The five emitter-facing
+    kept for the AST/metadata cross-check (F.1.14).
+
+    **`contract` is `ContractIR | None`, widening SS C.2's plain `ContractIR`.**
+    The reason is `loader.LoadedModule`'s own asymmetry: a module can have zero
+    `@contract` classes, more than one, or exactly one whose declaration failed
+    to execute, and each is a located `SPT4019`/`SPT4xxx` diagnostic rather
+    than a reason to abandon the compile. Collect-all (E16) means the frontend
+    keeps checking everything else it can -- structs, error enums, helpers --
+    and hands back a `ModuleIR` describing what it did understand. `None` is
+    therefore always accompanied by at least one diagnostic, and sub-plan D
+    never sees such a module: `compile_module` raises `CompileError` before D
+    is reached (SS C.2's output list: "`diagnostics` -- must be empty for D to
+    run"). A non-optional field would force either a fabricated empty
+    `ContractIR` or an exception, and P2's discipline ("never fabricate")
+    argues against the first.
+
+    The five emitter-facing
     OUTPUTS beyond this tree -- `host_fns_used`, `needs_memory` plus the
     literal inventory, `runtime_parts_needed`, `spec_inputs`, `diagnostics` --
     are computed by `compile_module`'s assembly (Task 10) and are deliberately

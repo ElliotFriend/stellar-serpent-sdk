@@ -56,12 +56,11 @@ import ast
 import builtins
 import operator
 from collections.abc import Callable
-from dataclasses import replace
 from typing import Any, Final
 
 from serpent.compiler import codes
 from serpent.compiler.ctx import FuncCtx
-from serpent.compiler.diagnostics import Diagnostics, Loc
+from serpent.compiler.diagnostics import Loc
 from serpent.compiler.ir import (
     Binary,
     BinaryOp,
@@ -190,6 +189,17 @@ _LEN_SCOPE_NOTE = (
     "to Vec, Map, and Bytes"
 )
 _TIME_ALGEBRA_NOTE = "time algebra is a sub-plan E decision (D4/A17)"
+_ORACLE_SURPRISE_NOTE = (
+    "the compiler validates a literal by constructing the tier-1 chain value; this "
+    "constructor raised something other than the ValueError/TypeError serpent's error "
+    "convention (A10) specifies, which is a tier-1 bug worth reporting -- but never a "
+    "compiler traceback"
+)
+_ORDERING_STRICTNESS_NOTE = (
+    "tier 1 raises TypeError for this ordering, and its val_cmp model is explicitly "
+    "partial (A15), so the compiler must not invent an order the oracle cannot check "
+    "(F.1.8)"
+)
 _RAW_LITERAL_NOTE = (
     "tier 1 answers False forever here, because a chain payload type does not coerce "
     "from a raw literal and __eq__ never raises (E13/T4/A7)"
@@ -212,6 +222,25 @@ _ARITH_TAGS: Final[frozenset[TyTag]] = frozenset(
 #: is a reject, because tier 1 answers `True` forever for a `Symbol`/`Vec`/
 #: struct (no `__bool__`), which is F.1.3's silent trap.
 _NUMERIC_TAGS: Final[frozenset[TyTag]] = _ARITH_TAGS | _TIME_TAGS
+
+#: Every fixed-width chain integer -- the set SPT3003's "operands must share
+#: the same chain-integer type" is actually a true statement about.
+_CHAIN_INT_TAGS: Final[frozenset[TyTag]] = _NUMERIC_TAGS
+
+#: ONE comparison family (D5): equality and ordering across `Bytes`/`Bytes32`/
+#: `Bytes64`/`bytes_n(N)` are payload-based, and all share `_SCVAL_RANK` 13.
+_BYTES_FAMILY_TAGS: Final[frozenset[TyTag]] = frozenset({TyTag.BYTES, TyTag.BYTES_N})
+
+#: Types tier 1 can ORDER (`< <= > >=`), verified against the oracle:
+#: numerics (Timepoint/Duration included -- D4 removes their arithmetic, not
+#: their comparisons), `Bool`, `Symbol`, `String`, the `Bytes` family, and
+#: `Address`. `Vec`/`Map`/struct/`Option` are absent because tier 1 raises
+#: `TypeError` for their orderings; EQUALITY on those types stays supported.
+_ORDERABLE_TAGS: Final[frozenset[TyTag]] = (
+    _NUMERIC_TAGS
+    | _BYTES_FAMILY_TAGS
+    | frozenset({TyTag.BOOL, TyTag.SYMBOL, TyTag.STRING, TyTag.ADDRESS})
+)
 
 #: Tier-1 introspection properties with no host equivalent (SS B.2).
 _INTROSPECTION_PROPERTIES: Final[frozenset[str]] = frozenset(
@@ -282,12 +311,29 @@ _COMPARE_OPS: Final[dict[type[ast.cmpop], CompareOp]] = {
 #: to be `None` (`x: U32 | None = None` is a real literal).
 _MISSING: Final[object] = object()
 
-#: Guards so a typo cannot turn constant folding into a denial of service:
+#: "a compile-time literal, but past the size caps below". Distinct from
+#: `_MISSING` so the diagnostic can tell the honest story: `U32(2**4096)` is an
+#: out-of-range LITERAL (SPT3004), not a misuse of `**` (SPT3005).
+_TOO_LARGE: Final[object] = object()
+
+#: Caps so a typo cannot turn constant folding into a denial of service:
 #: `2 ** 10**9` would otherwise allocate until the process dies. U128's widest
 #: literal needs 128 bits and the longest Symbol 32 characters, so these caps
-#: are far above anything a contract can legitimately spell.
+#: are far above anything a contract can legitimately spell -- a literal that
+#: trips one is reported, never silently mis-reported.
 _MAX_FOLD_BITS: Final[int] = 4096
 _MAX_FOLD_LENGTH: Final[int] = 1 << 16
+#: A `**` exponent this large cannot produce anything under `_MAX_FOLD_BITS`
+#: unless the base is 0, 1 or -1, so declining outright costs nothing real and
+#: bounds the work even for those bases. It is the BIT cap, not a smaller
+#: number, so `2**4000` (4001 bits) still folds.
+_MAX_FOLD_EXPONENT: Final[int] = _MAX_FOLD_BITS
+
+_FOLD_CAP_NOTE = (
+    f"the compiler folds literal arithmetic up to {_MAX_FOLD_BITS} bits and "
+    f"{_MAX_FOLD_LENGTH} characters/bytes; every chain type is far narrower than that "
+    "(U128, the widest, is 128 bits)"
+)
 
 
 def fold_literal(node: ast.expr) -> int | str | bytes | None:
@@ -307,7 +353,7 @@ def fold_literal(node: ast.expr) -> int | str | bytes | None:
     and D4 require the compiler to reject.
     """
     value = _fold(node)
-    if isinstance(value, bool) or value is _MISSING:
+    if isinstance(value, bool) or value is _MISSING or value is _TOO_LARGE:
         return None
     if isinstance(value, (int, str, bytes)):
         return value
@@ -315,13 +361,27 @@ def fold_literal(node: ast.expr) -> int | str | bytes | None:
 
 
 def _fold(node: ast.expr) -> object:
+    """`_MISSING` (not a literal), `_TOO_LARGE` (a literal past the size caps),
+    or the value.
+
+    The two failure sentinels are deliberately DISTINCT: they produce
+    different diagnostics. "Not a literal" means the ordinary operator and
+    type rules apply (`U32(2) ** U32(3)` is the omitted-operator reject);
+    "too large" is a fact about the LITERAL, and reporting it as an omitted
+    operator would be dishonest -- `U32(2**4096)` is an out-of-range literal,
+    not a misuse of `**`.
+    """
     if isinstance(node, ast.Constant):
         value = node.value
         if isinstance(value, bool):
             return _MISSING
-        return value if isinstance(value, (int, str, bytes)) else _MISSING
+        if isinstance(value, (int, str, bytes)):
+            return _guard(value)
+        return _MISSING
     if isinstance(node, ast.UnaryOp):
         operand = _fold(node.operand)
+        if operand is _TOO_LARGE:
+            return _TOO_LARGE
         if not isinstance(operand, int) or isinstance(operand, bool):
             return _MISSING
         if isinstance(node.op, ast.USub):
@@ -334,6 +394,8 @@ def _fold(node: ast.expr) -> object:
     if isinstance(node, ast.BinOp):
         left = _fold(node.left)
         right = _fold(node.right)
+        if left is _TOO_LARGE or right is _TOO_LARGE:
+            return _TOO_LARGE
         if left is _MISSING or right is _MISSING:
             return _MISSING
         return _guard(_apply_fold(node.op, left, right))
@@ -341,18 +403,31 @@ def _fold(node: ast.expr) -> object:
 
 
 def _apply_fold(op: ast.operator, left: object, right: object) -> object:
-    """Apply one plain-Python literal operator, declining anything unsafe."""
-    if isinstance(op, ast.Pow) and not (isinstance(right, int) and 0 <= right <= 512):
-        return _MISSING
-    if isinstance(op, (ast.LShift, ast.RShift)) and not (
-        isinstance(right, int) and 0 <= right <= 512
-    ):
-        return _MISSING
+    """Apply one plain-Python literal operator, declining anything unsafe.
+
+    Every size check happens BEFORE the operation, never after: `_guard` sees
+    the result, and by then a `2 ** 10**9` has already tried to allocate it.
+    """
+    if isinstance(op, ast.Pow):
+        if not isinstance(right, int) or right < 0:
+            return _MISSING
+        if right > _MAX_FOLD_EXPONENT:
+            return _TOO_LARGE
+        # `bit_length(left**right)` is at least `(bit_length(left) - 1) * right
+        # + 1`, so this declines only what provably exceeds the cap -- `2**4000`
+        # (4001 bits) still folds, while `(2**512)**512` (262145 bits) does not.
+        if isinstance(left, int) and (left.bit_length() - 1) * right + 1 > _MAX_FOLD_BITS:
+            return _TOO_LARGE
+    if isinstance(op, (ast.LShift, ast.RShift)):
+        if not isinstance(right, int) or right < 0:
+            return _MISSING
+        if right > _MAX_FOLD_BITS:
+            return _TOO_LARGE
     if isinstance(op, ast.Mult):
         # `"a" * 33` / `b"x" * 10`: cap the RESULT length before allocating it,
         # so a typo (or a nested `("a" * 65536) * 65536`) cannot ask for
-        # gigabytes -- `_guard` runs after the operation and would be too late.
-        # Anything else (`"a" * "b"`) falls through to the handler's TypeError.
+        # gigabytes. Anything else (`"a" * "b"`) falls through to the handler's
+        # TypeError.
         for sequence, count in ((left, right), (right, left)):
             if (
                 isinstance(sequence, (str, bytes))
@@ -360,7 +435,7 @@ def _apply_fold(op: ast.operator, left: object, right: object) -> object:
                 and count > 0
                 and len(sequence) * count > _MAX_FOLD_LENGTH
             ):
-                return _MISSING
+                return _TOO_LARGE
     handler = _FOLD_OPS.get(type(op))
     if handler is None:
         return _MISSING
@@ -371,11 +446,11 @@ def _apply_fold(op: ast.operator, left: object, right: object) -> object:
 
 
 def _guard(value: object) -> object:
-    """Decline a folded value too big to be a legitimate contract literal."""
+    """`_TOO_LARGE` for a literal past the size caps, else `value` unchanged."""
     if isinstance(value, int) and not isinstance(value, bool):
-        return value if value.bit_length() <= _MAX_FOLD_BITS else _MISSING
+        return value if value.bit_length() <= _MAX_FOLD_BITS else _TOO_LARGE
     if isinstance(value, (str, bytes)):
-        return value if len(value) <= _MAX_FOLD_LENGTH else _MISSING
+        return value if len(value) <= _MAX_FOLD_LENGTH else _TOO_LARGE
     return value
 
 
@@ -400,16 +475,24 @@ _FOLD_OPS: Final[dict[type[ast.operator], Callable[[Any, Any], Any]]] = {
 
 
 def _literal_value(node: ast.expr) -> object:
-    """The compile-time literal `node` denotes, or `_MISSING`.
+    """The compile-time literal `node` denotes, `_MISSING`, or `_TOO_LARGE`.
 
     Wider than `fold_literal`: a bare `True`/`False`/`None` Constant IS a
     literal for coercion purposes (MJ-12's `while True:`, and `None` for an
-    `Option`), even though neither may be folded into arithmetic.
+    `Option`), even though neither may be folded into arithmetic. A literal
+    written out in full (a 100 KB string constant) is returned as-is -- the
+    size caps exist to bound COMPUTATION, and the oracle then answers whether
+    the target type can hold it.
     """
     if isinstance(node, ast.Constant):
         return node.value
-    folded = fold_literal(node)
-    return _MISSING if folded is None else folded
+    return _fold(node)
+
+
+def _is_literal(node: ast.expr) -> bool:
+    """Whether `node` is a compile-time literal AT ALL -- a too-large one
+    included, because it is the literal path that owes it a diagnostic."""
+    return _literal_value(node) is not _MISSING
 
 
 def _is_bool_literal(node: ast.expr) -> bool:
@@ -469,19 +552,37 @@ def _deferred(node: ast.expr, ctx: FuncCtx, owner: str, what: str) -> IRExpr:
     return _invalid(loc)
 
 
-def _peek_ty(node: ast.expr, ctx: FuncCtx) -> Ty:
-    """The `Ty` `node` would check to, WITHOUT reporting anything.
+def _too_large(loc: Loc, ctx: FuncCtx) -> IRExpr:
+    """Report a literal the folding caps declined (see `_TOO_LARGE`).
 
-    Used where a diagnostic needs to name the other operand's type but must
-    not double-report its errors (E13's raw-literal comparison) or where the
-    shape of the base decides which task owns the node (an introspection
-    property vs. a struct field read). A scratch sink keeps the peek silent;
-    the caller re-checks through the real sink when it wants the errors.
+    Deliberately NOT the omitted-operator code: `U32(2**4096)` misuses no
+    operator, it names a value nothing on chain can hold, so it belongs with
+    every other out-of-range literal.
     """
-    return check_expr(node, replace(ctx, sink=Diagnostics())).ty
+    _error(
+        ctx,
+        "SPT3004",
+        loc,
+        "the literal is too large for the compiler to evaluate",
+        notes=(_FOLD_CAP_NOTE,),
+    )
+    return _invalid(loc)
 
 
 # --- literal coercion (S3) ----------------------------------------------------
+
+#: Cap on a literal repr embedded in a diagnostic. A contract may hold a
+#: 100 KB `Bytes` literal; quoting it back in a `help:` line would be a
+#: 131 KB error message.
+_MAX_REPR_CHARS: Final[int] = 120
+
+
+def _short_repr(value: object) -> str:
+    """`repr(value)`, truncated with an ellipsis past `_MAX_REPR_CHARS`."""
+    text = repr(value)
+    if len(text) <= _MAX_REPR_CHARS:
+        return text
+    return f"{text[:_MAX_REPR_CHARS]}... ({len(text)} chars)"
 
 
 def _describe(value: object) -> str:
@@ -503,11 +604,13 @@ def _wrap_help(value: object) -> str:
     if isinstance(value, bool):
         return f"wrap it in a chain type: Bool({value})"
     if isinstance(value, int):
-        return f"wrap it in a chain type, e.g. U32({value}) or I128({value})"
+        shown = _short_repr(value)
+        return f"wrap it in a chain type, e.g. U32({shown}) or I128({shown})"
     if isinstance(value, str):
-        return f"wrap it in a chain type, e.g. Symbol({value!r}) or String({value!r})"
+        shown = _short_repr(value)
+        return f"wrap it in a chain type, e.g. Symbol({shown}) or String({shown})"
     if isinstance(value, bytes):
-        return f"wrap it in a chain type, e.g. Bytes({value!r})"
+        return f"wrap it in a chain type, e.g. Bytes({_short_repr(value)})"
     if value is None:
         return "None is only a value where the type is X | None"
     return "wrap the literal in one of serpent's chain types"
@@ -529,6 +632,11 @@ def _validate_literal(value: object, cls: type, loc: Loc, ctx: FuncCtx) -> bool:
     wrong fixed `Bytes` length, a malformed strkey); a `TypeError` is the
     wrong KIND of literal for the type. The two map to different codes because
     they are different author mistakes with different fixes.
+
+    The final clause makes the delegation safe BY CONSTRUCTION: whatever a
+    chain constructor raises -- today `ValueError`/`TypeError` by A10's
+    convention, tomorrow whatever a new type's validator adds -- becomes a
+    located diagnostic rather than a traceback escaping the compiler (F.2.5).
     """
     try:
         # Every chain type's constructor takes exactly one payload argument;
@@ -539,6 +647,15 @@ def _validate_literal(value: object, cls: type, loc: Loc, ctx: FuncCtx) -> bool:
         return False
     except TypeError as exc:
         _error(ctx, "SPT3018", loc, str(exc))
+        return False
+    except Exception as exc:  # noqa: BLE001 -- delegation safety, see above
+        _error(
+            ctx,
+            "SPT3004",
+            loc,
+            f"{cls.__name__}() rejected the literal: {type(exc).__name__}: {exc}",
+            notes=(_ORACLE_SURPRISE_NOTE,),
+        )
         return False
     return True
 
@@ -754,6 +871,22 @@ def _check_attribute(node: ast.Attribute, ctx: FuncCtx) -> IRExpr:
 
     base = node.value
     if isinstance(base, ast.Name):
+        if base.id == "self":
+            # `self.<attr>` is a STATE read, which is what SS C.3's scope rule
+            # and SPT2002 are about -- never a deferred surface. (A private
+            # METHOD call, `self._helper(...)`, is E8-supported and is routed
+            # to Task 8 from `_check_call`, which never reaches this function.)
+            _error(
+                ctx,
+                "SPT2002",
+                loc,
+                f"`self.{node.attr}` is not a value: a @contract class has no attributes",
+                help=(
+                    "read and write contract state through env.storage(); call a private "
+                    "method as self._name(...)"
+                ),
+            )
+            return _invalid(loc)
         obj = ctx.loaded.namespace.get(base.id)
         if isinstance(obj, type):
             metadata = vars(obj).get(_METADATA_ATTR)
@@ -761,15 +894,20 @@ def _check_attribute(node: ast.Attribute, ctx: FuncCtx) -> IRExpr:
                 return _check_error_member(node, ctx, base.id, metadata, loc)
 
     if node.attr in _INTROSPECTION_PROPERTIES:
-        base_ty = _peek_ty(base, ctx)
+        # ONE pass, through the real sink: a scratch-sink peek followed by a
+        # re-check doubles the work at every nesting level, which is
+        # exponential in the depth of an attribute chain.
+        base_ir = check_expr(base, ctx)
+        if _failed(base_ir):
+            return _invalid(loc)
         # A struct field can legitimately be named `value` -- that is a field
         # read, which is Task 7b's; only a real chain-type base is this row.
-        if base_ty.tag not in (TyTag.INVALID, TyTag.STRUCT):
+        if base_ir.ty.tag is not TyTag.STRUCT:
             _error(
                 ctx,
                 "SPT1016",
                 loc,
-                f"`.{node.attr}` on {base_ty.render()} is tier-1 introspection with no "
+                f"`.{node.attr}` on {base_ir.ty.render()} is tier-1 introspection with no "
                 "host equivalent",
             )
             return _invalid(loc)
@@ -850,10 +988,17 @@ def _check_call(node: ast.Call, ctx: FuncCtx) -> IRExpr:
             return _invalid(loc)
 
     func = node.func
-    if not isinstance(func, ast.Name):
+    if isinstance(func, ast.Attribute):
+        if isinstance(func.value, ast.Name) and func.value.id == "self":
+            # TASK-8: a private method call is E8-SUPPORTED (an InternalCall on
+            # a non-exported wasm function) -- unlike a `self.<attr>` read,
+            # which SPT2002 rejects outright in `_check_attribute`.
+            return _deferred(node, ctx, "Task 8", f"the call to `self.{func.attr}`")
         # TASK-7A: `env.storage().get(...)`, `addr.require_auth()`.
         # TASK-7B: container/struct methods; `Event(...).publish(env)` (E12).
         return _deferred(node, ctx, "Task 7a/7b", "a method call")
+    if not isinstance(func, ast.Name):
+        return _deferred(node, ctx, "Task 7a/7b", "a call of a computed value")
 
     name = func.id
     if name == "bool":
@@ -921,7 +1066,7 @@ def _single_arg(node: ast.Call, ctx: FuncCtx, loc: Loc, name: str) -> ast.expr |
     if len(node.args) != 1:
         _error(
             ctx,
-            _FALLBACK_CODE,
+            "SPT3020",
             loc,
             f"`{name}()` takes exactly one argument, got {len(node.args)}",
             help=f"pass exactly one value, e.g. {name}(x)",
@@ -956,6 +1101,10 @@ def _check_chain_constructor(
         return _invalid(loc)
 
     value = _literal_value(arg)
+    if value is _TOO_LARGE:
+        # A literal argument the folding caps declined: the honest story is the
+        # literal's size, not the operator its spelling happened to use.
+        return _too_large(loc, ctx)
     if value is not _MISSING:
         if isinstance(value, bool) and ty.tag is not TyTag.BOOL:
             # The oracle would ACCEPT this (python's bool is an int); T2/D4
@@ -1019,15 +1168,21 @@ def _check_len_call(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
 # --- BinOp / UnaryOp ----------------------------------------------------------
 
 
-def _check_operand_pair(left: ast.expr, right: ast.expr, ctx: FuncCtx) -> tuple[IRExpr, IRExpr]:
+def _check_operand_pair(
+    left: ast.expr, right: ast.expr, ctx: FuncCtx, *, expected: Ty | None = None
+) -> tuple[IRExpr, IRExpr]:
     """Check two operands so a literal takes the OTHER side's type (A6).
 
-    The non-literal side is checked first and, when it fails, the literal side
-    is skipped entirely -- a bare literal whose partner already errored would
-    otherwise add a second, purely cascaded diagnostic.
+    Symmetric in which side holds the literal: the non-literal side is checked
+    FIRST and its type becomes the literal's `expected`, so `a + 10` and
+    `10 + a` -- and `a if flag else 5` and `5 if flag else a` -- all behave the
+    same way. When the non-literal side fails, the literal side is skipped
+    entirely: a bare literal whose partner already errored would otherwise add
+    a second, purely cascaded diagnostic. `expected` is the fallback when BOTH
+    sides are literals (an `IfExp` in an annotated position).
     """
-    left_is_literal = _literal_value(left) is not _MISSING
-    right_is_literal = _literal_value(right) is not _MISSING
+    left_is_literal = _is_literal(left)
+    right_is_literal = _is_literal(right)
 
     if left_is_literal and not right_is_literal:
         rhs = check_expr(right, ctx)
@@ -1035,7 +1190,7 @@ def _check_operand_pair(left: ast.expr, right: ast.expr, ctx: FuncCtx) -> tuple[
             return _invalid(Loc.from_node(ctx.path, left)), rhs
         return check_expr(left, ctx, expected=rhs.ty), rhs
 
-    lhs = check_expr(left, ctx)
+    lhs = check_expr(left, ctx, expected=expected if left_is_literal else None)
     if _failed(lhs):
         return lhs, _invalid(Loc.from_node(ctx.path, right))
     rhs = check_expr(right, ctx, expected=lhs.ty if right_is_literal else None)
@@ -1045,8 +1200,10 @@ def _check_operand_pair(left: ast.expr, right: ast.expr, ctx: FuncCtx) -> tuple[
 def _check_binop(node: ast.BinOp, ctx: FuncCtx, expected: Ty | None) -> IRExpr:
     loc = Loc.from_node(ctx.path, node)
 
-    folded = fold_literal(node)
-    if folded is not None:
+    folded = _fold(node)
+    if folded is _TOO_LARGE:
+        return _too_large(loc, ctx)
+    if folded is not _MISSING:
         # A plain-Python literal spelling (`2**32`, `"a" * 33`), not chain
         # arithmetic -- see `fold_literal` and F.1.10.
         return _coerce_literal(folded, loc, ctx, expected)
@@ -1129,8 +1286,10 @@ def _check_binop(node: ast.BinOp, ctx: FuncCtx, expected: Ty | None) -> IRExpr:
 def _check_unaryop(node: ast.UnaryOp, ctx: FuncCtx, expected: Ty | None) -> IRExpr:
     loc = Loc.from_node(ctx.path, node)
 
-    folded = fold_literal(node)
-    if folded is not None:
+    folded = _fold(node)
+    if folded is _TOO_LARGE:
+        return _too_large(loc, ctx)
+    if folded is not _MISSING:
         return _coerce_literal(folded, loc, ctx, expected)
 
     if isinstance(node.op, ast.Not):
@@ -1238,34 +1397,66 @@ def _check_compare(node: ast.Compare, ctx: FuncCtx) -> IRExpr:
     # E13/T4: a raw str/bytes literal never coerces into a chain payload. At
     # tier 1 the comparison is silently `False` forever (A7: `__eq__` never
     # raises) -- exactly the bug S1 says to name rather than approximate.
-    for literal_node, other_node in ((left, right), (right, left)):
-        value = _literal_value(literal_node)
-        if isinstance(value, (str, bytes)):
-            other_ty = _peek_ty(other_node, ctx)
-            if other_ty.tag is TyTag.INVALID:
-                check_expr(other_node, ctx)  # report the real problem instead
-                return _invalid(loc)
-            _error(
-                ctx,
-                "SPT3016",
-                loc,
-                f"a raw {type(value).__name__} literal never equals a {other_ty.render()}",
-                help=(f"compare against the chain value, e.g. {other_ty.render()}({value!r})"),
-                notes=(_RAW_LITERAL_NOTE,),
-            )
-            return _invalid(loc)
+    #
+    # Detected SYNTACTICALLY first (no walk), then the OTHER side is checked
+    # exactly once, through the real sink. An earlier version peeked with a
+    # scratch sink and then re-checked, which doubles the work at every
+    # nesting level -- exponential in the depth of nested comparisons.
+    raw_literal = _raw_payload_literal(left, right)
+    if raw_literal is not None:
+        value, other_node = raw_literal
+        other = check_expr(other_node, ctx)
+        if _failed(other):
+            return _invalid(loc)  # the real problem is already reported
+        _error(
+            ctx,
+            "SPT3016",
+            loc,
+            f"a raw {type(value).__name__} literal never equals a {other.ty.render()}",
+            help=(
+                f"compare against the chain value, e.g. {other.ty.render()}({_short_repr(value)})"
+            ),
+            notes=(_RAW_LITERAL_NOTE,),
+        )
+        return _invalid(loc)
 
     lhs, rhs = _check_operand_pair(left, right, ctx)
     if _failed(lhs) or _failed(rhs):
         return _invalid(loc)
 
-    if lhs.ty != rhs.ty:
+    if not _comparable(lhs.ty, rhs.ty):
+        both_integers = lhs.ty.tag in _CHAIN_INT_TAGS and rhs.ty.tag in _CHAIN_INT_TAGS
         _error(
             ctx,
-            "SPT3003",
+            # SPT3003 states the rule for chain INTEGERS ("operands must share
+            # the same chain-integer type"), which is exactly T1's cross-width
+            # and cross-signedness case. For anything else that sentence would
+            # be wrong in kind -- `Symbol == U32` is not an integer-width
+            # problem -- so the generic type-mismatch row carries it instead.
+            "SPT3003" if both_integers else "SPT3018",
             loc,
-            f"{lhs.ty.render()} and {rhs.ty.render()} are different chain types",
+            f"{lhs.ty.render()} and {rhs.ty.render()} cannot be compared",
             help="convert one side explicitly; comparing foreign chain types is an error",
+        )
+        return _invalid(loc)
+
+    if op not in (CompareOp.EQ, CompareOp.NE) and lhs.ty.tag not in _ORDERABLE_TAGS:
+        # F.1.8: reproduce tier 1's STRICTNESS, not the host's permissiveness.
+        # `obj_cmp` would happily order two MapObjects on chain, but tier 1
+        # raises `TypeError: '<' not supported between instances of 'Vec'`, and
+        # a compiler that accepted it would put an unverifiable order on chain
+        # (A15: val_cmp is an explicitly PARTIAL model of obj_cmp). Equality on
+        # these types stays supported -- tier 1 answers it.
+        _error(
+            ctx,
+            "SPT3005",
+            loc,
+            f"`{op.value}` is not defined for {lhs.ty.render()}",
+            help=(
+                "compare with == or != instead; ordering is defined for the numeric "
+                "types, Bool, Symbol, String, Bytes, and Address"
+            ),
+            notes=(_ORDERING_STRICTNESS_NOTE,),
         )
         return _invalid(loc)
 
@@ -1279,6 +1470,36 @@ def _check_compare(node: ast.Compare, ctx: FuncCtx) -> IRExpr:
     )
 
 
+def _raw_payload_literal(left: ast.expr, right: ast.expr) -> tuple[str | bytes, ast.expr] | None:
+    """`(the raw literal, the other operand)` if exactly one side is a raw
+    `str`/`bytes` literal (E13), else `None`. Purely syntactic -- no walk."""
+    for literal_node, other_node in ((right, left), (left, right)):
+        value = _literal_value(literal_node)
+        if isinstance(value, (str, bytes)):
+            return value, other_node
+    return None
+
+
+def _comparable(lhs: Ty, rhs: Ty) -> bool:
+    """Whether two operand types may be compared at all.
+
+    Identical types always may. The `Bytes` family is ONE comparison family
+    across `Bytes`/`Bytes32`/`Bytes64`/`bytes_n(N)` (D5: equality and ordering
+    are payload-based, and all of them share `_SCVAL_RANK` 13) -- fixed-length-
+    ness is an AUTHORING constraint, so `Bytes32(p) == Bytes(p)` is `True` at
+    tier 1 (`cases.py:bytes32_equals_bytes_same_payload`, a `kind="value"`
+    case) and must compile.
+
+    Note the deliberate ASYMMETRY this does NOT touch (F.1.8): a Vec's own
+    lookups stay strict, so `Vec(Bytes32).first_index_of(Bytes(p))` remains a
+    reject even though the host would find the element. That is Task 7b's
+    surface; this function is only about the comparison operators.
+    """
+    if lhs == rhs:
+        return True
+    return lhs.tag in _BYTES_FAMILY_TAGS and rhs.tag in _BYTES_FAMILY_TAGS
+
+
 def _via_obj_cmp(ty: Ty) -> bool:
     """F.1.2/T5: which comparisons MUST route through `obj_cmp` (`x.0`).
 
@@ -1290,7 +1511,14 @@ def _via_obj_cmp(ty: Ty) -> bool:
     tier 1 pins (`cases.py:symbol_underscore_vs_A_ascii_order`). That is the
     #2 silent divergence in the whole frontend; the mitigation is to never
     take the raw-compare shortcut.
+
+    An `Option` is `True` for a structural reason of its own: one side may be
+    the immediate `Void` tag while the other is an object handle, so there is
+    no single scalar comparison that covers both possibilities -- whatever the
+    wrapped type is.
     """
+    if ty.tag is TyTag.OPTION:
+        return True
     return ty.tag is TyTag.SYMBOL or ty.repr_form is ReprForm.HOST_OBJECT
 
 
@@ -1336,11 +1564,11 @@ def _check_ifexp(node: ast.IfExp, ctx: FuncCtx, expected: Ty | None) -> IRExpr:
     if _failed(cond):
         return _invalid(loc)
 
-    then = check_expr(node.body, ctx, expected=expected)
-    if _failed(then):
-        return _invalid(loc)
-    orelse = check_expr(node.orelse, ctx, expected=then.ty)
-    if _failed(orelse):
+    # Symmetric in which arm holds the literal (the same rule as an operator
+    # pair, A6): `a if flag else 5` and `5 if flag else a` both take the
+    # non-literal arm's type, and `expected` covers the both-literal case.
+    then, orelse = _check_operand_pair(node.body, node.orelse, ctx, expected=expected)
+    if _failed(then) or _failed(orelse):
         return _invalid(loc)
 
     if then.ty != orelse.ty:

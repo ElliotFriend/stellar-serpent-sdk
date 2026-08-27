@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import builtins
 import dataclasses
+import time
 from dataclasses import replace
 
 import pytest
@@ -243,6 +244,11 @@ class C:
         m: Map[Symbol, U32],
         bal: Balance,
         flag: Bool,
+        b64: Bytes64,
+        oad: Address | None,
+        osym: Symbol | None,
+        ovec: Vec[U32] | None,
+        ou32: U32 | None,
     ) -> U32:
         return a
 '''
@@ -268,6 +274,11 @@ _PARAMS: list[tuple[str, Ty]] = [
     ("m", Ty.Map(Ty.Symbol, Ty.U32)),
     ("bal", Ty.Struct("Balance")),
     ("flag", Ty.Bool),
+    ("b64", Ty.BytesN(64)),
+    ("oad", Ty.Option(Ty.Address)),
+    ("osym", Ty.Option(Ty.Symbol)),
+    ("ovec", Ty.Option(Ty.Vec(Ty.U32))),
+    ("ou32", Ty.Option(Ty.U32)),
 ]
 
 _PARAM_INDEX: dict[str, int] = {name: i for i, (name, _) in enumerate(_PARAMS)}
@@ -500,11 +511,51 @@ def test_fold_literal_declines(source: str) -> None:
     ],
 )
 def test_fold_literal_declines_absurd_sizes(source: str) -> None:
-    """A typo must not turn constant folding into a denial of service; the
-    reject then comes from the normal operator rules instead."""
+    """A typo must not turn constant folding into a denial of service."""
     assert fold_literal(_parse(source)) is None
     _, sink = _check(source)
     assert len(sink) == 1
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "U32(2**4096)",
+        "U64(2 ** 10**9)",
+        'String("a" * 100000)',
+        'Symbol("a" * 100000)',
+        "2**4096",
+    ],
+)
+def test_size_declined_literal_reports_the_size_story(source: str) -> None:
+    """A literal the folding caps declined must report the LITERAL's size, not
+    an omitted operator: `U32(2**4096)` misuses no operator."""
+    diag = _reject(source)
+    _assert_reject(diag, "SPT3004", "too large")
+    assert "4096 bits" in " ".join(diag.notes)
+
+
+def test_pow_is_pre_guarded_before_computing() -> None:
+    """The size check runs BEFORE the multiplication, so a 871K-bit literal is
+    declined rather than computed and then thrown away."""
+    start = time.perf_counter()
+    assert fold_literal(_parse("(2**1024)**851")) is None
+    assert time.perf_counter() - start < 0.5
+
+
+def test_a_literal_just_under_the_cap_still_folds() -> None:
+    """The Pow pre-guard uses a provable LOWER bound on the result width, so it
+    declines only what really exceeds the cap."""
+    assert fold_literal(_parse("2**4000")) == 2**4000
+
+
+def test_help_truncates_a_huge_literal_repr() -> None:
+    """A 100 KB literal must not produce a 131 KB error message."""
+    diag = _reject('b"' + "a" * 100_000 + '"')
+    assert diag.code == "SPT3008"
+    rendered = diag.message + (diag.help or "") + "".join(diag.notes)
+    assert len(rendered) < 1000, len(rendered)
+    assert "..." in (diag.help or "")
 
 
 # --- Name resolution ---------------------------------------------------------
@@ -550,6 +601,24 @@ def test_self_use_is_rejected() -> None:
 
 def test_unresolved_name_is_rejected() -> None:
     _assert_reject(_reject("nope"), "SPT2001", "nope")
+
+
+@pytest.mark.parametrize("source", ["self.total", "self.admin", "self.value"])
+def test_self_attribute_read_is_rejected_as_state(source: str) -> None:
+    """`self.<attr>` is a STATE read -- SS C.3's scope rule and SPT2002's own
+    intent ("contract state lives in storage, not on self") -- never a
+    deferred surface with a false Task-7b promise."""
+    diag = _reject(source)
+    _assert_reject(diag, "SPT2002", "self")
+    assert "storage" in (diag.help or "")
+
+
+def test_self_method_call_is_an_internal_call_for_task_8() -> None:
+    """A private METHOD is E8-supported (an InternalCall on a non-exported
+    wasm function), so it defers rather than rejecting outright."""
+    diag = _reject("self._helper(a)")
+    assert diag.code == "SPT1037"
+    assert any("Task 8" in note for note in diag.notes), diag.notes
 
 
 def test_bare_chain_type_name_in_a_value_position_is_rejected() -> None:
@@ -616,10 +685,14 @@ def test_keyword_argument_to_a_constructor_is_rejected() -> None:
     _assert_reject(_reject("U32(value=5)"), "SPT1035", "value")
 
 
-def test_constructor_arity_is_checked() -> None:
-    diag = _reject("U32()")
-    assert diag.code == "SPT1037"
-    assert diag.help
+@pytest.mark.parametrize("source", ["U32()", "U32(1, 2)", "Symbol()", "Bool(True, False)"])
+def test_constructor_arity_is_checked(source: str) -> None:
+    """A chain-type constructor takes exactly one payload argument. This had
+    no registry row in the first round and was falling to MJ-11's catch-all,
+    whose "not supported by the serpent subset" wording is wrong for a
+    construct that IS supported and merely miscalled."""
+    diag = _reject(source)
+    _assert_reject(diag, "SPT3020", "exactly one argument")
 
 
 # --- BinOp: A4's contract, statically ---------------------------------------
@@ -791,6 +864,16 @@ def test_comparison_support(source: str, op: CompareOp) -> None:
         ("v == v", True),
         ("m == m", True),
         ("bal == bal", True),
+        # An Option may be the Void immediate on one side and a handle on the
+        # other, so there is no single scalar lowering -- whatever it wraps.
+        ("oad == oad", True),
+        ("osym == osym", True),
+        ("ovec == ovec", True),
+        ("ou32 == ou32", True),
+        # The Bytes family is one comparison family (D5), all host objects.
+        ("b32 == by", True),
+        ("by == b32", True),
+        ("b32 < b64", True),
         # Immediates and the EITHER numerics compare as scalars.
         ("a == b", False),
         ("d < d", False),
@@ -836,13 +919,121 @@ def test_symbol_comparison_always_routes_through_obj_cmp() -> None:
         ('"abc" == s', "SPT3016", "Symbol"),
         ('by == b"abc"', "SPT3016", "Bytes"),
         ('st == "abc"', "SPT3016", "String"),
-        # Cross-type comparison (A7: foreign chain types are a TypeError).
+        # Cross-WIDTH comparison of two chain integers: SPT3003 states that
+        # rule correctly ("operands must share the same chain-integer type").
         ("a == c", "SPT3003", "U64"),
-        ("s == a", "SPT3003", "Symbol"),
+        ("d < e", "SPT3003", "I64"),
+        ("t == c", "SPT3003", "Timepoint"),
+        # A mismatch involving a NON-integer type takes the generic
+        # type-mismatch row instead: "chain-integer type" would be wrong in
+        # kind for a Symbol or a Vec.
+        ("s == a", "SPT3018", "Symbol"),
+        ("by == v", "SPT3018", "Bytes"),
+        ("bal == a", "SPT3018", "Balance"),
+        ("oad == ad", "SPT3018", "Address"),
     ],
 )
 def test_comparison_reject(source: str, code: str, substring: str) -> None:
     _assert_reject(_reject(source), code, substring)
+
+
+# --- D5: the Bytes family is ONE comparison family --------------------------
+
+
+def test_cases_py_bytes32_equals_bytes_same_payload_compiles() -> None:
+    """D5, and `cases.py::bytes32_equals_bytes_same_payload` (kind="value").
+
+    Equality and ordering across Bytes/Bytes32/Bytes64/bytes_n(N) are
+    payload-based and share one `_SCVAL_RANK`; fixed-length-ness is an
+    authoring constraint only. Rejecting this would have broken a frozen
+    `kind="value"` case -- there was no cross-family row in the first round,
+    which is exactly how it slipped through.
+    """
+    from tests.semantics.cases import CASES
+
+    by_name = {case.name: case for case in CASES}
+    source = by_name["bytes32_equals_bytes_same_payload"].source
+    assert source == 'Bool(Bytes32(b"\\x00" * 32) == Bytes(b"\\x00" * 32))'
+    node = _ok(source)
+    assert isinstance(node, Compare)
+    assert node.ty == Ty.Bool
+    assert node.via_obj_cmp is True
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "b32 == by",
+        "by == b32",
+        "b32 != b64",
+        "b32 < by",
+        "b64 >= by",
+        'by == Bytes32(b"a" * 32)',
+    ],
+)
+def test_bytes_family_cross_subtype_comparison_is_supported(source: str) -> None:
+    node = _ok(source)
+    assert isinstance(node, Compare)
+    assert node.ty == Ty.Bool
+    assert node.via_obj_cmp is True
+
+
+# --- ordering restricted to the tier-1-orderable types (F.1.8) --------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "a < b",
+        "d <= d",
+        "c > c",
+        "e >= e",
+        "f < f",
+        "g < g",
+        "t < t",
+        "dur >= dur",
+        "flag < flag",
+        "s < s",
+        "st <= st",
+        "by > by",
+        "b32 < b64",
+        "ad >= ad",
+    ],
+)
+def test_ordering_supported_types(source: str) -> None:
+    node = _ok(source)
+    assert isinstance(node, Compare)
+    assert node.ty == Ty.Bool
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "v < v",
+        "v >= v",
+        "m < m",
+        "m > m",
+        "bal < bal",
+        "bal <= bal",
+        "ovec < ovec",
+        "ou32 < ou32",
+    ],
+)
+def test_ordering_rejected_for_unorderable_types(source: str) -> None:
+    """Tier 1 raises TypeError for these orderings and its val_cmp model is
+    explicitly partial (A15), so the compiler reproduces the STRICTNESS rather
+    than the host's permissiveness (F.1.8). Equality stays supported."""
+    diag = _reject(source)
+    _assert_reject(diag, "SPT3005", "")
+    assert "==" in (diag.help or "")
+
+
+@pytest.mark.parametrize("source", ["v == v", "m == m", "bal == bal", "ovec == ovec"])
+def test_equality_stays_supported_for_unorderable_types(source: str) -> None:
+    node = _ok(source)
+    assert isinstance(node, Compare)
+    assert node.op is CompareOp.EQ
+    assert node.via_obj_cmp is True
 
 
 def test_in_help_names_the_container_methods() -> None:
@@ -887,6 +1078,24 @@ def test_ifexp_support() -> None:
 
 def test_ifexp_arms_must_agree() -> None:
     _assert_reject(_reject("a if flag else c"), "SPT3010", "U64")
+
+
+@pytest.mark.parametrize("source", ["a if flag else 5", "5 if flag else a"])
+def test_ifexp_literal_arm_takes_the_other_arm_type(source: str) -> None:
+    """Symmetric in which arm holds the literal, like an operator pair (A6)."""
+    node = _ok(source)
+    assert isinstance(node, IfExp)
+    assert node.ty == Ty.U32
+    literal = node.then if isinstance(node.then, Const) else node.orelse
+    assert isinstance(literal, Const)
+    assert literal.ty == Ty.U32
+    assert literal.py_value == 5
+
+
+def test_ifexp_both_literal_arms_take_the_expected_type() -> None:
+    node = _ok("5 if flag else 7", expected=Ty.I64)
+    assert isinstance(node, IfExp)
+    assert node.ty == Ty.I64
 
 
 def test_ifexp_condition_is_a_truthiness_position() -> None:
@@ -1128,6 +1337,41 @@ def test_scratch_sink_peek_does_not_leak_diagnostics() -> None:
     check_expr(_parse("nope"), replace(ctx, sink=scratch))
     assert len(scratch) == 1
     assert not ctx.sink
+
+
+def _nested_raw_literal_compare(depth: int) -> str:
+    """`Bool(Bool(... Bool(s == "abc") ... == "abc") == "abc")`.
+
+    The shape that made the raw-literal comparison path exponential: each level
+    has a raw str literal on one side, so a scratch-sink peek of the other side
+    followed by a real re-check doubled the work per level.
+    """
+    source = "s"
+    for _ in range(depth):
+        source = f'Bool({source} == "abc")'
+    return source
+
+
+def test_nested_raw_literal_comparison_checks_in_one_pass() -> None:
+    """Regression guard with a generous bound: at depth 22 the old peek +
+    re-check shape is ~4M walks, so an exponential regression cannot creep
+    back in silently."""
+    source = _nested_raw_literal_compare(22)
+    start = time.perf_counter()
+    _, sink = _check(source)
+    elapsed = time.perf_counter() - start
+    assert sink, "the innermost raw-literal comparison must still be rejected"
+    assert elapsed < 2.0, f"checking took {elapsed:.2f}s -- the double walk is back"
+
+
+def test_nested_attribute_chain_checks_in_one_pass() -> None:
+    """The same shape through the introspection-property path."""
+    source = "a" + ".value" * 22
+    start = time.perf_counter()
+    _, sink = _check(source)
+    elapsed = time.perf_counter() - start
+    assert sink
+    assert elapsed < 2.0, f"checking took {elapsed:.2f}s -- the double walk is back"
 
 
 # --- the 17 `kind="reject"` cases of tests/semantics/cases.py (T1/T6) -------

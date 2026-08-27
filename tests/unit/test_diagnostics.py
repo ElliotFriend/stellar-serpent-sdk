@@ -263,7 +263,7 @@ _EXPECTED_CODES = frozenset(
     {
         *(f"SPT1{n:03d}" for n in range(1, 38)),
         *(f"SPT2{n:03d}" for n in range(1, 7)),
-        *(f"SPT3{n:03d}" for n in range(1, 20)),
+        *(f"SPT3{n:03d}" for n in range(1, 21)),
         *(f"SPT4{n:03d}" for n in range(1, 21)),
         *(f"SPT5{n:03d}" for n in range(1, 6)),
         "SPT6001",
@@ -283,8 +283,10 @@ def test_registry_is_complete_not_a_sample() -> None:
     # "exactly one @contract class" module-scope fact, which had no row and
     # was being reported under SPT4015 with a mismatched message) and
     # SPT4020 (decorated-class-body member shape, which was falling to
-    # MJ-11's catch-all).
-    assert len(codes.REGISTRY) == 93
+    # MJ-11's catch-all). Task 5's review fix round added one more, for the
+    # same reason: SPT3020 (a chain-type constructor called with the wrong
+    # number of arguments, which was also falling to the catch-all).
+    assert len(codes.REGISTRY) == 94
 
 
 def test_registry_code_set_matches_the_frozen_snapshot() -> None:

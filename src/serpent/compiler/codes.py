@@ -530,6 +530,24 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "the first event topic must be a short Symbol naming the event",
         "Task 7a",
     ),
+    # Added in Task 5's review fix round (controller ruling). A chain-type
+    # constructor takes exactly one payload argument, and `U32()` / `U32(1, 2)`
+    # had no row: Task 5 was reporting it under MJ-11's catch-all (SPT1037),
+    # whose "not supported by the serpent subset" wording is wrong for a
+    # construct that IS supported and merely miscalled -- the same mismatch
+    # SPT4019/SPT4020 fixed for the loader. Banded SPT3xxx rather than
+    # SPT1xxx/SPT4xxx: it is a call-signature disagreement between an argument
+    # list and a known type, which is the same family as SPT3018's "call
+    # argument disagreeing with a parameter type" (SPT1xxx would falsely claim
+    # the construct is unsupported, and SPT4xxx is about DECLARATION shape,
+    # not call sites).
+    CodeEntry(
+        "SPT3020",
+        "SPT3xxx",
+        "Call -- chain-type constructor with the wrong number of arguments (`U32()`, `U32(1, 2)`)",
+        "a chain-type constructor takes exactly one value",
+        "Task 5",
+    ),
 )
 
 # --- SPT4xxx: contract shape (dossier D.1; SS B.3) --------------------------
