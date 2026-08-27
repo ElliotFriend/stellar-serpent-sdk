@@ -20,13 +20,33 @@ interesting if the same source produces it:
   to `spec.sections.build_spec_entries`, must byte-match what an INDEPENDENT
   collection of the module's decorated classes produces through the same
   builder -- i.e. the frontend's declared-type inventory reproduces the M1-B
-  path exactly, ordering included. Plus the decoded function entries are
-  cross-checked against the AST-derived `FuncIR` list, which is what catches
-  F.1.14's import/AST skew.
+  path exactly, ordering included. The bytes only encode ordering when two
+  types of the same kind are present, so the `containers` example carries two
+  structs on purpose and
+  `test_the_spec_byte_match_is_order_sensitive` proves the byte-match really
+  is order-sensitive. Plus the decoded function entries are cross-checked
+  against the AST-derived `FuncIR` list, which is what catches F.1.14's
+  import/AST skew.
 * **F.2.6, the host-fn <-> protocol cross-check.** `declared_protocol` must
   equal the max `min_protocol` over `host_fns_reachable`, computed two
   independent ways, and no function in the used set may be gated above the
-  target.
+  target. Nothing M1-C can reach is gated today, so the per-example answer is
+  always `BASE_PROTOCOL` -- which is recorded as its own assertion, and is why
+  `_independent_floor` is additionally exercised on synthetic gated/ungated
+  inputs rather than only on the examples.
+
+## Two obligations, two different strengths -- deliberately
+
+The host-function set is pinned **exactly** (F.2.9 asserts frozenset equality
+against the eight recorded Phase 0 names), while the protocol is pinned only as
+a **floor** (F.2.6 asserts a max over that set). That asymmetry is not an
+oversight: the exact set is what sub-plan D writes into the wasm IMPORT
+section, where a missing or extra name is a broken module, whereas the floor is
+what D writes into `contractenvmetav0`, where the only property that matters is
+that no reached function is gated outside it. Pinning the protocol exactly
+would pin `20` -- a fact about the current `rs-soroban-env` pin, not about the
+frontend -- and would fail on every future re-pin that gates something new
+without saying anything about whether the frontend computed it correctly.
 
 Plus the **11a ruling rider** at the bottom: the compiler-side coverage the
 controller asked for after `vec_pop_back_of_empty_traps` turned out not to be
@@ -73,7 +93,7 @@ from xdrlib3 import Unpacker
 import serpent
 from serpent._host import functions_by_name
 from serpent._host._protocol import BASE_PROTOCOL, DEFAULT_TARGET_PROTOCOL, declared_protocol
-from serpent.compiler.diagnostics import Loc
+from serpent.compiler.diagnostics import CompileError, Loc
 from serpent.compiler.frontend import CompiledModule, compile_module
 from serpent.compiler.ir import (
     FuncIR,
@@ -89,6 +109,8 @@ from serpent.compiler.types_ import Ty
 from serpent.decorators import _METADATA_ATTR
 from serpent.spec.sections import CONSTRUCTOR_NAME, build_spec_entries
 from serpent.spec.typemap import SpecTypeError
+from tests.semantics.cases import CASES
+from tests.unit.test_frontend_semantics import compile_case
 
 # --- the example set ---------------------------------------------------------
 
@@ -117,7 +139,9 @@ _ON_DISK: tuple[str, ...] = ("token_style", "spike1_reauthored")
 #: * `containers` -- static and dynamic `MakeVec`, `MakeMap`, `MakeStruct` and
 #:   `FieldGet`, container mutation on an owned local, `for` over a `Vec`,
 #:   `len`, an over-9-character `Symbol`, a `String` literal, and an
-#:   `obj_cmp`-routed comparison.
+#:   `obj_cmp`-routed comparison. It is also the ONLY example with two types of
+#:   the same spec kind (two `@contracttype` structs), which is what makes
+#:   F.2.7's byte-match order-sensitive -- see `Label`'s own docstring.
 #: * `memoryless` -- a contract that needs NO linear memory (spec Sec.5 keeps
 #:   that supported), plus `__init__` -> `__constructor` and a storage `has`.
 _CONSTRUCTED: dict[str, str] = {
@@ -197,6 +221,23 @@ class Holder:
     tally: U32
 
 
+@contracttype
+class Label:
+    """A SECOND struct, so the spec-view byte-match is order-sensitive.
+
+    `sections.build_spec_entries` partitions `types` into structs-then-enums,
+    so a module with at most one struct and at most one error enum emits the
+    same bytes whatever order the inventory arrives in -- which would make
+    F.2.7's byte-match blind to an inventory ORDERING bug. Two structs is the
+    smallest shape that is not: reversing `declared_types_in_order` swaps
+    `Holder` and `Label` inside the struct partition and changes the payload.
+    `test_the_spec_byte_match_is_order_sensitive` asserts exactly that.
+    """
+
+    text: String
+    weight: U32
+
+
 @contract
 class Containers:
     """Every container node kind, static and dynamic."""
@@ -233,6 +274,10 @@ class Containers:
     def read_struct(self, env: Env, who: Address) -> U32:
         holder = Holder(owner=who, tally=U32(7))
         return holder.tally
+
+    def read_label(self, env: Env) -> U32:
+        label = Label(text=String("tag"), weight=U32(3))
+        return label.weight
 
     def long_string(self, env: Env) -> String:
         return String("a string literal that lives in linear memory")
@@ -715,8 +760,19 @@ def test_spec_inputs_byte_match_the_independent_collection(
     Both sides call the SAME builder, so this is not a re-implementation of
     the spec format -- it is the assertion that the two INVENTORIES agree,
     which is the only thing the frontend contributes here and the only thing
-    that can differ (a missing type, an extra one, or a different order all
-    change the bytes).
+    that can differ.
+
+    **What the bytes are and are not sensitive to.** A missing type or an extra
+    one always changes them. A different ORDER changes them only when the
+    inventory holds two or more types of the SAME kind, because
+    `build_spec_entries` partitions `types` into structs-then-enums (B10) and
+    then emits each partition in `types` order -- so a module with one struct
+    and one error enum emits identical bytes from either ordering. The
+    `containers` example carries two structs (`Holder`, `Label`) specifically
+    so that at least one example makes the byte-match order-sensitive;
+    `test_the_spec_byte_match_is_order_sensitive` proves it does, and the
+    name-list assertion at the end of this test is what covers ordering for
+    the four examples where the bytes alone cannot.
     """
     compiled = examples[name]
     source, path = example_source(name)
@@ -740,6 +796,52 @@ def test_spec_inputs_byte_match_the_independent_collection(
     assert [c.__name__ for c in compiled.spec_inputs.declared_types_in_order] == [
         c.__name__ for c in types
     ]
+
+
+def test_the_spec_byte_match_is_order_sensitive(examples: dict[str, CompiledModule]) -> None:
+    """The premise of the byte-match above: the bytes really do encode ORDER.
+
+    Without this, `test_spec_inputs_byte_match_the_independent_collection`
+    could be passing on every example purely because each one's inventory is
+    order-insensitive (see that test's docstring) -- it would still catch a
+    missing or extra type, but not a reordered one, while its own wording
+    claimed otherwise.
+
+    `containers` declares two structs, which is the smallest shape where the
+    struct partition has an internal order to get wrong. Reversing the
+    frontend's inventory must change the payload.
+    """
+    compiled = examples["containers"]
+    contract_cls = compiled.spec_inputs.contract_cls
+    assert contract_cls is not None
+    inventory = compiled.spec_inputs.declared_types_in_order
+    assert [c.__name__ for c in inventory] == ["Holder", "Label"], [c.__name__ for c in inventory]
+
+    forward = build_spec_entries(contract_cls, types=inventory)
+    reversed_ = build_spec_entries(contract_cls, types=tuple(reversed(inventory)))
+    assert forward != reversed_, (
+        "reversing a two-struct inventory did not change the spec bytes, so the "
+        "byte-match cross-check is not order-sensitive after all"
+    )
+
+    # The same shape read off the decoded stream, so the failure above is
+    # attributable rather than just "some bytes moved".
+    def struct_names(payload: bytes) -> list[str]:
+        return [
+            entry.udt_struct_v0.name.decode()
+            for entry in _decode_entries(payload)
+            if entry.udt_struct_v0 is not None
+        ]
+
+    assert struct_names(forward) == ["Holder", "Label"]
+    assert struct_names(reversed_) == ["Label", "Holder"]
+
+    # And the ordering the frontend produced is the DECLARATION order, not the
+    # alphabetical accident that happens to coincide with it here: `Label` is
+    # declared second in the source, and would sort second either way, so the
+    # source is the authority and this asserts against the source text.
+    source, _path = example_source("containers")
+    assert source.index("class Holder") < source.index("class Label")
 
 
 @pytest.mark.parametrize("name", EXAMPLE_NAMES)
@@ -854,6 +956,14 @@ def _independent_floor(names: frozenset[str]) -> int:
     a cross-check is that two independent computations agree, so this one reads
     `min_protocol` straight off the pinned bindings and takes the max itself.
     A `None` `min_protocol` contributes `BASE_PROTOCOL`, never 0.
+
+    **This helper is exercised on synthetic inputs too, and that is not
+    optional** -- see `test_the_independent_floor_actually_discriminates`. No
+    host function ANY M1-C surface can reach is gated above `BASE_PROTOCOL`
+    today (`test_frontend.py::test_the_omitted_host_fn_families_are_ungated`
+    depends on exactly that fact), so every example's floor is the constant 20
+    and the per-example cross-checks below cannot distinguish this function
+    from `lambda _: 20`. The synthetic assertions are what give them teeth.
     """
     floor = BASE_PROTOCOL
     for name in sorted(names):
@@ -861,6 +971,74 @@ def _independent_floor(names: frozenset[str]) -> int:
         if minimum is not None and minimum > floor:
             floor = minimum
     return floor
+
+
+#: A pinned binding that IS gated, used only to prove `_independent_floor`
+#: discriminates. No M1-C authoring surface can reach it -- which is precisely
+#: why it has to be named here rather than found in an example.
+_GATED_BINDING = "bls12_381_g1_add"
+_GATED_BINDING_MIN_PROTOCOL = 22
+
+#: A pinned binding with NO `min_protocol`, which must therefore contribute
+#: `BASE_PROTOCOL` rather than 0.
+_UNGATED_BINDING = "put_contract_data"
+
+
+def test_the_independent_floor_actually_discriminates() -> None:
+    """F.2.6's premise: `_independent_floor` is a real computation, not a
+    constant.
+
+    Every example's reachable set floors at `BASE_PROTOCOL` (20), because
+    nothing an M1-C contract can reach carries a `min_protocol` above it. So
+    the per-example assertions below would all pass against a stubbed
+    `_independent_floor` that just returned 20 -- they confirm agreement
+    without confirming that anything was computed. These two synthetic inputs
+    close that hole from both sides: a gated name must raise the floor to its
+    own `min_protocol`, and an ungated name must contribute `BASE_PROTOCOL`
+    (never 0, the bug a falsy-`None` check would produce).
+
+    Both bindings are asserted to still be gated/ungated the way this test
+    assumes, so a re-pin that changed either fact fails loudly here instead of
+    quietly turning this back into a tautology.
+    """
+    gated = functions_by_name[_GATED_BINDING]
+    assert gated.min_protocol == _GATED_BINDING_MIN_PROTOCOL, gated.min_protocol
+    assert functions_by_name[_UNGATED_BINDING].min_protocol is None
+
+    assert _independent_floor(frozenset({_GATED_BINDING})) == _GATED_BINDING_MIN_PROTOCOL
+    assert _independent_floor(frozenset({_UNGATED_BINDING})) == BASE_PROTOCOL
+    # The max really is a max: the gated name dominates a mixed set, in either
+    # iteration order.
+    assert _independent_floor(frozenset({_GATED_BINDING, _UNGATED_BINDING})) == (
+        _GATED_BINDING_MIN_PROTOCOL
+    )
+    # ... and it agrees with `_host`'s own computation on the same synthetic
+    # input, which is the cross-check the examples cannot currently exercise.
+    assert _independent_floor(frozenset({_GATED_BINDING})) == declared_protocol(
+        [_GATED_BINDING], None
+    )
+    assert _GATED_BINDING_MIN_PROTOCOL > BASE_PROTOCOL
+
+
+def test_no_m1c_reachable_host_fn_is_gated_today(
+    examples: dict[str, CompiledModule],
+) -> None:
+    """The constant-20 fact, recorded as an assertion rather than a comment.
+
+    This is why `test_the_independent_floor_actually_discriminates` has to
+    exist. It is also a genuine property worth watching: the day a re-pin (or a
+    new recognized surface) puts a gated function inside M1-C's reach, this
+    fails and the SPT6001 band stops being reachable only through
+    `test_frontend.py`'s fake gated `HostFn`.
+    """
+    for name, compiled in examples.items():
+        assert compiled.declared_protocol == BASE_PROTOCOL, (name, compiled.declared_protocol)
+        gated = sorted(
+            fn
+            for fn in compiled.host_fns_reachable
+            if functions_by_name[fn].min_protocol is not None
+        )
+        assert not gated, (name, gated)
 
 
 @pytest.mark.parametrize("name", EXAMPLE_NAMES)
@@ -1036,21 +1214,33 @@ def test_the_rider_tier1_traps_with_indexerror() -> None:
 
 def test_the_frozen_temporary_receiver_spelling_is_still_a_reject() -> None:
     """The rider ADDS coverage; it does not reclassify the frozen case. The
-    temporary-receiver spelling `cases.py` holds must still be rejected, or
+    temporary-receiver spelling must still be rejected, or
     `vec_pop_back_of_empty_traps`' `not_expressible` classification (and the
-    ruling that produced this rider) would be stale."""
-    from serpent.compiler.diagnostics import CompileError
+    ruling that produced this rider) would be stale.
 
-    source = """from serpent import U32, Env, Vec, contract
+    **The frozen case is looked up and compiled, not re-typed.** An earlier
+    draft hand-wrote `Vec(U32, []).pop_back()` here -- a near-spelling with a
+    second argument, not what `cases.py` actually holds
+    (`Vec(U32).pop_back()`, one argument). Both are SPT1034 today, so the
+    near-spelling passed while proving nothing about the frozen case; if the
+    one-argument form ever stopped being a reject, this test would have stayed
+    green. So it reads `case.source` straight off the frozen table and runs it
+    through Task 11a's own `compile_case` harness -- one harness, not a second
+    that could drift from it (BL-3).
+    """
+    (case,) = [c for c in CASES if c.name == "vec_pop_back_of_empty_traps"]
+    # The exact frozen spelling, asserted so a table edit cannot silently
+    # redirect this test at something else.
+    assert case.source == "Vec(U32).pop_back()", case.source
+    assert case.frontend == "not_expressible"
+    assert case.not_expressible_reason is not None
 
-
-@contract
-class Popper:
-    def drain(self, env: Env) -> U32:
-        return Vec(U32, []).pop_back()
-"""
     with pytest.raises(CompileError) as info:
-        compile_module(source, "rider/temporary.py")
+        compile_case(case)
     assert "SPT1034" in [d.code for d in info.value.diagnostics], [
         d.code for d in info.value.diagnostics
     ]
+
+    # And the rider's spelling is genuinely DIFFERENT from the frozen one --
+    # otherwise the rider would be re-testing the reject, not covering the trap.
+    assert case.source != _BOUND_LOCAL_POP_BACK

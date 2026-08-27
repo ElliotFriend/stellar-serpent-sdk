@@ -136,6 +136,23 @@ FuncIR py_name='read_struct' export_name='read_struct' kind=EXPORT ret=U32 doc='
       value: FieldGet ty=U32 field='tally' struct_name='Holder'
         obj: LocalRef ty=Struct(Holder) slot=0 name='holder'
 
+FuncIR py_name='read_label' export_name='read_label' kind=EXPORT params=() ret=U32 doc='' returns_on_every_path=True
+  locals:
+    [0]: (0, 'label', Struct(Label))
+  body:
+    [0]: LetLocal slot=0 ty=Struct(Label)
+      init: MakeStruct ty=Struct(Label) struct_name='Label'
+        fields:
+          [0]:
+            [0]: 'text'
+            [1]: Const ty=String py_value='tag'
+          [1]:
+            [0]: 'weight'
+            [1]: Const ty=U32 py_value=3
+    [1]: Return
+      value: FieldGet ty=U32 field='weight' struct_name='Label'
+        obj: LocalRef ty=Struct(Label) slot=0 name='label'
+
 FuncIR py_name='long_string' export_name='long_string' kind=EXPORT params=() ret=String doc='' locals=() returns_on_every_path=True
   body:
     [0]: Return

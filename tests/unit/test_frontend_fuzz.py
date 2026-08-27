@@ -84,7 +84,7 @@ import ast
 import os
 import re
 import warnings
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import timedelta
 from pathlib import Path
 
@@ -785,6 +785,68 @@ def test_the_grammar_pools_reach_deep_into_the_checkers() -> None:
     bands = {code[:4] for code in codes}
     assert len(codes) >= 12, sorted(codes)
     assert {"SPT1", "SPT3", "SPT4", "SPT7"} <= bands, sorted(bands)
+
+
+@pytest.fixture
+def grammar_codes() -> Iterator[set[str]]:
+    """Accumulates diagnostic codes ACROSS one `@given` run, and asserts the
+    floor in teardown.
+
+    A function-scoped fixture is set up once around a whole `@given` run rather
+    than once per example -- normally a footgun, which is why Hypothesis has a
+    `function_scoped_fixture` health check for it. Here it is exactly the
+    behavior wanted (the assertion is about the run, not any one example), so
+    the health check is suppressed at the one test that uses this, with this
+    docstring as the justification.
+
+    The floors are deliberately far below the measured values (the committed
+    150-example profile draws 25 distinct codes across all 5 reachable bands):
+    the point is to fail when the generator COLLAPSES, not to pin a number that
+    churns whenever a template or a diagnostic message is edited. Verified to
+    bite: degenerating `module_sources()` to a single fixed module drops it to
+    2 codes and this fails, while the pool-based guard above still passes.
+    """
+    seen: set[str] = set()
+    yield seen
+    bands = {code[:4] for code in seen}
+    assert len(seen) >= 8, f"generator (a) drew only {len(seen)} distinct codes: {sorted(seen)}"
+    assert len(bands) >= 3, f"generator (a) drew only these bands: {sorted(bands)}"
+
+
+# `source=` keyword form, not positional: a positional `@given` binds the
+# test's arguments from the RIGHT, which would try to fill `grammar_codes` from
+# the strategy and leave `source` looking like a missing fixture.
+@given(source=module_sources())
+@settings(
+    derandomize=True,
+    database=None,
+    max_examples=_EXAMPLES,
+    deadline=None,
+    suppress_health_check=(HealthCheck.too_slow, HealthCheck.function_scoped_fixture),
+)
+def test_the_grammar_as_drawn_reaches_deep_into_the_checkers(
+    source: str, grammar_codes: set[str]
+) -> None:
+    """Anti-vacuity for `module_sources()` ITSELF, not just its pools.
+
+    `test_the_grammar_pools_reach_deep_into_the_checkers` composes modules from
+    the pools by hand, so it stays green even if the *strategy* degenerated --
+    a `st.sampled_from` accidentally narrowed to one entry, a `draw` that
+    stopped varying, a `booleans()` that always came back `False`. The pools
+    would still be rich; the fuzzer would still be testing one module.
+
+    This closes that hole by measuring what the generator actually DRAWS, over
+    the same examples the F.2.5 property runs on: the union of diagnostic codes
+    across the run must span at least 8 codes and 3 bands (see
+    `grammar_codes`). It shares the `max_examples` knob with the property
+    tests, so a deeper campaign deepens this too.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        try:
+            compile_module(source, PATH)
+        except CompileError as exc:
+            grammar_codes.update(diag.code for diag in exc.diagnostics)
 
 
 # --- generator (b): the mangled-fixture corpus -------------------------------
