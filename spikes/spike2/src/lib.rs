@@ -5,8 +5,41 @@
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use soroban_sdk::testutils::{EnvTestConfig, Ledger as _};
-use soroban_sdk::xdr::{Limits, ReadXdr, ScErrorType, ScVal, WriteXdr};
+use soroban_sdk::xdr::{Limits, ReadXdr, ScErrorType, ScVal, WriteXdr, SCSYMBOL_LIMIT};
 use soroban_sdk::{Address, Env, Symbol, TryFromVal, TryIntoVal, Val, Vec as SorobanVec};
+
+/// Build a `Symbol` from an arbitrary Python-supplied string without panicking.
+///
+/// Neither `Symbol::new` nor the nominally-fallible `TryFromVal<Env, &str>`
+/// impl is actually panic-free on soroban-sdk 27.0.6: the latter's error type
+/// is `ConversionError`, but its body reaches
+/// `soroban-sdk/src/unwrap.rs:46` (`unwrap_optimized` -> plain `unwrap()`) and
+/// panics with `HostError: Error(Value, InvalidInput)` on bad input. A panic
+/// crosses into Python as `pyo3_runtime.PanicException`, which subclasses
+/// `BaseException` and so escapes `except Exception:`. So validate first,
+/// against the SDK's own rules: at most `SCSYMBOL_LIMIT` (32) bytes, drawn from
+/// `[a-zA-Z0-9_]`.
+fn symbol_from_str(env: &Env, func: &str) -> PyResult<Symbol> {
+    if func.len() > SCSYMBOL_LIMIT as usize {
+        return Err(PyRuntimeError::new_err(format!(
+            "function name {func:?} is not a valid Symbol: {} bytes exceeds the {SCSYMBOL_LIMIT}-byte limit",
+            func.len()
+        )));
+    }
+    if let Some(bad) = func
+        .chars()
+        .find(|c| !c.is_ascii_alphanumeric() && *c != '_')
+    {
+        return Err(PyRuntimeError::new_err(format!(
+            "function name {func:?} is not a valid Symbol: character {bad:?} is outside [a-zA-Z0-9_]"
+        )));
+    }
+    Symbol::try_from_val(env, &func).map_err(|e| {
+        PyRuntimeError::new_err(format!(
+            "function name {func:?} is not a valid Symbol: {e:?}"
+        ))
+    })
+}
 
 /// `soroban_sdk::Env` is `Rc`-backed and therefore neither `Send` nor `Sync`,
 /// so the pyclass has to be `unsendable` (pyo3 then panics if Python touches it
@@ -44,7 +77,7 @@ impl RealEnv {
 
         let addr_string = soroban_sdk::String::from_str(env, contract);
         let addr = Address::from_string(&addr_string);
-        let sym = Symbol::new(env, func);
+        let sym = symbol_from_str(env, func)?;
 
         let mut args: SorobanVec<Val> = SorobanVec::new(env);
         for (i, bytes) in args_xdr.iter().enumerate() {

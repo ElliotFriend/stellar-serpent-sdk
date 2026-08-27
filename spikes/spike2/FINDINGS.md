@@ -4,7 +4,7 @@
 module and run the *same* contract bytes that ran on testnet, with the *same*
 results?
 
-**Answer: yes, and it is cheap.** 75 lines of Rust, one clean compile, and the
+**Answer: yes, and it is cheap.** ~96 lines of Rust, one clean compile, and the
 test passed on the first run. Recommendation below: **adopt as tier-2b.**
 
 ## Result: exact parity with testnet
@@ -22,9 +22,13 @@ was uploaded to the embedded host and driven through the identical sequence.
 
 ```
 $ uv run --no-sync pytest spikes/spike2/test_real_host.py -v
-spikes/spike2/test_real_host.py::test_same_bytes_on_real_host PASSED      [100%]
-============================== 1 passed in 0.63s ===============================
+spikes/spike2/test_real_host.py::test_same_bytes_on_real_host PASSED      [ 16%]
+...
+============================== 6 passed in 0.76s ===============================
 ```
+
+(The first test is the brief's, verbatim. The other five are regression guards
+added for findings #1 and #3 below.)
 
 **No divergence of any kind was found.** Nothing in this spike had to be
 special-cased, tolerated, or explained away.
@@ -122,8 +126,9 @@ contributors. They belong in a CONTRIBUTING note, not in tribal memory.
 
 ## API pain points
 
-Rust total: **107 lines** in `src/lib.rs`, 75 non-blank non-comment. It compiled
-clean on the **first** `cargo check` with zero warnings. The brief's verified API
+Rust total: **140 lines** in `src/lib.rs`, 96 non-blank non-comment (107/75 before
+the Symbol-validation fix in #3). It compiled clean on the **first** `cargo
+check` with zero warnings. The brief's verified API
 facts were accurate except where noted.
 
 ### 1. `soroban_sdk::Error` has no `get_type()` (brief deviation)
@@ -157,8 +162,17 @@ contract-err: contract error code 7
 missing-fn:   host error Error(Context, InvalidAction)
 ```
 
+This is worse than a cosmetic mislabel. `ScErrorCode::InternalError` is **7**,
+the same number as this contract's `LimitExceeded`, so under the brief's mapping
+a host-internal failure would have surfaced as the exact string
+`"contract error code 7"` that the headline test asserts on. The spike's
+central claim would have been unfalsifiable: the assertion could pass on a
+host crash. Guarded now by
+`test_missing_function_is_not_reported_as_a_contract_error`.
+
 **For M1: never conflate the two.** A user debugging a typo'd function name must
-not be told their contract raised error 6.
+not be told their contract raised error 6 -- and no host failure may ever be
+allowed to impersonate a contract error code.
 
 ### 2. `#[pyclass(unsendable)]` is mandatory, not a stylistic choice
 
@@ -179,20 +193,53 @@ will need thought.
 
 ### 3. Host errors escape as panics, not exceptions
 
-`Env::register` and `Address::from_string` panic rather than returning `Result`.
-An invalid strkey prints a full Rust panic plus diagnostic event log to stderr
-and reaches Python as `pyo3_runtime.PanicException`:
+Several sdk entry points panic on bad input rather than returning `Result`. A
+panic prints a full Rust backtrace plus diagnostic event log to stderr and
+reaches Python as `pyo3_runtime.PanicException`, which derives from
+`BaseException`, **not** `Exception` — so `except Exception:` does not catch it,
+and neither does `pytest.raises(Exception)`. Raw panics are not an acceptable
+user-facing error channel for an SDK.
+
+Current panic-source inventory for the three strings this API accepts from
+Python:
+
+| Entry point | Bad input | Status |
+| --- | --- | --- |
+| `Symbol` from `func` | `"has-dash"`, `"two words"`, 40 chars | **fixed in this spike** — pre-validated, now a catchable `RuntimeError` |
+| `Address::from_string` on `contract` | `"NOTANADDRESS"` | still panics (`Error(Value, InvalidInput)`, "unexpected strkey length") |
+| `Env::register` on `wasm` | malformed module | still panics |
+
+**The nominally-fallible Symbol conversion is not actually fallible.** The
+initial version used `Symbol::new`; the brief prescribed
+`Symbol::try_from_val(&env, func)` instead. Both panic. `TryFromVal<Env, &str>
+for Symbol` advertises `type Error = ConversionError`, but its body
+(`soroban-sdk/src/symbol.rs:136`) delegates through `unwrap_optimized`, which on
+non-wasm targets is a plain `.unwrap()` (`soroban-sdk/src/unwrap.rs:46`):
 
 ```
-bad addr: PanicException  HostError: Error(Value, InvalidInput)
-   1: [Diagnostic Event] ... ["unexpected strkey length", "NOTANADDRESS"]
+panicked at soroban-sdk-27.0.6/src/unwrap.rs:46:14:
+called `Result::unwrap()` on an `Err` value: HostError: Error(Value, InvalidInput)
 ```
 
-`PanicException` derives from `BaseException`, **not** `Exception`, so
-`except Exception:` does not catch it and a bare `pytest.raises(Exception)` will
-not either. M1 needs either `try_*` variants where they exist or a validation
-layer in front of these calls; leaving raw panics as the user-facing error
-channel is not acceptable for an SDK.
+So there is **no panic-free path from an arbitrary `&str` to a `Symbol`** in
+soroban-sdk 27.0.6, and swapping to the "fallible" API alone does not fix
+anything. The fix is to validate first, against the SDK's own rules — at most
+`SCSYMBOL_LIMIT` (32) bytes, characters drawn from `[a-zA-Z0-9_]` — using the
+exported constant rather than a hardcoded 32. Verified at the boundary:
+
+```
+has-dash:           RuntimeError: ... character '-' is outside [a-zA-Z0-9_]
+32-char (at limit): RuntimeError: host error Error(Context, InvalidAction)   <- reaches the host
+33-char (over):     RuntimeError: ... 33 bytes exceeds the 32-byte limit
+```
+
+Covered by `test_unrepresentable_function_name_raises_catchable_error` and
+`test_env_still_usable_after_bad_function_name` (rejecting a name does not
+poison the env).
+
+**For M1:** treat "returns `Result`" as an unverified claim in this SDK. Every
+value crossing the Python boundary needs its own validation layer; the remaining
+two rows of the table above are the outstanding work.
 
 ### 4. The protocol version is half-baked-in
 
@@ -230,15 +277,17 @@ The case:
 - **Fidelity is the whole point, and it is exact.** Same bytes, same results,
   including the error code. This is the real host, not an approximation of it, so
   a passing tier-2b test is meaningful evidence about testnet behavior.
-- **The cost is trivially small.** 75 lines of Rust, no glue layer, no daemon, no
-  container, no network. The binding compiled on the first attempt.
+- **The cost is trivially small.** Under 100 lines of Rust, no glue layer, no
+  daemon, no container, no network. The binding compiled on the first attempt.
 - **It is fast enough to change how people test.** ~49,000 invocations/sec and
   0.13 ms env setup put property-based and mutation testing against the real host
   within reach. Quickstart-RPC cannot offer that at any price: it is a container
   plus a network round trip plus ledger close per call.
 - **Failure modes found are all fixable in-binding**, not inherent: error
-  discrimination (#1) and panic containment (#3) are our code, and both have a
-  clear fix.
+  discrimination (#1) and panic containment (#3) are our code. Both fixes are
+  demonstrated here rather than asserted -- #1 and the Symbol half of #3 are
+  done and under test; the remaining two panic sources are the same shape of
+  work.
 
 The honest costs to accept going in:
 
