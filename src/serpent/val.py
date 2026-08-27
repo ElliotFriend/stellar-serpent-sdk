@@ -204,7 +204,14 @@ _SYMBOL_DECODE: dict[int, str] = {symbol_char_code(ch): ch for ch in SYMBOL_CHAR
 
 
 def is_valid_symbol(text: str) -> bool:
-    if len(text) > SCSYMBOL_LIMIT:
+    """Charset and length check for a Symbol.
+
+    The empty symbol is rejected: the host can represent it, but it is always an
+    authoring error, and serpent rejects it uniformly at every tier (ruling
+    carried from Task 2). `fits_symbol_small` already required at least one
+    character, so the two now agree.
+    """
+    if not 1 <= len(text) <= SCSYMBOL_LIMIT:
         return False
     return all(ch in SYMBOL_CHARS for ch in text)
 

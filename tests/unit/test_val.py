@@ -101,6 +101,13 @@ def test_symbol_validation_boundaries() -> None:
     assert val.fits_symbol_small("nine_char") and not val.fits_symbol_small("ten_chars_")
 
 
+def test_empty_symbol_is_rejected() -> None:
+    # Representable on-chain, but always an authoring error: serpent rejects the
+    # empty symbol uniformly (ruling carried from Task 2 into Task 6).
+    assert val.is_valid_symbol("") is False
+    assert val.fits_symbol_small("") is False
+
+
 def test_symbol_small_text_round_trip() -> None:
     for s in ("A", "COUNT", "z9_", "nine_char"):
         assert val.symbol_small_text(val.symbol_small(s)) == s
