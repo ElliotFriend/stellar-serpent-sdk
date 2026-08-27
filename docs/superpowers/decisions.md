@@ -257,6 +257,84 @@ Format:
   expression-level API has no consumer outside tests.
 - Reversal cost: additive — export a wrapper later if D/E want one.
 
+## 2026-08-27 M1-D emitter rulings (dossier §E, all 16 recommendations adopted)
+- Context: the M1-D inputs dossier (specs/2026-08-27-m1d-inputs-dossier.md)
+  posed 16 open questions with recommendations; controller verified the three
+  sharpest claims live (expr.py's _via_obj_cmp table; i256_rem_euclid's
+  Euclidean docs in the pin; the no-default storage-get host-fn gap) and
+  adopted all 16.
+- Execution proof (E1): D ships a dev-only wasmtime mini-host, ported BY COPY
+  from spikes/spike1/harness.py (stale object bound excluded, A8), running the
+  ~38 in-scope semantics cases at merge. It is NOT an oracle; F re-runs the
+  same table on tier-2b (named carried obligation to F). wasmtime==48.0.0 is
+  already a dev dep, so this adds no dependency.
+- Runtime parts (E2/E3): parts are emitted from the SAME Python encoder as
+  user code -- no WAT toolchain; the WAT spelling lives in per-part docstrings.
+  This deliberately re-reads spec §6's "pre-assembled WAT" heading (design-era
+  wording); rationale: one implementation of one semantics (spec §10's own
+  drift rule) and S1's hand-rolled-encoder pipeline. The C-coined
+  runtime_parts_needed names are ratified and then RENAMED/extended in the
+  same commit series per C2's licence (zero consumers): per-width overflow
+  checks, {u128,i128}_cmp (the S13 gap), box/unbox parts, tagcheck/narrow
+  helpers where a check exceeds ~8 instructions (S25 break-even).
+  runtime_parts_needed is documented as a hint, not a manifest; test pins
+  needed ⊆ linked.
+- Trailing-unreachable reconciliation (E4): after fail_with_error -- NOTHING
+  (P14, on-chain-verified); a genuinely-diverging function tail gets
+  fail_with_error(CODE_UNREACHABLE_GUARD) THEN unreachable; the ABI prologue
+  uses CODE_ABI_CHECK_FAILED (one code, all positions) -- all three exactly as
+  errors.py:17-24 documents. D's code section legitimately differs from the
+  Phase 0 artifact's prologue code (0xFFFF_FFFF), which S8 already makes
+  non-comparable.
+- Validation (E5): the internal validator is unconditional and is the gate;
+  wasm-tools runs when on PATH (exact S23 feature string as a named constant),
+  skipif-never-silently-passed in tests, installed+pinned in one CI job.
+- API (E6): new serpent/emitter/ subpackage exporting build_wasm(compiled) and
+  build_file(path); NOT in serpent.__all__ (the authoring namespace stays
+  clean); CLI naming is G's.
+- Determinism (E7): byte-reproducible output is a tested guarantee
+  (subprocess double-build under differing PYTHONHASHSEED; sets sorted at the
+  emitter boundary; minimal-length LEB property tests). sha256(wasm) is the
+  on-chain wasm_hash, so this is user-visible verifiability.
+- contractmetav0 (E8): emitted by default; serpentver from
+  importlib.metadata; name = the @contract class name; version only when the
+  caller supplies it; structural test (S8 forbids byte goldens here).
+- env-meta protocol (E9): D writes the COMPUTED FLOOR (compiled.
+  declared_protocol) into build_env_meta -- the literal S6/B4 reading; the
+  build target stays a frontend gate. Both numbers surface in BuildResult and
+  the build line. Serpent artifacts therefore declare lower protocols than the
+  Phase 0 artifact (20 vs 27 for ungated contracts) BY DESIGN.
+- Memoryless (E10): D decides from its own post-lowering facts (empty pool,
+  no LM host fn emitted), omitting sections 5/11 and the memory export;
+  asserts C's needs_memory=False implies D agrees (the reverse may differ,
+  C21).
+- ConstRef/void helpers (E11): module constants inline at each use, with
+  per-function memoisation into a hidden local when a POOLED ConstRef repeats
+  (74-instruction host-call price, S25); internal -> None helpers are typed
+  () -> () in wasm (exports stay () -> i64 per S23).
+- MakeMap LM form (E12): gated on key_ty Symbol AND all-Const keys (the m.9
+  descriptor contract, P1); all_static's meaning is unchanged.
+- Storage get without default (E13): D emits the has-then-get guard raising
+  CODE_MISSING_VALUE, and host_fns_used/_reachable gain both names via a
+  frontend change in D's commit series (C2/D13 licence), with a pinning test.
+- ABI prologue (E14): tag AND range checks per argument (S3's words), inline,
+  shared helpers only above the ~8-instruction break-even; host-call-return
+  narrowing is the same code path and is in scope.
+- Emitter failures (E15): split -- user-visible facts are located SPT8xxx
+  diagnostics (appended to the registry under D15's discipline); invariant
+  breaks are CompilerBugError, never catchable as CompileError.
+- 128-bit compare (E16): a {u128,i128}_cmp guest part (hi signed, lo
+  unsigned), operands unboxed first; obj_cmp is not used for numerics.
+- Controller addition: i256_div's ROUNDING DIRECTION is undocumented in the
+  pin ("checked integer division" -- verified live). The 128-bit rem lowering
+  must not assume truncation: D pins div's rounding by differential test
+  against Python + A4 (trunc toward zero; % takes dividend's sign;
+  MIN % -1 == 0) before the i256 route ships, and F re-proves on the real
+  host.
+- Reversal cost: per-item low before D's tasks consume them. E2's WAT
+  re-reading is reversible by checking in WAT + a drift test later; E9's
+  floor-vs-target is a one-line change with artifact-hash consequences.
+
 ## 2026-08-27 M1-C final-review minors folded into parked passes
 - Minors 2 and 3 from the final whole-branch review (registry intent strings
   hardcode limit numbers; frontend.py imports _host._protocol via the private
