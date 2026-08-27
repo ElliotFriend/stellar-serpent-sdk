@@ -317,7 +317,7 @@ def test_annotation_shape_allowlist_blocks_arbitrary_code(tmp_path: Path) -> Non
     victim = tmp_path / "written.txt"
     source = f"x: __import__('pathlib').Path({str(victim)!r}).write_text('pwned') = U32(1)"
     diag = _reject(source)
-    _assert_reject(diag, "SPT2003", "not evaluated")
+    _assert_reject(diag, "SPT3013", "not evaluated")
     assert not victim.exists(), "the annotation was evaluated despite the allowlist"
 
 
@@ -333,7 +333,7 @@ def test_annotation_shape_allowlist_blocks_arbitrary_code(tmp_path: Path) -> Non
     ],
 )
 def test_annotation_forms_outside_the_allowlist_are_rejected(annotation: str) -> None:
-    _assert_reject(_reject(f"x: {annotation} = a"), "SPT2003", "not evaluated")
+    _assert_reject(_reject(f"x: {annotation} = a"), "SPT3013", "not evaluated")
 
 
 @pytest.mark.parametrize(
@@ -367,7 +367,7 @@ def test_annotation_cannot_rebind_a_module_name() -> None:
     """A walrus is outside the allowlist, so the rebind never runs -- and even
     if it did, evaluation uses a COPY of the module namespace."""
     before = _LOADED.namespace["ADMIN"]
-    _assert_reject(_reject("x: (ADMIN := U32) = a"), "SPT2003", "not evaluated")
+    _assert_reject(_reject("x: (ADMIN := U32) = a"), "SPT3013", "not evaluated")
     assert _LOADED.namespace["ADMIN"] is before
 
 

@@ -155,6 +155,7 @@ _HELP: Final[dict[str, str]] = {
     "SPT2002": "read and write contract state through env.storage(), not through self",
     "SPT2003": ("annotate with a chain type that is imported or declared in this module"),
     "SPT3003": "convert one side explicitly; serpent never widens or narrows implicitly",
+    "SPT3013": ("annotate with a chain type, `X | None`, `Vec[T]`/`Map[K, V]`, or `bytes_n(N)`"),
     "SPT3018": "pass a value of the expected chain type, converting explicitly if needed",
     "SPT4016": "@contracttype values are immutable; build a new one instead",
     "SPT4017": "drop the value, or annotate the method with the type it returns",
@@ -610,9 +611,14 @@ def _resolve_annotation_expr(node: ast.expr, ctx: FuncCtx) -> Ty | None:
     """
     loc = Loc.from_node(ctx.path, node)
     if not _annotation_shape_ok(node):
+        # SPT3013, not SPT2003 (controller ruling, Task 6 fix round 2): a
+        # rejected annotation SHAPE is not an undefined NAME, and SPT codes are
+        # frozen public API, so a wrong-in-kind intent clause is a real cost.
+        # SPT2003 stays for a genuinely undefined name -- the `except` clause
+        # below, which is where a `NameError` from evaluation lands.
         _error(
             ctx,
-            "SPT2003",
+            "SPT3013",
             loc,
             "the annotation was not evaluated: only chain-type annotation forms are "
             "resolved here -- a name, `X | None`, `Vec[T]`/`Map[K, V]`, or `bytes_n(N)`",
