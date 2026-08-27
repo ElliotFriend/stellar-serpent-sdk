@@ -15,7 +15,8 @@ one rejected construct, declared by a machine-readable `# serpent:` header
    `serpent.compiler.codes.CODES` -- live now (the SPT code registry
    already exists; this is the review gate the task brief names).
 3. Meta-test B: every non-`NO_FIXTURE_ALLOWLIST` registry code has >= 1
-   fixture -- `xfail(strict=False)` until Task 11b finishes the fixture set.
+   fixture -- a hard, enforced check since Task 11b completed the fixture
+   set (95 fixtures covering all 92 required codes).
 4. The per-fixture runner test (live since Task 10 landed `compile_module`):
    compiles the fixture AS TEXT -- never imported, because importing would
    execute decorators outside the loader's own bridging and defeat the point
@@ -142,11 +143,11 @@ FIXTURES: list[FixtureSpec] = _discover_fixtures()
 
 
 def test_seed_fixtures_are_discovered() -> None:
-    # A floor, not a moving target: Task 11b completes the fixture set (95 of
-    # the 96 registry codes minus the one allowlisted SPT6001, less the
-    # handful this task's own report proves genuinely unreachable from
-    # source). This guards the completed tree does not regress under a later
-    # edit, not the exact count.
+    # A floor, not a moving target: Task 11b completes the fixture set (95
+    # fixtures covering the 92 required registry codes -- 96 total minus the
+    # four in `codes.NO_FIXTURE_ALLOWLIST`, SPT6001/SPT1009/SPT4018/SPT7003).
+    # This guards the completed tree does not regress under a later edit, not
+    # the exact count.
     assert len(FIXTURES) >= 90
 
 
@@ -221,88 +222,19 @@ def test_meta_a_every_declared_code_is_registered() -> None:
 
 # --- meta-test B: every non-allowlisted code has >= 1 fixture (Task 11b) ---
 
-#: Codes Task 11b's author found to have NO reachable `must_reject/` fixture
-#: under the CURRENT frontend implementation, each with a concrete
-#: reachability argument (task-11b-report.md carries the full writeup). This
-#: is deliberately NOT the same list as `codes.NO_FIXTURE_ALLOWLIST`: that
-#: registry is read-only for this task (the task brief is explicit -- "do not
-#: add to NO_FIXTURE_ALLOWLIST yourself... the controller decides allowlist
-#: vs bug"), so this is a LOCAL, provisional exemption that keeps meta-test B
-#: a real, hard, enforced check for every one of the other 92 required codes
-#: while these three await that ruling. A controller decision to allowlist
-#: one of them belongs in `codes.NO_FIXTURE_ALLOWLIST`, at which point it
-#: should be removed from here too (`test_pending_ruling_codes_are_still_
-#: reachable_gaps` catches the reverse mistake -- leaving a stale entry here
-#: after a fixture is added).
-_PENDING_CONTROLLER_RULING: frozenset[str] = frozenset(
-    {
-        # `ast.Slice` reaches `expr.py`'s exhaustive-dispatch fallback
-        # (`NODE_KIND_CODES[ast.Slice] = "SPT1009"`) only if `check_expr` is
-        # ever called directly on a bare `Slice` node -- but a `Slice` is
-        # syntactically producible ONLY as a `Subscript`'s `.slice` (directly,
-        # or nested inside a `Tuple` for extended/multi-dim slicing).
-        # `expr._check_subscript` intercepts `isinstance(node.slice,
-        # ast.Slice)` unconditionally BEFORE any dispatch (-> `SPT1013`), so a
-        # direct slice never reaches the fallback; a multi-dim slice
-        # (`b[1:2, 0]`) wraps its slices in a `Tuple`, which
-        # `NODE_KIND_CODES` itself claims first (-> `SPT1014`) without ever
-        # visiting the `Tuple`'s elements. Verified empirically (`b[1:2,
-        # 0]` on a `Bytes` receiver produces `SPT1014`, never `SPT1009`).
-        "SPT1009",
-        # The registry's own construct text for SPT4018 ("Call --
-        # @contracttype construction with positional args") names the exact
-        # rule `recognize.py::_struct_construction` implements -- but that
-        # function reports POSITIONAL struct-construction arguments under
-        # `SPT3020` (`if node.args: _error(ctx, "SPT3020", ...)`), not
-        # `SPT4018`. `grep -rn SPT4018 src/` finds only the registry row
-        # itself; no code path raises it. Verified empirically
-        # (`Point(U32(1), U32(2))` on a declared `@contracttype Point`
-        # produces `SPT3020`). This looks like the registry/implementation
-        # drift `test_diagnostics.py`'s "Finding 2" comment already flags
-        # (SPT4018 was widened away from "constructor" wording in a review
-        # round); the controller should decide whether SPT4018 is dead code
-        # to allowlist or a real code `recognize.py` should raise instead.
-        "SPT4018",
-        # `break`/`continue` outside a loop is a hard Python `SyntaxError`
-        # ("'break' outside loop") raised by `compile()`'s own symtable pass
-        # -- BEFORE `ast.parse` even runs (`ast.parse` has no control-flow
-        # awareness and accepts the source fine). `loader._execute` calls
-        # `compile()` on every top-level statement and bridges any
-        # `SyntaxError` to `SPT1037`, so a real `break`/`continue` with no
-        # enclosing loop NEVER reaches `stmt._check_loop_jump`'s own
-        # `ctx.loop_depth == 0` branch at all -- that branch is unreachable
-        # from any module `compile_module` can even get past parsing. Every
-        # loop body `stmt.py` walks is entered with `loop_depth + 1`
-        # unconditionally (`_check_for`'s two desugarings, `_check_while`),
-        # so there is no shape where OUR walk disagrees with CPython's own
-        # loop-nesting count either. Verified empirically (`if True: break`
-        # inside a method body produces `SPT1037` with the raw
-        # `SyntaxError` text as a note, not `SPT7003`).
-        "SPT7003",
-    }
-)
+#: `SPT1009`, `SPT4018` and `SPT7003` were added to `codes.NO_FIXTURE_
+#: ALLOWLIST` by controller ruling (task-11b-report.md §3 carries the full
+#: reachability writeup for each): every real-source path to each is claimed
+#: by an earlier, always-first check, so each is a dead dispatch/check branch
+#: kept as defense-in-depth rather than deleted. Meta-test B now consults
+#: `codes.NO_FIXTURE_ALLOWLIST` directly -- no local exemption list.
 
 
 def test_meta_b_every_registry_code_has_a_fixture() -> None:
     declared = {f.code for f in FIXTURES}
-    required = codes.CODES - codes.NO_FIXTURE_ALLOWLIST - _PENDING_CONTROLLER_RULING
+    required = codes.CODES - codes.NO_FIXTURE_ALLOWLIST
     missing = sorted(required - declared)
     assert not missing, f"registry code(s) with no must_reject/ fixture: {missing}"
-
-
-def test_pending_ruling_codes_are_still_reachable_gaps() -> None:
-    # The mirror check: every `_PENDING_CONTROLLER_RULING` code must actually
-    # be missing a fixture (else it is a stale entry masking real coverage)
-    # and must not already be in the registry's own allowlist (else the
-    # controller has ruled and this local list is now redundant).
-    declared = {f.code for f in FIXTURES}
-    stale = _PENDING_CONTROLLER_RULING & declared
-    assert not stale, f"code(s) pending ruling already have a fixture: {sorted(stale)}"
-    redundant = _PENDING_CONTROLLER_RULING & codes.NO_FIXTURE_ALLOWLIST
-    assert not redundant, (
-        f"code(s) pending ruling are already in codes.NO_FIXTURE_ALLOWLIST: "
-        f"{sorted(redundant)} -- remove them from _PENDING_CONTROLLER_RULING"
-    )
 
 
 # --- the runner: compile each fixture and check its declared diagnostic ----

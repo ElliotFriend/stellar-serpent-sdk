@@ -737,7 +737,8 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
     CodeEntry(
         "SPT4018",
         "SPT4xxx",
-        "Call -- @contracttype construction with positional args",
+        "Call -- @contracttype construction with positional args "
+        "(superseded by SPT3020; retained append-only, not emitted)",
         "struct construction takes keyword arguments only",
         "Task 7b",
     ),
@@ -886,14 +887,34 @@ CODES: frozenset[str] = frozenset(entry.code for entry in REGISTRY)
 #: today no C-emitted host function carries a protocol gate above the base
 #: (the frontend only ever emits the ungated v1 TTL form), so no real
 #: source can trip SPT6001 -- it is proven end-to-end by a synthetic-bindings
-#: unit test (Task 10) instead of a fixture.
-NO_FIXTURE_ALLOWLIST: frozenset[str] = frozenset({"SPT6001"})
+#: unit test (Task 10) instead of a fixture. `SPT1009`/`SPT4018`/`SPT7003`
+#: were added by controller ruling during Task 11b's fixture-completion
+#: round: each is a dead dispatch/check branch an earlier, always-first check
+#: already claims on every real-source path (see `NO_FIXTURE_REASONS`), kept
+#: in its owning module as defense-in-depth rather than deleted.
+NO_FIXTURE_ALLOWLIST: frozenset[str] = frozenset({"SPT1009", "SPT4018", "SPT6001", "SPT7003"})
 
 #: One reason string per `NO_FIXTURE_ALLOWLIST` entry.
 NO_FIXTURE_REASONS: dict[str, str] = {
+    "SPT1009": (
+        "dead dispatch branch by construction: a bare Slice is always intercepted by "
+        "SPT1013 (direct slice) or SPT1014 (multi-dim tuple); branch retained as "
+        "defense-in-depth"
+    ),
+    "SPT4018": (
+        "superseded by SPT3020 per the Task 7b review adjudication (struct positional "
+        "args ARE a call-arity shape); row retained under the append-only rule, never "
+        "emitted"
+    ),
     "SPT6001": (
         "no gated authoring surface at M1-C; band wired end-to-end via a "
         "synthetic-bindings unit test (Task 10)"
+    ),
+    "SPT7003": (
+        "unreachable end-to-end: CPython's compile() rejects break/continue outside a "
+        "loop as a SyntaxError (bridged to SPT1037) before the frontend's loop-depth "
+        "check runs; the stmt-layer check is retained as defense-in-depth for "
+        "AST-only entry"
     ),
 }
 
