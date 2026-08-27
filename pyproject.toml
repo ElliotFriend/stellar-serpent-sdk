@@ -32,11 +32,14 @@ src = ["src", "tests", "spikes"]
 # Transcribed verbatim from the Spike 1 task brief, including the import
 # order; do not reorder to appease ruff's import-sort rule (I001).
 "spikes/spike1/contract_src.py" = ["I001"]
+# Transcribed verbatim from the Task 1 (val.py) brief, including the import
+# order; do not reorder to appease ruff's import-sort rule (I001).
+"tests/unit/test_val_properties.py" = ["I001"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src"]
+files = ["src", "tests"]
 
 [build-system]
 requires = ["uv_build>=0.12,<0.13"]

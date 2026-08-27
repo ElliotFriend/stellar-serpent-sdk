@@ -1,0 +1,664 @@
+"""The numeric chain types: `Bool U32 I32 U64 I64 U128 I128 Timepoint Duration`.
+
+These classes are serpent's **behavioral oracle** for on-chain integer
+semantics: a contract executed as plain Python against them must observe
+exactly what the compiled WASM observes on the host. Every choice below is
+therefore chain-driven, not Python-driven:
+
+* **Checked arithmetic.** `+ - * // %` and unary `-` raise
+  `ArithmeticOverflow` (a `ContractError`, code `0xFFFF_FFFE`) whenever the
+  mathematical result leaves the type's range -- including `-U32(1)`,
+  `-I32(-2**31)` and `I32(MIN) // I32(-1)`. Nothing ever wraps and nothing
+  ever silently widens: `U32(1) + U64(1)` is a `TypeError`.
+* **Truncating division.** `//` truncates toward zero and `%` takes the
+  *dividend's* sign, matching WASM `div_s`/`rem_s` and Rust -- NOT Python's
+  floor/floormod. `I32(-7) // I32(2) == I32(-3)` and `I32(-7) % I32(2) ==
+  I32(-1)`. `MIN % -1` is `0` (the host does not trap there), while
+  `MIN // -1` overflows. Division by zero traps on the host, so it raises
+  `ZeroDivisionError` here.
+* **Exception mapping rule.** Host traps map to builtin exceptions
+  (`ZeroDivisionError`); contract errors map to `ContractError` subclasses
+  (`ArithmeticOverflow`); authoring-time misuse maps to `ValueError` /
+  `TypeError`. **Equality is exempt: `__eq__` never raises.**
+* **Val forms.** `to_val()` returns the inline/small form when the value fits
+  in 56 bits and raises `NotImplementedError("host object form; sub-plan B")`
+  otherwise; `from_val` is tag-checked. `serpent.val` owns all bit math.
+* **Truthiness.** A chain integer is a zero test (`bool(U32(0))` is `False`),
+  which compiles to `i64.eqz`. `Bool` is the chain `bool` and has no
+  arithmetic at all.
+* **Time types.** `Timepoint`/`Duration` expose **no** arithmetic, not even
+  same-type: they are u64 newtypes exactly as in Rust, and any time algebra is
+  a sub-plan E decision. Bridge with `to_u64()` / `from_u64()`.
+
+`**`, `divmod` and the bitwise operators are deliberately omitted (they raise
+`TypeError` naming the omission) until a real contract needs them.
+"""
+
+from typing import ClassVar, Never, NoReturn, Self
+
+from serpent import val
+from serpent.errors import ArithmeticOverflow
+from serpent.types._base import _ChainValue
+
+_OMITTED = (
+    "serpent chain integers deliberately omit **, divmod() and the bitwise "
+    "operators; revisit when a contract needs them"
+)
+
+
+def _omitted(op: str, owner: object) -> NoReturn:
+    raise TypeError(f"{op} is not supported on {type(owner).__name__}: {_OMITTED}")
+
+
+_NO_TIME_ARITH = (
+    "the time types expose no arithmetic (the host models them as bare u64 and "
+    "serpent does not invent a time algebra); bridge through to_u64()/from_u64() "
+    "and compute on U64"
+)
+
+
+def _no_time_arith(op: str, owner: object) -> NoReturn:
+    raise TypeError(f"{op} is not supported on {type(owner).__name__}: {_NO_TIME_ARITH}")
+
+
+def _trunc_div(a: int, b: int) -> int:
+    """WASM `div_s`/`div_u`: quotient truncated toward zero (never floored)."""
+    if b == 0:
+        raise ZeroDivisionError("integer division by zero")
+    quotient = abs(a) // abs(b)
+    return -quotient if (a < 0) != (b < 0) else quotient
+
+
+def _trunc_rem(a: int, b: int) -> int:
+    """WASM `rem_s`/`rem_u`: remainder takes the dividend's sign."""
+    if b == 0:
+        raise ZeroDivisionError("integer modulo by zero")
+    remainder = abs(a) % abs(b)
+    return -remainder if a < 0 else remainder
+
+
+class _ChainScalar(_ChainValue[int]):
+    """The numeric-family carrier: an int-payloaded scalar chain value.
+
+    Frozen instances, constructor-based reconstruction and the
+    `_SCVAL_RANK`/`_cmp_payload()` hooks all come from `_base._ChainValue`;
+    this subclass exists so that "is a numeric-family chain value" stays an
+    `isinstance` check the arithmetic and ordering code can use.
+    """
+
+    __slots__ = ()
+
+
+class _ChainInt(_ChainScalar):
+    """Base for every fixed-width chain integer: bounds, comparison contract,
+    truthiness, the omitted operators and the Val forms.
+
+    Subclasses declare `MIN`/`MAX`, `_SCVAL_RANK` and their Val tags. The
+    checked-arithmetic contract lives one level down in `_ChainArith`, so that
+    `_TimeValue` can be a full chain integer with no arithmetic at all; each
+    contract therefore still has exactly one definition.
+    """
+
+    __slots__ = ()
+
+    MIN: ClassVar[int]
+    MAX: ClassVar[int]
+    #: Tag of the 56-bit small form and of the host object form. Unused by the
+    #: types whose Val form is always inline (`U32`/`I32` override to_val/from_val).
+    _SMALL_TAG: ClassVar[int]
+    _OBJECT_TAG: ClassVar[int]
+
+    def __init__(self, value: int) -> None:
+        if not isinstance(value, int):
+            raise TypeError(f"{type(self).__name__}() takes an int, not {type(value).__name__}")
+        v = int(value)  # normalise bool -> int; `value` is always a true int
+        if not self.MIN <= v <= self.MAX:
+            raise ValueError(
+                f"{v} is out of range for {type(self).__name__} [{self.MIN}, {self.MAX}]"
+            )
+        object.__setattr__(self, "_payload", v)
+
+    @property
+    def value(self) -> int:
+        return self._payload
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._payload})"
+
+    # --- operand handling ----------------------------------------------------
+
+    def _cmp_operand(self, other: object) -> int | None:
+        """Coerce an ordering operand, or return None to defer (NotImplemented).
+
+        Unlike `_operand`, out-of-range ints are fine: ordering is answered
+        mathematically (`U32(5) < 2**40` is `True`).
+        """
+        if isinstance(other, _ChainInt):
+            if type(other) is not type(self):
+                raise TypeError(
+                    f"cannot order {type(self).__name__} against {type(other).__name__}"
+                )
+            return other._payload
+        if isinstance(other, _ChainScalar):
+            raise TypeError(f"cannot order {type(self).__name__} against {type(other).__name__}")
+        if isinstance(other, int):
+            return int(other)
+        return None
+
+    def __bool__(self) -> bool:
+        """Zero-test: `bool(U32(0))` is `False`, every other value is `True`.
+
+        Pythonic, matches plain-`int` intuition, and compiles exactly (`i64.eqz`),
+        so tier-1 execution and the future compiler agree on `if amount:`.
+        """
+        return self._payload != 0
+
+    # --- deliberately omitted operators --------------------------------------
+
+    def __pow__(self, other: Never) -> Never:
+        _omitted("**", self)
+
+    def __rpow__(self, other: Never) -> Never:
+        _omitted("**", self)
+
+    def __divmod__(self, other: Never) -> Never:
+        _omitted("divmod()", self)
+
+    def __rdivmod__(self, other: Never) -> Never:
+        _omitted("divmod()", self)
+
+    def __and__(self, other: Never) -> Never:
+        _omitted("&", self)
+
+    def __rand__(self, other: Never) -> Never:
+        _omitted("&", self)
+
+    def __or__(self, other: Never) -> Never:
+        _omitted("|", self)
+
+    def __ror__(self, other: Never) -> Never:
+        _omitted("|", self)
+
+    def __xor__(self, other: Never) -> Never:
+        _omitted("^", self)
+
+    def __rxor__(self, other: Never) -> Never:
+        _omitted("^", self)
+
+    def __lshift__(self, other: Never) -> Never:
+        _omitted("<<", self)
+
+    def __rlshift__(self, other: Never) -> Never:
+        _omitted("<<", self)
+
+    def __rshift__(self, other: Never) -> Never:
+        _omitted(">>", self)
+
+    def __rrshift__(self, other: Never) -> Never:
+        _omitted(">>", self)
+
+    def __invert__(self) -> Never:
+        _omitted("~", self)
+
+    # --- comparison ----------------------------------------------------------
+
+    def __eq__(self, other: object) -> bool:
+        """Never raises: foreign chain types, non-chain objects and out-of-range
+        ints are simply unequal."""
+        if isinstance(other, _ChainInt):
+            return type(other) is type(self) and self._payload == other._payload
+        if isinstance(other, int):
+            return self.MIN <= other <= self.MAX and self._payload == other
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self._payload)
+
+    def __lt__(self, other: Self | int) -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
+            return NotImplemented
+        return self._payload < o
+
+    def __le__(self, other: Self | int) -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
+            return NotImplemented
+        return self._payload <= o
+
+    def __gt__(self, other: Self | int) -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
+            return NotImplemented
+        return self._payload > o
+
+    def __ge__(self, other: Self | int) -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
+            return NotImplemented
+        return self._payload >= o
+
+    # --- Val forms -----------------------------------------------------------
+
+    @classmethod
+    def _val_tags(cls) -> tuple[int, int]:
+        """This type's `(small form, object form)` tags.
+
+        `_SMALL_TAG`/`_OBJECT_TAG` are declared but unset on `_ChainInt` (the
+        always-inline types override `to_val`/`from_val` instead), so a future
+        subclass that declares neither would otherwise fail with a bare
+        `AttributeError` deep inside the codec.
+        """
+        small = getattr(cls, "_SMALL_TAG", None)
+        object_tag = getattr(cls, "_OBJECT_TAG", None)
+        if small is None or object_tag is None:
+            raise TypeError(
+                f"{cls.__name__} has no small/object tag mapping: declare "
+                "_SMALL_TAG and _OBJECT_TAG, or override to_val()/from_val()"
+            )
+        return int(small), int(object_tag)
+
+    def to_val(self) -> int:
+        """The 56-bit small form, or `NotImplementedError` for wider values.
+
+        Signedness follows the type: signed types use the signed small bound
+        (`MIN_SMALL_I64 <= v <= MAX_SMALL_I64`), unsigned types the unsigned one
+        (`0 <= v <= MAX_SMALL_U64`) -- including the 128-bit types.
+        """
+        small_tag, _ = self._val_tags()
+        v = self._payload
+        if self.MIN < 0:
+            if val.fits_small_i(v):
+                return val.pack_small_i64(v, small_tag)
+        elif val.fits_small_u(v):
+            return val.pack_small_u64(v, small_tag)
+        raise NotImplementedError("host object form; sub-plan B")
+
+    @classmethod
+    def from_val(cls, v: int) -> Self:
+        """Decode a small-form Val of exactly this type's tag.
+
+        Wrong tag -> `ValueError` (raised by the codec, naming both tags); this
+        type's *object* tag -> `NotImplementedError`, mirroring `to_val`.
+        """
+        small_tag, object_tag = cls._val_tags()
+        if val.tag_of(v) == object_tag:
+            raise NotImplementedError("host object form; sub-plan B")
+        if cls.MIN < 0:
+            return cls(val.unpack_small_i64(v, small_tag))
+        return cls(val.unpack_small_u64(v, small_tag))
+
+
+class _ChainArith(_ChainInt):
+    """A `_ChainInt` that carries the checked-arithmetic contract.
+
+    Split out from `_ChainInt` so that a type can be a fully-featured chain
+    integer (bounds, comparisons, truthiness, Val forms) while exposing **no**
+    arithmetic at all -- see `_TimeValue`. Both mypy and the runtime then reject
+    `Timepoint(5) + Timepoint(1)`, which is what the compiler tier will do too.
+    """
+
+    __slots__ = ()
+
+    def _operand(self, other: object) -> int | None:
+        """Coerce an arithmetic operand, or return None to defer (NotImplemented).
+
+        Same chain type -> its value. Foreign chain type -> `TypeError` (no
+        implicit widening or narrowing). In-range `int` -> itself. Out-of-range
+        `int` -> `ValueError` (an authoring bug: that literal cannot exist as a
+        value of this type on-chain).
+        """
+        if isinstance(other, _ChainInt):
+            if type(other) is not type(self):
+                raise TypeError(
+                    f"no implicit conversion between chain types: "
+                    f"{type(self).__name__} and {type(other).__name__}; convert explicitly"
+                )
+            return other._payload
+        if isinstance(other, _ChainScalar):
+            raise TypeError(
+                f"no implicit conversion between chain types: "
+                f"{type(self).__name__} and {type(other).__name__}; convert explicitly"
+            )
+        if isinstance(other, int):
+            v = int(other)
+            if not self.MIN <= v <= self.MAX:
+                raise ValueError(
+                    f"{v} is out of range for {type(self).__name__} [{self.MIN}, {self.MAX}]"
+                )
+            return v
+        return None
+
+    def _wrap(self, result: int) -> Self:
+        if not self.MIN <= result <= self.MAX:
+            raise ArithmeticOverflow(
+                f"{type(self).__name__} arithmetic overflowed: {result} is outside "
+                f"[{self.MIN}, {self.MAX}]"
+            )
+        return type(self)(result)
+
+    def __add__(self, other: Self | int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(self._payload + o)
+
+    def __radd__(self, other: int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(o + self._payload)
+
+    def __sub__(self, other: Self | int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(self._payload - o)
+
+    def __rsub__(self, other: int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(o - self._payload)
+
+    def __mul__(self, other: Self | int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(self._payload * o)
+
+    def __rmul__(self, other: int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(o * self._payload)
+
+    def __floordiv__(self, other: Self | int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(_trunc_div(self._payload, o))
+
+    def __rfloordiv__(self, other: int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(_trunc_div(o, self._payload))
+
+    def __mod__(self, other: Self | int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(_trunc_rem(self._payload, o))
+
+    def __rmod__(self, other: int) -> Self:
+        o = self._operand(other)
+        if o is None:
+            return NotImplemented
+        return self._wrap(_trunc_rem(o, self._payload))
+
+    def __neg__(self) -> Self:
+        return self._wrap(-self._payload)
+
+
+class Bool(_ChainScalar):
+    """The chain `bool`. Not a `_ChainInt`: the host offers no arithmetic on it."""
+
+    __slots__ = ()
+
+    _SCVAL_RANK: ClassVar[int] = 0
+
+    def __init__(self, value: bool) -> None:
+        if not isinstance(value, bool):
+            raise TypeError(f"Bool() takes a bool, not {type(value).__name__}")
+        object.__setattr__(self, "_payload", value)
+
+    @property
+    def value(self) -> bool:
+        return bool(self._payload)
+
+    def __bool__(self) -> bool:
+        return bool(self._payload)
+
+    def __repr__(self) -> str:
+        return f"Bool({bool(self._payload)})"
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Bool):
+            return self._payload == other._payload
+        if isinstance(other, bool):
+            return self._payload == other
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self._payload)
+
+    def _cmp_operand(self, other: object) -> bool | None:
+        """`Bool` or a plain `bool`, consistent with `__eq__`; anything else
+        defers (a plain `int` is NOT ordered against a `Bool`)."""
+        if isinstance(other, Bool):
+            return bool(other._payload)
+        if isinstance(other, bool):
+            return other
+        return None
+
+    def __lt__(self, other: "Bool | bool") -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
+            return NotImplemented
+        return bool(self._payload) < o
+
+    def __le__(self, other: "Bool | bool") -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
+            return NotImplemented
+        return bool(self._payload) <= o
+
+    def __gt__(self, other: "Bool | bool") -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
+            return NotImplemented
+        return bool(self._payload) > o
+
+    def __ge__(self, other: "Bool | bool") -> bool:
+        o = self._cmp_operand(other)
+        if o is None:
+            return NotImplemented
+        return bool(self._payload) >= o
+
+    def _cmp_payload(self) -> object:
+        return bool(self._payload)
+
+    def to_val(self) -> int:
+        return val.TRUE_VAL if self._payload else val.FALSE_VAL
+
+    @classmethod
+    def from_val(cls, v: int) -> Self:
+        return cls(val.unpack_bool(v))
+
+
+class U32(_ChainArith):
+    """32-bit unsigned. Always has an inline Val form (`U32Val`)."""
+
+    __slots__ = ()
+
+    MIN: ClassVar[int] = 0
+    MAX: ClassVar[int] = 2**32 - 1
+    _SCVAL_RANK: ClassVar[int] = 3
+
+    def to_val(self) -> int:
+        return val.pack_u32val(self._payload)
+
+    @classmethod
+    def from_val(cls, v: int) -> Self:
+        return cls(val.unpack_u32val(v))
+
+
+class I32(_ChainArith):
+    """32-bit signed. Always has an inline Val form (`I32Val`)."""
+
+    __slots__ = ()
+
+    MIN: ClassVar[int] = -(2**31)
+    MAX: ClassVar[int] = 2**31 - 1
+    _SCVAL_RANK: ClassVar[int] = 4
+
+    def to_val(self) -> int:
+        return val.pack_i32val(self._payload)
+
+    @classmethod
+    def from_val(cls, v: int) -> Self:
+        return cls(val.unpack_i32val(v))
+
+
+class U64(_ChainArith):
+    """64-bit unsigned."""
+
+    __slots__ = ()
+
+    MIN: ClassVar[int] = 0
+    MAX: ClassVar[int] = 2**64 - 1
+    _SCVAL_RANK: ClassVar[int] = 5
+    _SMALL_TAG: ClassVar[int] = val.TAG_U64_SMALL
+    _OBJECT_TAG: ClassVar[int] = val.TAG_U64_OBJECT
+
+
+class I64(_ChainArith):
+    """64-bit signed."""
+
+    __slots__ = ()
+
+    MIN: ClassVar[int] = -(2**63)
+    MAX: ClassVar[int] = 2**63 - 1
+    _SCVAL_RANK: ClassVar[int] = 6
+    _SMALL_TAG: ClassVar[int] = val.TAG_I64_SMALL
+    _OBJECT_TAG: ClassVar[int] = val.TAG_I64_OBJECT
+
+
+class _TimeValue(_ChainInt):
+    """Shared base for `Timepoint` and `Duration` (both u64-ranged).
+
+    **These types expose no arithmetic at all** -- not even same-type: Rust's
+    `Timepoint`/`Duration` newtypes carry no operators either, and a time
+    algebra (`Timepoint - Timepoint -> Duration`, `Timepoint + Duration ->
+    Timepoint`) is a deliberate sub-plan E decision that serpent will not
+    pre-empt. `+ - * // %` and unary `-` raise `TypeError` naming the omission;
+    comparisons, truthiness, the Val forms and the `to_u64()` / `from_u64()`
+    bridges all work, so arithmetic is done explicitly on `U64` (sub-plan E
+    needs the bridge for `env.ledger().timestamp()`).
+    """
+
+    __slots__ = ()
+
+    MIN: ClassVar[int] = 0
+    MAX: ClassVar[int] = 2**64 - 1
+
+    @classmethod
+    def from_u64(cls, u: U64) -> Self:
+        return cls(u.value)
+
+    def to_u64(self) -> U64:
+        return U64(self._payload)
+
+    def __add__(self, other: Never) -> Never:
+        _no_time_arith("+", self)
+
+    def __radd__(self, other: Never) -> Never:
+        _no_time_arith("+", self)
+
+    def __sub__(self, other: Never) -> Never:
+        _no_time_arith("-", self)
+
+    def __rsub__(self, other: Never) -> Never:
+        _no_time_arith("-", self)
+
+    def __mul__(self, other: Never) -> Never:
+        _no_time_arith("*", self)
+
+    def __rmul__(self, other: Never) -> Never:
+        _no_time_arith("*", self)
+
+    def __floordiv__(self, other: Never) -> Never:
+        _no_time_arith("//", self)
+
+    def __rfloordiv__(self, other: Never) -> Never:
+        _no_time_arith("//", self)
+
+    def __mod__(self, other: Never) -> Never:
+        _no_time_arith("%", self)
+
+    def __rmod__(self, other: Never) -> Never:
+        _no_time_arith("%", self)
+
+    def __neg__(self) -> Never:
+        _no_time_arith("unary -", self)
+
+
+class Timepoint(_TimeValue):
+    """A u64 point in time (seconds since the Unix epoch, per the host)."""
+
+    __slots__ = ()
+
+    _SCVAL_RANK: ClassVar[int] = 7
+    _SMALL_TAG: ClassVar[int] = val.TAG_TIMEPOINT_SMALL
+    _OBJECT_TAG: ClassVar[int] = val.TAG_TIMEPOINT_OBJECT
+
+
+class Duration(_TimeValue):
+    """A u64 span of time (seconds, per the host)."""
+
+    __slots__ = ()
+
+    _SCVAL_RANK: ClassVar[int] = 8
+    _SMALL_TAG: ClassVar[int] = val.TAG_DURATION_SMALL
+    _OBJECT_TAG: ClassVar[int] = val.TAG_DURATION_OBJECT
+
+
+class U128(_ChainArith):
+    """128-bit unsigned, with the host's limb convention."""
+
+    __slots__ = ()
+
+    MIN: ClassVar[int] = 0
+    MAX: ClassVar[int] = 2**128 - 1
+    _SCVAL_RANK: ClassVar[int] = 9
+    _SMALL_TAG: ClassVar[int] = val.TAG_U128_SMALL
+    _OBJECT_TAG: ClassVar[int] = val.TAG_U128_OBJECT
+
+    @property
+    def hi64(self) -> int:
+        """High limb, unsigned -- the `hi` argument of `obj_from_u128_pieces`."""
+        return (self._payload >> 64) & val.MASK64
+
+    @property
+    def lo64(self) -> int:
+        """Low limb, unsigned -- the `lo` argument of `obj_from_u128_pieces`."""
+        return self._payload & val.MASK64
+
+
+class I128(_ChainArith):
+    """128-bit signed, with the host's limb convention."""
+
+    __slots__ = ()
+
+    MIN: ClassVar[int] = -(2**127)
+    MAX: ClassVar[int] = 2**127 - 1
+    _SCVAL_RANK: ClassVar[int] = 10
+    _SMALL_TAG: ClassVar[int] = val.TAG_I128_SMALL
+    _OBJECT_TAG: ClassVar[int] = val.TAG_I128_OBJECT
+
+    @property
+    def hi64(self) -> int:
+        """High limb, **signed** -- the `hi: i64` of `obj_from_i128_pieces(hi, lo)`.
+
+        `I128(-1).hi64 == -1`; `I128(-(2**64)).hi64 == -1`.
+        """
+        return val.as_i64(self._payload >> 64)
+
+    @property
+    def lo64(self) -> int:
+        """Low limb, **unsigned** -- the `lo: u64` of `obj_from_i128_pieces(hi, lo)`.
+
+        `I128(-1).lo64 == 2**64 - 1`; `I128(-(2**64)).lo64 == 0`.
+        """
+        return self._payload & val.MASK64
