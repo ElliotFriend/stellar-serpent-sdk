@@ -32,3 +32,17 @@ def test_small_i64_round_trips(x: int) -> None:
 @given(u64_bits)
 def test_signed_masking_is_a_bijection(bits: int) -> None:
     assert val.as_u64(val.as_i64(bits)) == bits
+
+
+symbol_alphabet = st.sampled_from("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+small_symbols = st.text(alphabet=symbol_alphabet, min_size=1, max_size=9)
+
+
+@given(small_symbols)
+def test_symbol_small_round_trips(s: str) -> None:
+    assert val.symbol_small_text(val.symbol_small(s)) == s
+
+
+@given(small_symbols)
+def test_symbol_small_tag(s: str) -> None:
+    assert val.tag_of(val.symbol_small(s)) == val.TAG_SYMBOL_SMALL

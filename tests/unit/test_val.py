@@ -73,3 +73,34 @@ def test_is_object_range() -> None:
     assert val.is_object(val.from_major_minor_tag(1, 0, val.TAG_VEC_OBJECT))
     assert val.is_object(val.from_major_minor_tag(1, 0, val.TAG_EXECUTABLE_TAG_OBJECT))
     assert not val.is_object(val.TAG_BAD)  # 0x7F is Bad, not an object
+
+
+def test_symbol_small_goldens_from_chain() -> None:
+    assert val.symbol_small("COUNTER") == 253576579652878
+    assert val.symbol_small("COUNT") == 61908344590
+
+
+def test_symbol_char_codes() -> None:
+    assert val.symbol_char_code("_") == 1
+    assert val.symbol_char_code("0") == 2 and val.symbol_char_code("9") == 11
+    assert val.symbol_char_code("A") == 12 and val.symbol_char_code("Z") == 37
+    assert val.symbol_char_code("a") == 38 and val.symbol_char_code("z") == 63
+
+
+def test_symbol_small_rejects() -> None:
+    with pytest.raises(ValueError):
+        val.symbol_small("ten_chars_")
+    with pytest.raises(ValueError):
+        val.symbol_small("has-dash")
+    with pytest.raises(ValueError):
+        val.symbol_small("")
+
+
+def test_symbol_validation_boundaries() -> None:
+    assert val.is_valid_symbol("a" * 32) and not val.is_valid_symbol("a" * 33)
+    assert val.fits_symbol_small("nine_char") and not val.fits_symbol_small("ten_chars_")
+
+
+def test_symbol_small_text_round_trip() -> None:
+    for s in ("A", "COUNT", "z9_", "nine_char"):
+        assert val.symbol_small_text(val.symbol_small(s)) == s

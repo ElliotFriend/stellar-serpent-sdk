@@ -179,3 +179,56 @@ def unpack_small_i64(v: int, expected_tag: int) -> int:
     _require_tag(v, expected_tag)
     body = body_of(v)
     return body - (1 << 56) if body >= 1 << 55 else body
+
+
+# --- SymbolSmall -------------------------------------------------------------
+# Charset: `_`=1, `0`-`9`=2..11, `A`-`Z`=12..37, `a`-`z`=38..63, 6 bits/char,
+# packed high-order-first, zero-padded high bits (deliberate, for ULEB128
+# literal size). SYMBOL_CHARS is the single alphabet source: symbol_char_code
+# derives its codes from this string's index, and the decode table below is
+# derived from symbol_char_code rather than a second literal alphabet.
+
+SCSYMBOL_LIMIT = 32
+
+SYMBOL_CHARS = "_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def symbol_char_code(ch: str) -> int:
+    idx = SYMBOL_CHARS.find(ch)
+    if idx < 0:
+        raise ValueError(f"not a valid symbol character: {ch!r}")
+    return idx + 1
+
+
+_SYMBOL_DECODE: dict[int, str] = {symbol_char_code(ch): ch for ch in SYMBOL_CHARS}
+
+
+def is_valid_symbol(text: str) -> bool:
+    if len(text) > SCSYMBOL_LIMIT:
+        return False
+    return all(ch in SYMBOL_CHARS for ch in text)
+
+
+def fits_symbol_small(text: str) -> bool:
+    return 1 <= len(text) <= 9 and is_valid_symbol(text)
+
+
+def symbol_small(text: str) -> int:
+    if not fits_symbol_small(text):
+        raise ValueError(f"does not fit SymbolSmall (1-9 chars, charset _0-9A-Za-z): {text!r}")
+    accum = 0
+    for ch in text:
+        accum = (accum << 6) | symbol_char_code(ch)
+    return from_body_tag(accum, TAG_SYMBOL_SMALL)
+
+
+def symbol_small_text(v: int) -> str:
+    """Validates the tag first, raising ValueError naming the found and expected tags."""
+    _require_tag(v, TAG_SYMBOL_SMALL)
+    body = body_of(v)
+    chars: list[str] = []
+    while body:
+        chars.append(_SYMBOL_DECODE[body & 0x3F])
+        body >>= 6
+    chars.reverse()
+    return "".join(chars)
