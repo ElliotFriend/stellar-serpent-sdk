@@ -1,0 +1,41 @@
+FuncIR py_name='__init__' export_name='__constructor' kind=CONSTRUCTOR ret=Void doc='' locals=() returns_on_every_path=False
+  params:
+    [0]: ('start', U32)
+  body:
+    [0]: Eval
+      value: HostCall ty=Void fn_name='put_contract_data'
+        args:
+          [0]: ConstRef ty=Symbol name='COUNT'
+          [1]: ParamRef ty=U32 index=0 name='start'
+          [2]: RawScalar ty=U32 value=2 kind=STORAGE_TYPE
+
+FuncIR py_name='bump' export_name='bump' kind=EXPORT params=() ret=U32 doc='' returns_on_every_path=True
+  locals:
+    [0]: (0, 'current', U32)
+    [1]: (1, 'nxt', U32)
+  body:
+    [0]: LetLocal slot=0 ty=U32
+      init: HostCall ty=U32 fn_name='get_contract_data'
+        args:
+          [0]: ConstRef ty=Symbol name='COUNT'
+          [1]: RawScalar ty=U32 value=2 kind=STORAGE_TYPE
+    [1]: LetLocal slot=1 ty=U32
+      init: Binary ty=U32 op=ADD
+        lhs: LocalRef ty=U32 slot=0 name='current'
+        rhs: Const ty=U32 py_value=1
+    [2]: Eval
+      value: HostCall ty=Void fn_name='put_contract_data'
+        args:
+          [0]: ConstRef ty=Symbol name='COUNT'
+          [1]: LocalRef ty=U32 slot=1 name='nxt'
+          [2]: RawScalar ty=U32 value=2 kind=STORAGE_TYPE
+    [3]: Return
+      value: LocalRef ty=U32 slot=1 name='nxt'
+
+FuncIR py_name='is_set' export_name='is_set' kind=EXPORT params=() ret=Bool doc='' locals=() returns_on_every_path=True
+  body:
+    [0]: Return
+      value: HostCall ty=Bool fn_name='has_contract_data'
+        args:
+          [0]: ConstRef ty=Symbol name='COUNT'
+          [1]: RawScalar ty=U32 value=2 kind=STORAGE_TYPE

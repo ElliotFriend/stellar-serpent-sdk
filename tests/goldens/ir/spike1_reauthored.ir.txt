@@ -1,0 +1,62 @@
+FuncIR py_name='setup' export_name='setup' kind=EXPORT ret=Void doc='Store settings with a long-named field and a string literal.' returns_on_every_path=False
+  params:
+    [0]: ('counter_limit', U32)
+  locals:
+    [0]: (0, 'settings', Struct(Settings))
+  body:
+    [0]: LetLocal slot=0 ty=Struct(Settings)
+      init: MakeStruct ty=Struct(Settings) struct_name='Settings'
+        fields:
+          [0]:
+            [0]: 'counter_limit'
+            [1]: ParamRef ty=U32 index=0 name='counter_limit'
+          [1]:
+            [0]: 'display_name'
+            [1]: Const ty=String py_value='serpent phase zero'
+    [1]: Eval
+      value: HostCall ty=Void fn_name='put_contract_data'
+        args:
+          [0]: Const ty=Symbol py_value='SETTINGS'
+          [1]: LocalRef ty=Struct(Settings) slot=0 name='settings'
+          [2]: RawScalar ty=U32 value=2 kind=STORAGE_TYPE
+
+FuncIR py_name='bump' export_name='bump' kind=EXPORT params=() ret=U32 doc='Increment a persistent counter; raise LimitExceeded above the limit.' returns_on_every_path=True
+  locals:
+    [0]: (0, 'settings', Struct(Settings))
+    [1]: (1, 'count', U32)
+  body:
+    [0]: LetLocal slot=0 ty=Struct(Settings)
+      init: HostCall ty=Struct(Settings) fn_name='get_contract_data'
+        args:
+          [0]: Const ty=Symbol py_value='SETTINGS'
+          [1]: RawScalar ty=U32 value=2 kind=STORAGE_TYPE
+    [1]: LetLocal slot=1 ty=U32
+      init: IfExp ty=U32
+        cond: HostCall ty=Bool fn_name='has_contract_data'
+          args:
+            [0]: Const ty=Symbol py_value='COUNT'
+            [1]: RawScalar ty=U32 value=1 kind=STORAGE_TYPE
+        then: HostCall ty=U32 fn_name='get_contract_data'
+          args:
+            [0]: Const ty=Symbol py_value='COUNT'
+            [1]: RawScalar ty=U32 value=1 kind=STORAGE_TYPE
+        orelse: Const ty=U32 py_value=0
+    [2]: SetLocal slot=1
+      value: Binary ty=U32 op=ADD
+        lhs: LocalRef ty=U32 slot=1 name='count'
+        rhs: Const ty=U32 py_value=1
+    [3]: If orelse=()
+      cond: Compare ty=Bool op=GT via_obj_cmp=False
+        lhs: LocalRef ty=U32 slot=1 name='count'
+        rhs: FieldGet ty=U32 field='counter_limit' struct_name='Settings'
+          obj: LocalRef ty=Struct(Settings) slot=0 name='settings'
+      body:
+        [0]: Raise enum='Error' case='LimitExceeded' code=7
+    [4]: Eval
+      value: HostCall ty=Void fn_name='put_contract_data'
+        args:
+          [0]: Const ty=Symbol py_value='COUNT'
+          [1]: LocalRef ty=U32 slot=1 name='count'
+          [2]: RawScalar ty=U32 value=1 kind=STORAGE_TYPE
+    [5]: Return
+      value: LocalRef ty=U32 slot=1 name='count'

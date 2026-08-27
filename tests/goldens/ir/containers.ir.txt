@@ -1,0 +1,157 @@
+FuncIR py_name='static_vec' export_name='static_vec' kind=EXPORT params=() ret=Vec(U32) doc='' locals=() returns_on_every_path=True
+  body:
+    [0]: Return
+      value: MakeVec ty=Vec(U32) elem_ty=U32 all_static=True
+        items:
+          [0]: Const ty=U32 py_value=1
+          [1]: Const ty=U32 py_value=2
+          [2]: Const ty=U32 py_value=3
+
+FuncIR py_name='dynamic_vec' export_name='dynamic_vec' kind=EXPORT ret=Vec(U32) doc='' returns_on_every_path=True
+  params:
+    [0]: ('seed', U32)
+  locals:
+    [0]: (0, 'out', Vec(U32))
+  body:
+    [0]: LetLocal slot=0 ty=Vec(U32)
+      init: MakeVec ty=Vec(U32) elem_ty=U32 items=() all_static=False
+    [1]: SetLocal slot=0
+      value: HostCall ty=Vec(U32) fn_name='vec_push_back'
+        args:
+          [0]: LocalRef ty=Vec(U32) slot=0 name='out'
+          [1]: ParamRef ty=U32 index=0 name='seed'
+    [2]: SetLocal slot=0
+      value: HostCall ty=Vec(U32) fn_name='vec_push_back'
+        args:
+          [0]: LocalRef ty=Vec(U32) slot=0 name='out'
+          [1]: Binary ty=U32 op=ADD
+            lhs: ParamRef ty=U32 index=0 name='seed'
+            rhs: Const ty=U32 py_value=1
+    [3]: Return
+      value: LocalRef ty=Vec(U32) slot=0 name='out'
+
+FuncIR py_name='built_in_a_loop' export_name='built_in_a_loop' kind=EXPORT ret=Vec(U32) doc='' returns_on_every_path=True
+  params:
+    [0]: ('n', U32)
+  locals:
+    [0]: (0, 'out', Vec(U32))
+    [1]: (1, 'i', U32)
+  body:
+    [0]: LetLocal slot=0 ty=Vec(U32)
+      init: MakeVec ty=Vec(U32) elem_ty=U32 items=() all_static=False
+    [1]: LetLocal slot=1 ty=U32
+      init: Const ty=U32 py_value=0
+    [2]: While
+      cond: Compare ty=Bool op=LT via_obj_cmp=False
+        lhs: LocalRef ty=U32 slot=1 name='i'
+        rhs: ParamRef ty=U32 index=0 name='n'
+      body:
+        [0]: SetLocal slot=0
+          value: HostCall ty=Vec(U32) fn_name='vec_push_back'
+            args:
+              [0]: LocalRef ty=Vec(U32) slot=0 name='out'
+              [1]: LocalRef ty=U32 slot=1 name='i'
+        [1]: SetLocal slot=1
+          value: Binary ty=U32 op=ADD
+            lhs: LocalRef ty=U32 slot=1 name='i'
+            rhs: Const ty=U32 py_value=1
+    [3]: Return
+      value: LocalRef ty=Vec(U32) slot=0 name='out'
+
+FuncIR py_name='static_map' export_name='static_map' kind=EXPORT params=() ret=Map(Symbol, U32) doc='' locals=() returns_on_every_path=True
+  body:
+    [0]: Return
+      value: MakeMap ty=Map(Symbol, U32) key_ty=Symbol value_ty=U32 all_static=True
+        pairs:
+          [0]:
+            [0]: Const ty=Symbol py_value='a'
+            [1]: Const ty=U32 py_value=1
+          [1]:
+            [0]: Const ty=Symbol py_value='b'
+            [1]: Const ty=U32 py_value=2
+
+FuncIR py_name='sum_vec' export_name='sum_vec' kind=EXPORT ret=U32 doc='' returns_on_every_path=True
+  params:
+    [0]: ('items', Vec(U32))
+  locals:
+    [0]: (0, 'total', U32)
+    [1]: (1, '$for0_iter', Vec(U32))
+    [2]: (2, '$for0_index', U32)
+    [3]: (3, 'item', U32)
+  body:
+    [0]: LetLocal slot=0 ty=U32
+      init: Const ty=U32 py_value=0
+    [1]: LetLocal slot=1 ty=Vec(U32)
+      init: ParamRef ty=Vec(U32) index=0 name='items'
+    [2]: LetLocal slot=2 ty=U32
+      init: Const ty=U32 py_value=0
+    [3]: While
+      cond: Compare ty=Bool op=LT via_obj_cmp=False
+        lhs: LocalRef ty=U32 slot=2 name='$for0_index'
+        rhs: HostCall ty=U32 fn_name='vec_len'
+          args:
+            [0]: LocalRef ty=Vec(U32) slot=1 name='$for0_iter'
+      body:
+        [0]: LetLocal slot=3 ty=U32
+          init: HostCall ty=U32 fn_name='vec_get'
+            args:
+              [0]: LocalRef ty=Vec(U32) slot=1 name='$for0_iter'
+              [1]: LocalRef ty=U32 slot=2 name='$for0_index'
+        [1]: SetLocal slot=2
+          value: Binary ty=U32 op=ADD
+            lhs: LocalRef ty=U32 slot=2 name='$for0_index'
+            rhs: Const ty=U32 py_value=1
+        [2]: SetLocal slot=0
+          value: Binary ty=U32 op=ADD
+            lhs: LocalRef ty=U32 slot=0 name='total'
+            rhs: LocalRef ty=U32 slot=3 name='item'
+    [4]: Return
+      value: LocalRef ty=U32 slot=0 name='total'
+
+FuncIR py_name='size' export_name='size' kind=EXPORT ret=U32 doc='' locals=() returns_on_every_path=True
+  params:
+    [0]: ('items', Vec(U32))
+  body:
+    [0]: Return
+      value: HostCall ty=U32 fn_name='vec_len'
+        args:
+          [0]: ParamRef ty=Vec(U32) index=0 name='items'
+
+FuncIR py_name='read_struct' export_name='read_struct' kind=EXPORT ret=U32 doc='' returns_on_every_path=True
+  params:
+    [0]: ('who', Address)
+  locals:
+    [0]: (0, 'holder', Struct(Holder))
+  body:
+    [0]: LetLocal slot=0 ty=Struct(Holder)
+      init: MakeStruct ty=Struct(Holder) struct_name='Holder'
+        fields:
+          [0]:
+            [0]: 'owner'
+            [1]: ParamRef ty=Address index=0 name='who'
+          [1]:
+            [0]: 'tally'
+            [1]: Const ty=U32 py_value=7
+    [1]: Return
+      value: FieldGet ty=U32 field='tally' struct_name='Holder'
+        obj: LocalRef ty=Struct(Holder) slot=0 name='holder'
+
+FuncIR py_name='long_string' export_name='long_string' kind=EXPORT params=() ret=String doc='' locals=() returns_on_every_path=True
+  body:
+    [0]: Return
+      value: Const ty=String py_value='a string literal that lives in linear memory'
+
+FuncIR py_name='long_symbol' export_name='long_symbol' kind=EXPORT params=() ret=Symbol doc='' locals=() returns_on_every_path=True
+  body:
+    [0]: Return
+      value: Const ty=Symbol py_value='over_nine_chars'
+
+FuncIR py_name='compare_addresses' export_name='compare_addresses' kind=EXPORT ret=Bool doc='' locals=() returns_on_every_path=True
+  params:
+    [0]: ('a', Address)
+    [1]: ('b', Address)
+  body:
+    [0]: Return
+      value: Compare ty=Bool op=EQ via_obj_cmp=True
+        lhs: ParamRef ty=Address index=0 name='a'
+        rhs: ParamRef ty=Address index=1 name='b'

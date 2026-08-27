@@ -1,0 +1,162 @@
+FuncIR py_name='sum_to' export_name='sum_to' kind=EXPORT ret=U32 doc='' returns_on_every_path=True
+  params:
+    [0]: ('n', U32)
+  locals:
+    [0]: (0, 'total', U32)
+    [1]: (1, 'i', U32)
+  body:
+    [0]: LetLocal slot=0 ty=U32
+      init: Const ty=U32 py_value=0
+    [1]: LetLocal slot=1 ty=U32
+      init: Const ty=U32 py_value=0
+    [2]: While
+      cond: Compare ty=Bool op=LT via_obj_cmp=False
+        lhs: LocalRef ty=U32 slot=1 name='i'
+        rhs: ParamRef ty=U32 index=0 name='n'
+      body:
+        [0]: SetLocal slot=1
+          value: Binary ty=U32 op=ADD
+            lhs: LocalRef ty=U32 slot=1 name='i'
+            rhs: Const ty=U32 py_value=1
+        [1]: If orelse=()
+          cond: Compare ty=Bool op=EQ via_obj_cmp=False
+            lhs: Binary ty=U32 op=MOD
+              lhs: LocalRef ty=U32 slot=1 name='i'
+              rhs: Const ty=U32 py_value=2
+            rhs: Const ty=U32 py_value=0
+          body:
+            [0]: Continue
+        [2]: If orelse=()
+          cond: Compare ty=Bool op=GT via_obj_cmp=False
+            lhs: LocalRef ty=U32 slot=1 name='i'
+            rhs: ConstRef ty=U32 name='LIMIT'
+          body:
+            [0]: Break
+        [3]: SetLocal slot=0
+          value: Binary ty=U32 op=ADD
+            lhs: LocalRef ty=U32 slot=0 name='total'
+            rhs: LocalRef ty=U32 slot=1 name='i'
+    [3]: Return
+      value: InternalCall ty=U32 fn_name='clamp'
+        args:
+          [0]: LocalRef ty=U32 slot=0 name='total'
+
+FuncIR py_name='countdown' export_name='countdown' kind=EXPORT ret=U32 doc='' returns_on_every_path=True
+  params:
+    [0]: ('n', U32)
+  locals:
+    [0]: (0, 'seen', U32)
+    [1]: (1, '$for0_stop', U32)
+    [2]: (2, '$for0_index', U32)
+    [3]: (3, 'i', U32)
+  body:
+    [0]: LetLocal slot=0 ty=U32
+      init: Const ty=U32 py_value=0
+    [1]: LetLocal slot=1 ty=U32
+      init: Const ty=U32 py_value=3
+    [2]: LetLocal slot=2 ty=U32
+      init: Const ty=U32 py_value=0
+    [3]: While
+      cond: Compare ty=Bool op=LT via_obj_cmp=False
+        lhs: LocalRef ty=U32 slot=2 name='$for0_index'
+        rhs: LocalRef ty=U32 slot=1 name='$for0_stop'
+      body:
+        [0]: LetLocal slot=3 ty=U32
+          init: LocalRef ty=U32 slot=2 name='$for0_index'
+        [1]: SetLocal slot=2
+          value: Binary ty=U32 op=ADD
+            lhs: LocalRef ty=U32 slot=2 name='$for0_index'
+            rhs: Const ty=U32 py_value=1
+        [2]: SetLocal slot=0
+          value: Binary ty=U32 op=ADD
+            lhs: LocalRef ty=U32 slot=0 name='seen'
+            rhs: Const ty=U32 py_value=1
+    [4]: Return
+      value: LocalRef ty=U32 slot=0 name='seen'
+
+FuncIR py_name='wide' export_name='wide' kind=EXPORT ret=I128 doc='' returns_on_every_path=True
+  params:
+    [0]: ('a', I128)
+    [1]: ('b', I128)
+  locals:
+    [0]: (0, 'scaled', I128)
+  body:
+    [0]: LetLocal slot=0 ty=I128
+      init: Binary ty=I128 op=MUL
+        lhs: ParamRef ty=I128 index=0 name='a'
+        rhs: ParamRef ty=I128 index=1 name='b'
+    [1]: If orelse=()
+      cond: Compare ty=Bool op=LT via_obj_cmp=False
+        lhs: LocalRef ty=I128 slot=0 name='scaled'
+        rhs: Const ty=I128 py_value=0
+      body:
+        [0]: Return
+          value: Unary ty=I128 op=NEG
+            operand: LocalRef ty=I128 slot=0 name='scaled'
+    [2]: Return
+      value: LocalRef ty=I128 slot=0 name='scaled'
+
+FuncIR py_name='classify' export_name='classify' kind=EXPORT ret=Symbol doc='' locals=() returns_on_every_path=True
+  params:
+    [0]: ('n', U32)
+  body:
+    [0]: If
+      cond: Compare ty=Bool op=EQ via_obj_cmp=False
+        lhs: ParamRef ty=U32 index=0 name='n'
+        rhs: Const ty=U32 py_value=0
+      body:
+        [0]: Raise enum='FlowError' case='Empty' code=2
+      orelse:
+        [0]: If
+          cond: Compare ty=Bool op=GT via_obj_cmp=False
+            lhs: ParamRef ty=U32 index=0 name='n'
+            rhs: ConstRef ty=U32 name='LIMIT'
+          body:
+            [0]: Raise enum='FlowError' case='TooBig' code=1
+          orelse:
+            [0]: Return
+              value: Const ty=Symbol py_value='ok'
+
+FuncIR py_name='ternary' export_name='ternary' kind=EXPORT ret=U64 doc='' locals=() returns_on_every_path=True
+  params:
+    [0]: ('flag', Bool)
+    [1]: ('n', U64)
+  body:
+    [0]: Return
+      value: IfExp ty=U64
+        cond: ParamRef ty=Bool index=0 name='flag'
+        then: ParamRef ty=U64 index=1 name='n'
+        orelse: Const ty=U64 py_value=0
+
+FuncIR py_name='_private' export_name='_private' kind=INTERNAL ret=Bool doc='' locals=() returns_on_every_path=True
+  params:
+    [0]: ('n', U32)
+  body:
+    [0]: Return
+      value: Unary ty=Bool op=NOT
+        operand: Compare ty=Bool op=EQ via_obj_cmp=False
+          lhs: ParamRef ty=U32 index=0 name='n'
+          rhs: Const ty=U32 py_value=0
+
+FuncIR py_name='uses_private' export_name='uses_private' kind=EXPORT ret=Bool doc='' locals=() returns_on_every_path=True
+  params:
+    [0]: ('n', U32)
+  body:
+    [0]: Return
+      value: InternalCall ty=Bool fn_name='_private'
+        args:
+          [0]: ParamRef ty=U32 index=0 name='n'
+
+FuncIR py_name='clamp' export_name='clamp' kind=INTERNAL ret=U32 doc='A module-level helper, called from a method (E8).' locals=() returns_on_every_path=True
+  params:
+    [0]: ('value', U32)
+  body:
+    [0]: If orelse=()
+      cond: Compare ty=Bool op=GT via_obj_cmp=False
+        lhs: ParamRef ty=U32 index=0 name='value'
+        rhs: ConstRef ty=U32 name='LIMIT'
+      body:
+        [0]: Return
+          value: ConstRef ty=U32 name='LIMIT'
+    [1]: Return
+      value: ParamRef ty=U32 index=0 name='value'
