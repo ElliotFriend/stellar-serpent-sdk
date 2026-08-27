@@ -6,6 +6,7 @@ and `buffers.py` for the payload types). Re-exported here so contracts import
 them from one place.
 """
 
+from serpent.types.address import Address
 from serpent.types.buffers import (
     Bytes,
     Bytes32,
@@ -34,6 +35,7 @@ __all__ = [
     "U32",
     "U64",
     "U128",
+    "Address",
     "Bool",
     "Bytes",
     "Bytes32",

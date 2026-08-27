@@ -111,6 +111,18 @@ def test_bytes_indexing_returns_u32() -> None:
         Bytes(b"")[0]
 
 
+def test_negative_indices_are_out_of_range() -> None:
+    # Ruled: indexing is chain-faithful everywhere (the host's bytes_get takes a
+    # u32, so data[-1] cannot be compiled), matching Vec.get. Slicing keeps
+    # Python's semantics.
+    with pytest.raises(IndexError):
+        Bytes(b"ab")[-1]
+    with pytest.raises(IndexError):
+        Bytes(b"ab")[-3]
+    assert Bytes(b"abcd")[-2:] == Bytes(b"cd")
+    assert Bytes(b"abcd")[:-2] == Bytes(b"ab")
+
+
 def test_bytes_slicing_returns_bytes() -> None:
     b = Bytes(b"abcd")
     assert b[1:3] == Bytes(b"bc")
@@ -165,6 +177,7 @@ def test_bytes_n_factory_is_cached_and_length_checked() -> None:
     assert issubclass(Bytes32, Bytes) and issubclass(bytes_n(7), Bytes)
     assert isinstance(Bytes32(b"\0" * 32), Bytes)
     assert Bytes32.__name__ == "Bytes32" and bytes_n(7).__name__ == "Bytes7"
+    assert Bytes32._LENGTH == 32 and Bytes64._LENGTH == 64 and Bytes._LENGTH is None
     assert bytes_n(7)(b"1234567").data == b"1234567"
     with pytest.raises(ValueError):
         Bytes32(b"short")

@@ -15,7 +15,7 @@ type exactly where the compiler needs to see it.
 from typing import ClassVar, Self
 
 from serpent import val
-from serpent.types.buffers import _ChainPayload
+from serpent.types._base import _ChainPayload
 
 
 class Symbol(_ChainPayload[str]):

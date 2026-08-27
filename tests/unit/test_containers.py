@@ -13,6 +13,7 @@ from serpent.types import (
     U32,
     U64,
     U128,
+    Address,
     Bool,
     Bytes,
     Bytes32,
@@ -24,6 +25,9 @@ from serpent.types import (
     Vec,
 )
 from serpent.types._ordering import ChainValue, val_cmp
+
+# Phase 0 testnet account (see tests/unit/test_strkey.py).
+ACCOUNT = "GCUNZ4XXN2LPHSGWPGCVZAZ4GUWL6HMXLJ7NCHCPB3I23EPY6JCVISSY"
 
 # --- val_cmp ------------------------------------------------------------------
 
@@ -37,8 +41,7 @@ def test_scval_rank_not_tag_rank() -> None:
 
 def test_full_rank_table() -> None:
     # One instance of every M1-A type, in ScValType order. Void=1 and Error=2 are
-    # not chain value types in M1-A; U256=11/I256=12 are deferred to M2;
-    # Address=18 arrives in Task 8 and appends to the end of this list.
+    # not chain value types in M1-A; U256=11/I256=12 are deferred to M2.
     ordered: list[ChainValue] = [
         Bool(False),      # 0
         U32(5),           # 3
@@ -54,9 +57,10 @@ def test_full_rank_table() -> None:
         Symbol("a"),      # 15
         Vec(U32),         # 16
         Map(U32, U32),    # 17
+        Address(ACCOUNT),  # 18
     ]
     ranks = [v._SCVAL_RANK for v in ordered]
-    assert ranks == [0, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 15, 16, 17]
+    assert ranks == [0, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 15, 16, 17, 18]
     for i, left in enumerate(ordered):
         for j, right in enumerate(ordered):
             if i == j:
@@ -224,6 +228,19 @@ def test_vec_first_index_of() -> None:
     assert v.first_index_of(U32(9)) is None
     with pytest.raises(TypeError, match="element"):
         v.first_index_of(I32(7))  # type: ignore[arg-type]
+
+
+def test_vec_subclass_lookup_asymmetry_is_documented_behaviour() -> None:
+    # isinstance widens one way only: a Vec(Bytes) takes a Bytes32 ...
+    wide: Vec[Bytes] = Vec(Bytes, [Bytes32(b"\x01" * 32)])
+    assert wide.first_index_of(Bytes(b"\x01" * 32)) == U32(0)
+    # ... but a Vec(Bytes32) holds its lookup argument to the declared type,
+    # even though Bytes(p32) == Bytes32(p32) is True and the element is present.
+    narrow: Vec[Bytes32] = Vec(Bytes32, [Bytes32(b"\x01" * 32)])
+    assert Bytes(b"\x01" * 32) == narrow.get(0)
+    with pytest.raises(TypeError, match="element"):
+        narrow.first_index_of(Bytes(b"\x01" * 32))  # type: ignore[arg-type]
+    assert narrow.first_index_of(Bytes32(b"\x01" * 32)) == U32(0)
 
 
 def test_vec_equality_and_hashability() -> None:

@@ -23,111 +23,10 @@ not a chain type of its own: equality, hashing and ordering all work across the
 whole `Bytes` family by payload, which is what `val_cmp` will answer too.
 """
 
-from typing import Any, ClassVar, Generic, NoReturn, Self, TypeVar, overload
+from typing import ClassVar, Self, overload
 
-from serpent.types.numeric import U32, _ChainScalar
-
-_P = TypeVar("_P")
-
-
-class _ChainPayload(Generic[_P]):
-    """Immutable carrier for the chain types whose value is a text or byte
-    payload.
-
-    Mirrors `numeric._ChainScalar` rather than extending it: that class pins
-    `_value: int`, which cannot also carry a `str` or `bytes` under
-    `mypy --strict`. Both provide the same three things -- frozen instances, a
-    constructor-based `__reduce__`, and the `_SCVAL_RANK`/`_cmp_payload` hooks
-    that `types._ordering.val_cmp` reads off instances. (Folding both into one
-    generic base in a `types/_base.py` is a natural follow-up once `Address`
-    lands; it is not done here to keep this task additive.)
-
-    Equality and ordering are answered on `_SCVAL_RANK` + payload, so a
-    subclass that refines a chain type without changing its `ScVal` case
-    (`Bytes32` under `Bytes`) compares equal to its base type.
-    """
-
-    __slots__ = ("_payload",)
-
-    _SCVAL_RANK: ClassVar[int]
-    _payload: _P
-
-    def __setattr__(self, name: str, value: object) -> NoReturn:
-        raise AttributeError(f"{type(self).__name__} is immutable")
-
-    def __delattr__(self, name: str) -> NoReturn:
-        raise AttributeError(f"{type(self).__name__} is immutable")
-
-    def __reduce__(self) -> tuple[type[Self], tuple[object, ...]]:
-        """Reconstruct by re-running the (validating) constructor -- the default
-        copy/pickle protocol cannot restore slots through `__setattr__`."""
-        return (type(self), (self._payload,))
-
-    def _order_key(self) -> bytes:
-        """The payload as bytes, which is what the host compares."""
-        raise NotImplementedError  # pragma: no cover - abstract
-
-    def _cmp_payload(self) -> object:
-        return self._order_key()
-
-    def __hash__(self) -> int:
-        return hash(self._payload)
-
-    def __eq__(self, other: object) -> bool:
-        """Never raises: a different `ScVal` case, a foreign chain type or a
-        raw `str`/`bytes` is simply unequal."""
-        if isinstance(other, _ChainPayload):
-            other_payload: _ChainPayload[Any] = other
-            return (
-                other_payload._SCVAL_RANK == self._SCVAL_RANK
-                and other_payload._order_key() == self._order_key()
-            )
-        return NotImplemented
-
-    def _cmp_operand(self, other: object) -> bytes | None:
-        """The other side's order key, or None to defer (NotImplemented).
-
-        Ordering is defined within one `ScVal` case; a different case or any
-        other chain value raises `TypeError` rather than inventing a total
-        order that the host does not have here (`val_cmp` in Task 7 is where
-        cross-type ordering lives).
-        """
-        if isinstance(other, _ChainPayload):
-            other_payload: _ChainPayload[Any] = other
-            if other_payload._SCVAL_RANK == self._SCVAL_RANK:
-                return other_payload._order_key()
-            raise TypeError(
-                f"cannot order {type(self).__name__} against {type(other).__name__}"
-            )
-        if isinstance(other, _ChainScalar):
-            raise TypeError(
-                f"cannot order {type(self).__name__} against {type(other).__name__}"
-            )
-        return None
-
-    def __lt__(self, other: Self) -> bool:
-        o = self._cmp_operand(other)
-        if o is None:
-            return NotImplemented
-        return self._order_key() < o
-
-    def __le__(self, other: Self) -> bool:
-        o = self._cmp_operand(other)
-        if o is None:
-            return NotImplemented
-        return self._order_key() <= o
-
-    def __gt__(self, other: Self) -> bool:
-        o = self._cmp_operand(other)
-        if o is None:
-            return NotImplemented
-        return self._order_key() > o
-
-    def __ge__(self, other: Self) -> bool:
-        o = self._cmp_operand(other)
-        if o is None:
-            return NotImplemented
-        return self._order_key() >= o
+from serpent.types._base import _ChainPayload
+from serpent.types.numeric import U32
 
 
 class String(_ChainPayload[str]):
@@ -183,7 +82,7 @@ class Bytes(_ChainPayload[bytes]):
 
     _SCVAL_RANK: ClassVar[int] = 13
     #: Exact length required by this class; `None` means any length.
-    LENGTH: ClassVar[int | None] = None
+    _LENGTH: ClassVar[int | None] = None
 
     def __init__(self, data: bytes) -> None:
         if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -191,7 +90,7 @@ class Bytes(_ChainPayload[bytes]):
                 f"{type(self).__name__}() takes bytes, not {type(data).__name__}"
             )
         payload = bytes(data)  # copy: a caller's bytearray must not mutate us
-        expected = self.LENGTH
+        expected = self._LENGTH
         if expected is not None and len(payload) != expected:
             raise ValueError(
                 f"{type(self).__name__}() takes exactly {expected} bytes, "
@@ -221,10 +120,20 @@ class Bytes(_ChainPayload[bytes]):
     def __getitem__(self, index: int | slice) -> "U32 | Bytes":
         """`bytes[i]` -> `U32` (the host's `bytes_get`); a slice -> `Bytes`.
 
-        Out of range raises `IndexError`, mirroring the host trap.
+        Out of range raises `IndexError`, mirroring the host trap. **A negative
+        index is out of range**, not a from-the-end index: the host indexes with
+        a `u32`, so `data[-1]` cannot be compiled and must not silently work
+        here (indexing is chain-faithful everywhere -- `Vec.get` agrees).
+        Slicing keeps Python's semantics, since a slice is serpent-side sugar
+        over `bytes_slice` bounds rather than a single host index.
         """
         if isinstance(index, slice):
             return Bytes(self._payload[index])
+        if index < 0:
+            raise IndexError(
+                f"index {index} out of range for Bytes of length "
+                f"{len(self._payload)} (the host indexes with a u32)"
+            )
         return U32(self._payload[index])
 
     # Ordering is widened from `Self` to the family root: every `BytesN` is the
@@ -254,7 +163,7 @@ class Bytes32(Bytes):
 
     __slots__ = ()
 
-    LENGTH: ClassVar[int | None] = 32
+    _LENGTH: ClassVar[int | None] = 32
 
 
 class Bytes64(Bytes):
@@ -262,7 +171,7 @@ class Bytes64(Bytes):
 
     __slots__ = ()
 
-    LENGTH: ClassVar[int | None] = 64
+    _LENGTH: ClassVar[int | None] = 64
 
 
 # `Bytes32`/`Bytes64` are written as real `class` statements, not as
@@ -280,6 +189,10 @@ def bytes_n(n: int) -> type[Bytes]:
     `BytesN[32]` subscript form** -- a bare-int subscript is not a valid type
     under `mypy --strict`; contracts annotate with `Bytes32`/`Bytes64`.
     Annotating an arbitrary length awaits compiler support in sub-plan C.
+    Note that instances of a factory-made class (any length other than 32 or
+    64) are **not picklable**, because `pickle` cannot look the class up by
+    qualified name; module-level `Bytes32`/`Bytes64` instances pickle normally,
+    and `copy`/`deepcopy` work for every length.
     """
     if not isinstance(n, int) or isinstance(n, bool):
         raise TypeError(f"bytes_n() takes an int length, not {type(n).__name__}")
@@ -292,7 +205,7 @@ def bytes_n(n: int) -> type[Bytes]:
     class _BytesN(Bytes):
         __slots__ = ()
 
-        LENGTH: ClassVar[int | None] = n
+        _LENGTH: ClassVar[int | None] = n
 
     _BytesN.__name__ = f"Bytes{n}"
     _BytesN.__qualname__ = f"Bytes{n}"

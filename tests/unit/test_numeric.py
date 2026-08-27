@@ -63,9 +63,9 @@ def test_construction_rejects_non_int() -> None:
 def test_instances_are_immutable() -> None:
     x = U32(1)
     with pytest.raises(AttributeError):
-        x._value = 2
+        x._payload = 2
     with pytest.raises(AttributeError):
-        del x._value
+        del x._payload
     assert x.value == 1
 
 
@@ -323,7 +323,7 @@ def test_bool_details() -> None:
     with pytest.raises(ValueError):
         Bool.from_val(val.VOID_VAL)
     with pytest.raises(AttributeError):
-        Bool(True)._value = False
+        Bool(True)._payload = False
 
 
 def test_bool_has_no_arithmetic() -> None:

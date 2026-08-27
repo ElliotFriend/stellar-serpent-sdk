@@ -66,6 +66,14 @@ class Vec(Generic[T]):
     one. Note `append(other)` follows the host (`vec_append` concatenates
     another `Vec`), NOT `list.append`; the single-element operation is
     `push_back`.
+
+    **Subclass lookup asymmetry (authoring-time strictness).** The element check
+    is `isinstance`, so a `Vec(Bytes)` accepts a `Bytes32` -- but the reverse
+    does not hold: `Vec(Bytes32).first_index_of(Bytes(p32))` raises `TypeError`
+    even though `Bytes(p32) == Bytes32(p32)` is `True` and the element would be
+    found. The lookup argument is held to the declared element type, the same
+    way `push_back` is; a contract that has narrowed a `Vec` to `Bytes32` should
+    be searching it with a `Bytes32`.
     """
 
     __slots__ = ("_element_type", "_items")

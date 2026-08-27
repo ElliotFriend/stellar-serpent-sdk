@@ -38,6 +38,7 @@ from typing import ClassVar, Never, NoReturn, Self
 
 from serpent import val
 from serpent.errors import ArithmeticOverflow
+from serpent.types._base import _ChainValue
 
 _OMITTED = (
     "serpent chain integers deliberately omit **, divmod() and the bitwise "
@@ -76,37 +77,16 @@ def _trunc_rem(a: int, b: int) -> int:
     return -remainder if a < 0 else remainder
 
 
-class _ChainScalar:
-    """Shared, immutable carrier for the scalar chain types in this module.
+class _ChainScalar(_ChainValue[int]):
+    """The numeric-family carrier: an int-payloaded scalar chain value.
 
-    Holds the ordering hooks that `serpent.types._ordering.val_cmp` reads off
-    instances: `_SCVAL_RANK` (the host's `ScValType` order, used across types)
-    and `_cmp_payload()` (used within a type).
+    Frozen instances, constructor-based reconstruction and the
+    `_SCVAL_RANK`/`_cmp_payload()` hooks all come from `_base._ChainValue`;
+    this subclass exists so that "is a numeric-family chain value" stays an
+    `isinstance` check the arithmetic and ordering code can use.
     """
 
-    __slots__ = ("_value",)
-
-    _SCVAL_RANK: ClassVar[int]
-    _value: int
-
-    def __setattr__(self, name: str, value: object) -> NoReturn:
-        raise AttributeError(f"{type(self).__name__} is immutable")
-
-    def __delattr__(self, name: str) -> NoReturn:
-        raise AttributeError(f"{type(self).__name__} is immutable")
-
-    def _cmp_payload(self) -> object:
-        return self._value
-
-    def __reduce__(self) -> tuple[type[Self], tuple[object, ...]]:
-        """Reconstruct by re-running the constructor.
-
-        `__slots__` plus a rejecting `__setattr__` makes the default
-        copy/pickle protocol (restore-then-setattr) impossible, so state is
-        handed back as constructor arguments instead. Covers `copy.copy`,
-        `copy.deepcopy` and `pickle` for every chain scalar, `Bool` included.
-        """
-        return (type(self), (self._value,))
+    __slots__ = ()
 
 
 class _ChainInt(_ChainScalar):
@@ -139,14 +119,14 @@ class _ChainInt(_ChainScalar):
                 f"{v} is out of range for {type(self).__name__} "
                 f"[{self.MIN}, {self.MAX}]"
             )
-        object.__setattr__(self, "_value", v)
+        object.__setattr__(self, "_payload", v)
 
     @property
     def value(self) -> int:
-        return self._value
+        return self._payload
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}({self._value})"
+        return f"{type(self).__name__}({self._payload})"
 
     # --- operand handling ----------------------------------------------------
 
@@ -161,7 +141,7 @@ class _ChainInt(_ChainScalar):
                 raise TypeError(
                     f"cannot order {type(self).__name__} against {type(other).__name__}"
                 )
-            return other._value
+            return other._payload
         if isinstance(other, _ChainScalar):
             raise TypeError(
                 f"cannot order {type(self).__name__} against {type(other).__name__}"
@@ -176,7 +156,7 @@ class _ChainInt(_ChainScalar):
         Pythonic, matches plain-`int` intuition, and compiles exactly (`i64.eqz`),
         so tier-1 execution and the future compiler agree on `if amount:`.
         """
-        return self._value != 0
+        return self._payload != 0
 
     # --- deliberately omitted operators --------------------------------------
 
@@ -231,37 +211,37 @@ class _ChainInt(_ChainScalar):
         """Never raises: foreign chain types, non-chain objects and out-of-range
         ints are simply unequal."""
         if isinstance(other, _ChainInt):
-            return type(other) is type(self) and self._value == other._value
+            return type(other) is type(self) and self._payload == other._payload
         if isinstance(other, int):
-            return self.MIN <= other <= self.MAX and self._value == other
+            return self.MIN <= other <= self.MAX and self._payload == other
         return NotImplemented
 
     def __hash__(self) -> int:
-        return hash(self._value)
+        return hash(self._payload)
 
     def __lt__(self, other: Self | int) -> bool:
         o = self._cmp_operand(other)
         if o is None:
             return NotImplemented
-        return self._value < o
+        return self._payload < o
 
     def __le__(self, other: Self | int) -> bool:
         o = self._cmp_operand(other)
         if o is None:
             return NotImplemented
-        return self._value <= o
+        return self._payload <= o
 
     def __gt__(self, other: Self | int) -> bool:
         o = self._cmp_operand(other)
         if o is None:
             return NotImplemented
-        return self._value > o
+        return self._payload > o
 
     def __ge__(self, other: Self | int) -> bool:
         o = self._cmp_operand(other)
         if o is None:
             return NotImplemented
-        return self._value >= o
+        return self._payload >= o
 
     # --- Val forms -----------------------------------------------------------
 
@@ -291,7 +271,7 @@ class _ChainInt(_ChainScalar):
         (`0 <= v <= MAX_SMALL_U64`) -- including the 128-bit types.
         """
         small_tag, _ = self._val_tags()
-        v = self._value
+        v = self._payload
         if self.MIN < 0:
             if val.fits_small_i(v):
                 return val.pack_small_i64(v, small_tag)
@@ -339,7 +319,7 @@ class _ChainArith(_ChainInt):
                     f"no implicit conversion between chain types: "
                     f"{type(self).__name__} and {type(other).__name__}; convert explicitly"
                 )
-            return other._value
+            return other._payload
         if isinstance(other, _ChainScalar):
             raise TypeError(
                 f"no implicit conversion between chain types: "
@@ -367,64 +347,64 @@ class _ChainArith(_ChainInt):
         o = self._operand(other)
         if o is None:
             return NotImplemented
-        return self._wrap(self._value + o)
+        return self._wrap(self._payload + o)
 
     def __radd__(self, other: int) -> Self:
         o = self._operand(other)
         if o is None:
             return NotImplemented
-        return self._wrap(o + self._value)
+        return self._wrap(o + self._payload)
 
     def __sub__(self, other: Self | int) -> Self:
         o = self._operand(other)
         if o is None:
             return NotImplemented
-        return self._wrap(self._value - o)
+        return self._wrap(self._payload - o)
 
     def __rsub__(self, other: int) -> Self:
         o = self._operand(other)
         if o is None:
             return NotImplemented
-        return self._wrap(o - self._value)
+        return self._wrap(o - self._payload)
 
     def __mul__(self, other: Self | int) -> Self:
         o = self._operand(other)
         if o is None:
             return NotImplemented
-        return self._wrap(self._value * o)
+        return self._wrap(self._payload * o)
 
     def __rmul__(self, other: int) -> Self:
         o = self._operand(other)
         if o is None:
             return NotImplemented
-        return self._wrap(o * self._value)
+        return self._wrap(o * self._payload)
 
     def __floordiv__(self, other: Self | int) -> Self:
         o = self._operand(other)
         if o is None:
             return NotImplemented
-        return self._wrap(_trunc_div(self._value, o))
+        return self._wrap(_trunc_div(self._payload, o))
 
     def __rfloordiv__(self, other: int) -> Self:
         o = self._operand(other)
         if o is None:
             return NotImplemented
-        return self._wrap(_trunc_div(o, self._value))
+        return self._wrap(_trunc_div(o, self._payload))
 
     def __mod__(self, other: Self | int) -> Self:
         o = self._operand(other)
         if o is None:
             return NotImplemented
-        return self._wrap(_trunc_rem(self._value, o))
+        return self._wrap(_trunc_rem(self._payload, o))
 
     def __rmod__(self, other: int) -> Self:
         o = self._operand(other)
         if o is None:
             return NotImplemented
-        return self._wrap(_trunc_rem(o, self._value))
+        return self._wrap(_trunc_rem(o, self._payload))
 
     def __neg__(self) -> Self:
-        return self._wrap(-self._value)
+        return self._wrap(-self._payload)
 
 
 class Bool(_ChainScalar):
@@ -437,33 +417,33 @@ class Bool(_ChainScalar):
     def __init__(self, value: bool) -> None:
         if not isinstance(value, bool):
             raise TypeError(f"Bool() takes a bool, not {type(value).__name__}")
-        object.__setattr__(self, "_value", value)
+        object.__setattr__(self, "_payload", value)
 
     @property
     def value(self) -> bool:
-        return bool(self._value)
+        return bool(self._payload)
 
     def __bool__(self) -> bool:
-        return bool(self._value)
+        return bool(self._payload)
 
     def __repr__(self) -> str:
-        return f"Bool({bool(self._value)})"
+        return f"Bool({bool(self._payload)})"
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Bool):
-            return self._value == other._value
+            return self._payload == other._payload
         if isinstance(other, bool):
-            return self._value == other
+            return self._payload == other
         return NotImplemented
 
     def __hash__(self) -> int:
-        return hash(self._value)
+        return hash(self._payload)
 
     def _cmp_operand(self, other: object) -> bool | None:
         """`Bool` or a plain `bool`, consistent with `__eq__`; anything else
         defers (a plain `int` is NOT ordered against a `Bool`)."""
         if isinstance(other, Bool):
-            return bool(other._value)
+            return bool(other._payload)
         if isinstance(other, bool):
             return other
         return None
@@ -472,31 +452,31 @@ class Bool(_ChainScalar):
         o = self._cmp_operand(other)
         if o is None:
             return NotImplemented
-        return bool(self._value) < o
+        return bool(self._payload) < o
 
     def __le__(self, other: "Bool | bool") -> bool:
         o = self._cmp_operand(other)
         if o is None:
             return NotImplemented
-        return bool(self._value) <= o
+        return bool(self._payload) <= o
 
     def __gt__(self, other: "Bool | bool") -> bool:
         o = self._cmp_operand(other)
         if o is None:
             return NotImplemented
-        return bool(self._value) > o
+        return bool(self._payload) > o
 
     def __ge__(self, other: "Bool | bool") -> bool:
         o = self._cmp_operand(other)
         if o is None:
             return NotImplemented
-        return bool(self._value) >= o
+        return bool(self._payload) >= o
 
     def _cmp_payload(self) -> object:
-        return bool(self._value)
+        return bool(self._payload)
 
     def to_val(self) -> int:
-        return val.TRUE_VAL if self._value else val.FALSE_VAL
+        return val.TRUE_VAL if self._payload else val.FALSE_VAL
 
     @classmethod
     def from_val(cls, v: int) -> Self:
@@ -513,7 +493,7 @@ class U32(_ChainArith):
     _SCVAL_RANK: ClassVar[int] = 3
 
     def to_val(self) -> int:
-        return val.pack_u32val(self._value)
+        return val.pack_u32val(self._payload)
 
     @classmethod
     def from_val(cls, v: int) -> Self:
@@ -530,7 +510,7 @@ class I32(_ChainArith):
     _SCVAL_RANK: ClassVar[int] = 4
 
     def to_val(self) -> int:
-        return val.pack_i32val(self._value)
+        return val.pack_i32val(self._payload)
 
     @classmethod
     def from_val(cls, v: int) -> Self:
@@ -584,7 +564,7 @@ class _TimeValue(_ChainInt):
         return cls(u.value)
 
     def to_u64(self) -> U64:
-        return U64(self._value)
+        return U64(self._payload)
 
     def __add__(self, other: Never) -> Never:
         _no_time_arith("+", self)
@@ -654,12 +634,12 @@ class U128(_ChainArith):
     @property
     def hi64(self) -> int:
         """High limb, unsigned -- the `hi` argument of `obj_from_u128_pieces`."""
-        return (self._value >> 64) & val.MASK64
+        return (self._payload >> 64) & val.MASK64
 
     @property
     def lo64(self) -> int:
         """Low limb, unsigned -- the `lo` argument of `obj_from_u128_pieces`."""
-        return self._value & val.MASK64
+        return self._payload & val.MASK64
 
 
 class I128(_ChainArith):
@@ -679,7 +659,7 @@ class I128(_ChainArith):
 
         `I128(-1).hi64 == -1`; `I128(-(2**64)).hi64 == -1`.
         """
-        return val.as_i64(self._value >> 64)
+        return val.as_i64(self._payload >> 64)
 
     @property
     def lo64(self) -> int:
@@ -687,4 +667,4 @@ class I128(_ChainArith):
 
         `I128(-1).lo64 == 2**64 - 1`; `I128(-(2**64)).lo64 == 0`.
         """
-        return self._value & val.MASK64
+        return self._payload & val.MASK64
