@@ -1,0 +1,4 @@
+spikes/spike1/contract_src.py:17: error: "self" parameter missing for a non-static method (or an invalid type for self)  [misc]
+spikes/spike1/contract_src.py:25: error: "self" parameter missing for a non-static method (or an invalid type for self)  [misc]
+spikes/spike1/contract_src.py:31: error: Exception must be derived from BaseException  [misc]
+Found 3 errors in 1 file (checked 2 source files)
