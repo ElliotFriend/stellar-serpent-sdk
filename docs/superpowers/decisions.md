@@ -178,3 +178,88 @@ Format:
   now 15 tasks); zero-dep exemption instruction deleted (the existing walk
   already handles compiler/ correctly).
 - Reversal cost: per-item low pre-execution.
+
+## 2026-08-27 SPT registry: honest-code remap for env API misuse (Task 7a)
+- Context: Task 7a review demonstrated SPT3018 ("value's type does not match
+  the declared/expected type") prefixing arity errors, uncalled-attribute
+  misuse, and empty-topics rejects — incoherent user-facing messages the
+  task's own tests could not catch (tautological intent assertion).
+- Decision: registry discipline is "no renumber, no delete, no meaning
+  reversal" — not "no edits". Sanctioned: (a) SPT3020's wording widened from
+  chain-type-constructor arity to general call arity (every existing emission
+  remains a valid instance); (b) one new 1xxx code added for "env API used
+  with an unsupported call shape"; (c) type-argument-shape rejects use
+  SPT3013, matching the Task 6 annotation-shape ruling. Genuine type
+  disagreements stay on SPT3018.
+- Why: diagnostic codes are frozen public API precisely so their meanings can
+  be trusted; shipping wrong-in-kind codes would freeze the incoherence.
+- Reversal cost: trivial pre-release (codes unpublished); the widened SPT3020
+  wording cannot be re-narrowed after release without abandoning emissions.
+
+## 2026-08-27 Ownership is flow-insensitive per function (M1-C Task 10)
+- Context: Task 7b's alias pass was order-sensitive (alias facts recorded as
+  the checker reached each statement), unsound in loop bodies. Task 10's
+  assembly runs a syntactic pre-pass per function collecting every alias and
+  escape fact before any statement is checked.
+- Decision: ownership classification is flow-insensitive-conservative over
+  the whole function body. User-visible consequence: mutating a container and
+  aliasing/embedding it later IN STRAIGHT-LINE CODE now rejects too (SPT1034
+  with a rebind/slice-copy rewrite), even though the tiers would agree there.
+  Also: a container iterated by a for loop may not be mutated anywhere in the
+  function (the hidden iterator handle is an alias).
+- Why: soundness in loops requires facts before the body is walked; a region-
+  sensitive analysis is real dataflow work M1 does not need. Reject-rather-
+  than-approximate matches spec §1; every reject carries a compiling rewrite.
+- Reversal cost: relaxing to region-sensitivity later is additive (accepts
+  strictly grow); no on-chain artifact depends on it.
+
+## 2026-08-27 compile_module outputs: two host-fn sets, floor over reachable
+- Context: dossier §C.1 described one host-fn set. HostCall names alone omit
+  fail_with_error (Raise) and obj_cmp (Compare), and D chooses between forms
+  (vec_new vs vec_new_from_linear_memory).
+- Decision: host_fns_used (exact) + host_fns_reachable (superset incl. D's
+  choices); the protocol floor is computed over REACHABLE. runtime_parts_needed
+  names (overflow_check, u128_mul, i128_neg, i128_floordiv, i128_mod) are
+  C-coined pending D's ratification; the i256 helpers D's 128-bit div/rem may
+  reach are in neither set (documented, all ungated today, pinned by test).
+- Why: floor over the superset is the safe direction — over-approximation can
+  only raise a floor, never under-declare; verified none of the omitted
+  conversions is gated above base.
+- Reversal cost: collapsing to one set later is a field deletion; D not yet
+  written, so zero consumers break.
+
+## 2026-08-27 Three registry codes formally never-emitted (Task 11b)
+- Context: fixture completion proved three codes unreachable from real
+  source: SPT1009 (bare Slice, always intercepted by SPT1013/1014), SPT4018
+  (struct positional args — Task 7b's review adjudicated SPT3020 as the
+  honest code for that shape), SPT7003 (break/continue outside a loop —
+  CPython's compile() raises SyntaxError, bridged to SPT1037, before the
+  frontend's own check can run).
+- Decision: all three added to NO_FIXTURE_ALLOWLIST with reachability
+  reasons; rows retained under the append-only rule; SPT4018's text carries
+  a supersession note; the defensive branches (expr.py SPT1009, stmt.py
+  SPT7003) stay as defense-in-depth for AST-only entry paths.
+- Why: the executable subset spec (must_reject/) must be complete over
+  emittable codes without forcing fake fixtures; deleting rows would break
+  the append-only public-API guarantee.
+- Reversal cost: none — any code that later becomes reachable just gets its
+  fixture and leaves the allowlist.
+
+## 2026-08-27 compile_expression retired in favor of compile_module-only API
+- Context: the M1-C plan's Global Constraints named a `compile_expression`
+  export; Task 11a instead built a test-side harness (wrap_case +
+  compile_module) and the final whole-branch review flagged the substitution
+  as unrecorded.
+- Decision: compile_module is the single public compiler entry point; no
+  expression-level API ships in M1. The semantics-classification harness
+  lives in tests (test_frontend_semantics.py).
+- Why: one entry point keeps the public contract reviewable; an
+  expression-level API has no consumer outside tests.
+- Reversal cost: additive — export a wrapper later if D/E want one.
+
+## 2026-08-27 M1-C final-review minors folded into parked passes
+- Minors 2 and 3 from the final whole-branch review (registry intent strings
+  hardcode limit numbers; frontend.py imports _host._protocol via the private
+  path) are folded into the already-parked sanctioned wording/cleanup passes
+  (see the M1-C attention file §8-9). Minor 4 (runtime_parts ratification
+  caveat) fixed in-code at merge time; Minor 1 is the entry above.

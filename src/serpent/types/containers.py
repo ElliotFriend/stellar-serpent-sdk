@@ -37,6 +37,16 @@ permissive `ChainValue` element type for a heterogeneous map, so the returned
 `Vec` satisfies its own invariant: every `Vec` operation works on its own
 contents.
 
+**Structs (ruling E2 (b) / MJ-7).** A `@contracttype` struct is a `MapObject`
+on chain, so `Vec[Balance]` and `Map[Symbol, Settings]` are ordinary contract
+shapes -- and the element/value bound (`ContainerValue`) admits them. The
+widening is asymmetric on purpose: a `Map` KEY must still be a `ChainValue`
+(E3), because every key goes through `val_cmp` in the binary search and tier 1
+models no ordering for a struct at all, while a value is never compared. So
+`Map(Symbol, Settings)` round-trips, and `Map(Settings, U32)` raises
+`TypeError` -- the on-chain host would order struct keys fine, but tier 1
+refuses to invent the answer (A15).
+
 **Deferred:** `Vec` and `Map` carry their `ScValType` ranks (16 and 17), so they
 order correctly against every scalar, but comparing two containers *of the same
 rank* needs nested-container host semantics that have not been verified yet --
@@ -49,18 +59,30 @@ import copy as _copy
 from collections.abc import Iterable, Iterator
 from typing import Any, ClassVar, Generic, Self, TypeVar
 
-from serpent.types._ordering import ChainValue, require_chain_value, val_cmp
+from serpent.types._ordering import (
+    ChainValue,
+    ContainerValue,
+    Struct,
+    require_chain_value,
+    require_map_value,
+    val_cmp,
+)
 from serpent.types.numeric import U32
 
-T = TypeVar("T", bound=ChainValue)
+# `Vec` elements and `Map` VALUES admit a `@contracttype` struct as well as a
+# chain value (E2 (b)/MJ-7): `Vec[Balance]` and `Map[Symbol, Settings]` are
+# ordinary contract shapes, and neither position is ever ordered. `Map`'s KEY
+# bound stays `ChainValue` (E3): every key IS ordered, by the binary search.
+T = TypeVar("T", bound=ContainerValue)
 K = TypeVar("K", bound=ChainValue)
-V = TypeVar("V", bound=ChainValue)
+V = TypeVar("V", bound=ContainerValue)
 
 _DEFERRED = "container comparison; sub-plan B"
 
 
 class Vec(Generic[T]):
-    """The chain `Vec`: an ordered, homogeneous sequence of chain values.
+    """The chain `Vec`: an ordered, homogeneous sequence of chain values (or
+    of `@contracttype` structs -- E2).
 
     `Vec(U32)` builds an empty one, `Vec(U32, [U32(1), U32(2)])` a populated
     one. Note `append(other)` follows the host (`vec_append` concatenates
@@ -222,10 +244,38 @@ def _element_type_for(declared: type[Any], items: list[Any]) -> type[Any]:
     permissive `ChainValue` protocol, which every chain value satisfies (`Map`
     validates chain-ness on the way in), so every `Vec` operation keeps working
     on the result.
+
+    This is the KEY path's answer, where every entry really is a `ChainValue`
+    (E3). Values go through `_value_element_type_for` instead.
     """
     if all(isinstance(item, declared) for item in items):
         return declared
     return ChainValue
+
+
+def _value_element_type_for(declared: type[Any], items: list[Any]) -> type[Any]:
+    """`_element_type_for`, widened for the VALUE path (MJ-7).
+
+    A `Map` value may be a `@contracttype` struct, which does NOT satisfy
+    `ChainValue` (no `_SCVAL_RANK`/`_cmp_payload`) -- so falling back to
+    `ChainValue` for a heterogeneous map would build a `Vec` whose own
+    constructor rejects its contents. The fallback therefore widens one step
+    at a time, and only as far as the contents force:
+
+    * the declared type, when every value satisfies it (the normal case);
+    * `ChainValue`, when they are all chain values;
+    * `Struct`, when they are all structs;
+    * `object`, when they straddle the boundary -- the honest answer, since
+      `Map.set` has already proven each value is one or the other and no
+      narrower type describes both. Every `Vec` operation still works on the
+      result, which is the invariant this function exists to preserve.
+    """
+    if all(isinstance(item, declared) for item in items):
+        return declared
+    for candidate in (ChainValue, Struct):
+        if all(isinstance(item, candidate) for item in items):
+            return candidate
+    return object
 
 
 class Map(Generic[K, V]):
@@ -296,7 +346,7 @@ class Map(Generic[K, V]):
     # --- host-shaped API -----------------------------------------------------
 
     def set(self, key: K, value: V) -> None:
-        require_chain_value(value)
+        require_map_value(value)
         index, found = self._search(key)
         if found:
             self._pairs[index] = (key, value)
@@ -330,9 +380,10 @@ class Map(Generic[K, V]):
         return keys_vec
 
     def values(self) -> Vec[V]:
-        """The values, in key order (same element-type rule as `keys()`)."""
+        """The values, in key order (the widened element-type rule -- see
+        `_value_element_type_for`; a value may be a struct, MJ-7)."""
         items: list[V] = [value for _, value in self._pairs]
-        values_vec: Vec[V] = Vec(_element_type_for(self._value_type, items), items)
+        values_vec: Vec[V] = Vec(_value_element_type_for(self._value_type, items), items)
         return values_vec
 
     def key_by_pos(self, position: int) -> K:

@@ -187,13 +187,13 @@ MAPPED: list[tuple[str, object, xdr.SCSpecTypeDef]] = [
     ),
     ("Settings", Settings, _udt("Settings")),
     ("Settings | None", Settings | None, _option(_udt("Settings"))),
-    # A UDT nested in a container. `Vec`'s type variable is bound to the
-    # `ChainValue` protocol, which a `@contracttype` struct does NOT satisfy (it
-    # has no `_SCVAL_RANK`/`_cmp_payload`), so mypy rejects the annotation even
-    # though the decorators accept it and the mapping is well defined -- a real
-    # authoring-surface gap for sub-plan C, recorded here with the narrowest
-    # possible ignore rather than dropped from the table.
-    ("Vec[Settings]", Vec[Settings], _vec(_udt("Settings"))),  # type: ignore[type-var]
+    # A UDT nested in a container. This needed a `# type: ignore[type-var]`
+    # until M1-C Task 8 landed ruling E2 (b): `Vec`'s type variable is now
+    # bound to `ChainValue | Struct`, so an annotation the decorators accept
+    # and the mapping expresses is finally one mypy accepts too. The ignore's
+    # removal is load-bearing under `warn_unused_ignores` -- if the bound ever
+    # narrows again, this line fails the type gate rather than drifting.
+    ("Vec[Settings]", Vec[Settings], _vec(_udt("Settings"))),
 ]
 
 

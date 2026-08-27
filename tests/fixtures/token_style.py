@@ -18,8 +18,11 @@ Two purposes, both load-bearing:
 * Methods take `self` first (ordinary, strict-clean Python methods).
 * `NAME = errorcode(N)` error-enum members (`raise TokenError.NAME` type-checks
   because `errorcode` is annotated `-> type[ContractError]`).
-* A `@contractevent` class inheriting `Event`, so `.publish(env)` resolves to a
-  real, statically-visible method.
+* A `@contractevent` class inheriting `Event`, declared and mypy-visible. It is
+  NOT published through `Transfer(...).publish(env)`: ruling E12 defers that
+  form's topic/data split to sub-plan E (`_serpent_type_` carries none, B14),
+  so M1-C compiles only the canonical `env.events().publish(topics, data)`
+  line below -- which is exactly what `transfer` emits.
 * Storage keys demonstrate BOTH halves of the widened key surface (Task 9's
   ruling): a plain `Symbol` key (`ADMIN`, `NAME_KEY`) and a `@contracttype`
   struct key (`BalanceKey`, keyed on an `Address` -- the dominant real-world
@@ -108,4 +111,3 @@ class TokenStyle:
         env.storage().persistent().set(to_key, to_balance + amount)
         # The canonical heterogeneous topic shape: (Symbol, Address, Address).
         env.events().publish((Symbol("transfer"), frm, to), amount)
-        Transfer(frm=frm, to=to, amount=amount).publish(env)

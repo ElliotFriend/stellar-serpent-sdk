@@ -62,12 +62,47 @@ this README plus a second, correctly ON-CHAIN-anchored golden/check.
      Only trailing newlines are normalized. Skipped when the `stellar` CLI
      is absent (CI has no such binary), never silently passed.
 
+## `ir/` -- compiler IR snapshots (added by Task 11c of the M1-C plan)
+
+`ir/*.ir.txt` are a **third, weaker class: SELF-SNAPSHOT**. They are neither
+ON-CHAIN-verified nor RUST-SDK-BYTE-COMPAT-verified, and they must never be
+cited as evidence that serpent's output is *correct*. They record what the
+frontend currently lowers a source to, so that a change to lowering arrives
+as a reviewable diff instead of a silent behavioural change (dossier F.2.10).
+Their evidentiary weight is exactly "this used to be the answer, and someone
+reviewed the change" -- no more.
+
+The distinction matters here more than usual, because one of them
+(`spike1_reauthored.ir.txt`) *looks* on-chain-anchored and is not: the
+Phase 0 anchor is the eight-host-function assertion in
+`tests/unit/test_frontend_goldens.py`, which compares against names copied
+out of `spikes/spike1/ACCEPTANCE.md` and `harness.py`. The IR snapshot beside
+it is a self-snapshot like the rest.
+
+- Source of truth: `tests/unit/test_frontend_goldens.py` -- `EXAMPLE_NAMES`
+  names the examples, `render_functions` is the rendering, and each file is
+  `render_functions(compile_module(source).functions)`.
+- Regenerate all of them with:
+
+      SERPENT_REGEN_GOLDENS=1 uv run pytest tests/unit/test_frontend_goldens.py
+
+  The test writes the file and then compares, so a regeneration run is also
+  a passing run. **Read the diff.** A golden diff is a change to what
+  sub-plan D will emit.
+- Every node's `Loc` is deliberately omitted from the rendering (the test
+  module's docstring says why: location correctness is asserted exhaustively
+  by the 95 `must_reject/` fixtures and the fuzz suite, and line numbers
+  would make every unrelated source edit rewrite the whole file). Nothing
+  else is omitted, and no golden may carry an address, an `id()`, or an
+  absolute path -- `test_goldens_have_no_identity_leaks` enforces that.
+
 ## Rules for adding a new golden
 
 1. State its provenance class in this file before (or in the same commit
    as) adding the `.bin` file.
 2. Never claim ON-CHAIN-verified for something only checked against a local
    toolchain build -- use RUST-SDK-BYTE-COMPAT-verified instead, and say
-   what it was compared against.
-3. Regenerate from a recorded, reviewable recipe (a script or a documented
-   procedure), never hand-author the bytes.
+   what it was compared against. A compiler self-snapshot is neither: label
+   it SELF-SNAPSHOT and say what regenerates it.
+3. Regenerate from a recorded, reviewable recipe (a script, a documented
+   procedure, or a regeneration flag), never hand-author the bytes.

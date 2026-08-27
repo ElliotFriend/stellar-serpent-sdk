@@ -97,6 +97,21 @@ _CONTRACT = "CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI"
 @dataclass(frozen=True)
 class SemCase:
     name: str
+    # `frontend` (Task 11a, BL-3): where `source` lands against the real
+    # compiler frontend (`serpent.compiler.frontend.compile_module`), NOT
+    # against tier 1's plain-Python execution above -- `kind`/`expect`/`code`/
+    # `trap` stay the frozen tier-1 oracle; this is a second, independent axis
+    # `tests/unit/test_frontend_semantics.py` classifies every case against.
+    # * "accepts" -- `source` compiles, and the compiled IR's final
+    #   expression type equals the operand type (F.1.11: an accepted
+    #   contract_error/trap case is asserted on compile+type only; the
+    #   runtime behavior is tier 1's/the differential harness's job).
+    # * "rejects" -- `source` draws a located compile diagnostic.
+    # * "not_expressible" -- neither answer is meaningful: the source cannot
+    #   be probed through the compiler at all, or the compiler rejects it for
+    #   a reason UNRELATED to the behavior this case pins (masking it).
+    #   `not_expressible_reason` is then required (one line, why).
+    frontend: Literal["accepts", "rejects", "not_expressible"]
     source: str  # single expression, eval-able in the chain-type
     # namespace AND compilable by sub-plan D in a method body
     kind: Literal["value", "contract_error", "trap", "reject"]
@@ -105,20 +120,28 @@ class SemCase:
     trap: type[BaseException] | None = None  # tier-1 builtin, for kind == "trap"
     # Cases marked tier1_only are observable only in tier-1 Python execution --
     # sub-plan D skips them by construction, because the compiler tier
-    # statically rejects their source.
+    # statically rejects their source. F.2.2: tier1_only holds for a
+    # non-"reject"-kind case if and only if frontend == "rejects" (a
+    # kind == "reject" case is tier-1-only BY CONSTRUCTION, per this class's
+    # own kind docstring above, so the flag is not required for it; a
+    # not_expressible case is carved out of the biconditional entirely).
     tier1_only: bool = False
+    # One line, required exactly when frontend == "not_expressible".
+    not_expressible_reason: str | None = None
 
 
 CASES: list[SemCase] = [
     # --- truthiness (2026-08-26 decision: bool(x) is a zero-test) -----------
     SemCase(
         name="truthiness_u32_zero_is_false",
+        frontend="accepts",
         source="Bool(bool(U32(0)))",
         kind="value",
         expect=Bool(False),
     ),
     SemCase(
         name="truthiness_u32_nonzero_is_true",
+        frontend="accepts",
         source="Bool(bool(U32(1)))",
         kind="value",
         expect=Bool(True),
@@ -126,30 +149,35 @@ CASES: list[SemCase] = [
     # --- truncating division: div_s/rem_s, NOT Python floor/floormod --------
     SemCase(
         name="truncating_floordiv_negative_dividend",
+        frontend="accepts",
         source="I32(-7) // I32(2)",
         kind="value",
         expect=I32(-3),
     ),
     SemCase(
         name="truncating_mod_takes_dividend_sign",
+        frontend="accepts",
         source="I32(-7) % I32(2)",
         kind="value",
         expect=I32(-1),
     ),
     SemCase(
         name="min_mod_neg1_is_zero_not_a_trap",
+        frontend="accepts",
         source="I32(-(2**31)) % I32(-1)",
         kind="value",
         expect=I32(0),
     ),
     SemCase(
         name="reflected_rfloordiv_truncates",
+        frontend="accepts",
         source="20 // I32(3)",
         kind="value",
         expect=I32(6),
     ),
     SemCase(
         name="reflected_rmod_truncates",
+        frontend="accepts",
         source="20 % I32(3)",
         kind="value",
         expect=I32(2),
@@ -157,66 +185,77 @@ CASES: list[SemCase] = [
     # --- checked-arithmetic boundaries: every width, both directions --------
     SemCase(
         name="i32_min_floordiv_neg1_overflows",
+        frontend="accepts",
         source="I32(-(2**31)) // I32(-1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
     ),
     SemCase(
         name="u32_unary_minus_of_one_overflows",
+        frontend="accepts",
         source="-U32(1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
     ),
     SemCase(
         name="u32_max_plus_one_overflows",
+        frontend="accepts",
         source="U32(2**32 - 1) + U32(1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
     ),
     SemCase(
         name="u32_zero_minus_one_underflows",
+        frontend="accepts",
         source="U32(0) - U32(1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
     ),
     SemCase(
         name="i32_max_plus_one_overflows",
+        frontend="accepts",
         source="I32(2**31 - 1) + I32(1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
     ),
     SemCase(
         name="i32_min_minus_one_overflows",
+        frontend="accepts",
         source="I32(-(2**31)) - I32(1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
     ),
     SemCase(
         name="i32_min_negated_overflows",
+        frontend="accepts",
         source="-I32(-(2**31))",
         kind="contract_error",
         code=0xFFFF_FFFE,
     ),
     SemCase(
         name="u64_max_plus_one_overflows",
+        frontend="accepts",
         source="U64(2**64 - 1) + U64(1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
     ),
     SemCase(
         name="i64_min_minus_one_overflows",
+        frontend="accepts",
         source="I64(-(2**63)) - I64(1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
     ),
     SemCase(
         name="u128_max_plus_one_overflows",
+        frontend="accepts",
         source="U128(2**128 - 1) + U128(1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
     ),
     SemCase(
         name="i128_min_minus_one_overflows",
+        frontend="accepts",
         source="I128(-(2**127)) - I128(1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
@@ -227,6 +266,7 @@ CASES: list[SemCase] = [
         # the SemCase.code field. (Rationale for reusing an overflow boundary
         # as the round-trip witness: see the module docstring.)
         name="error_roundtrip_contract_error_code",
+        frontend="accepts",
         source="I32(2**31 - 1) + I32(1)",
         kind="contract_error",
         code=0xFFFF_FFFE,
@@ -234,36 +274,42 @@ CASES: list[SemCase] = [
     # --- checked-arithmetic: ordinary in-range results, both directions -----
     SemCase(
         name="unary_minus_ordinary_value",
+        frontend="accepts",
         source="-I32(5)",
         kind="value",
         expect=I32(-5),
     ),
     SemCase(
         name="unary_minus_of_unsigned_zero_stays_in_range",
+        frontend="accepts",
         source="-U128(0)",
         kind="value",
         expect=U128(0),
     ),
     SemCase(
         name="reflected_add_int_plus_chain_int",
+        frontend="accepts",
         source="3 + U32(5)",
         kind="value",
         expect=U32(8),
     ),
     SemCase(
         name="reflected_sub_int_minus_chain_int",
+        frontend="accepts",
         source="10 - U32(3)",
         kind="value",
         expect=U32(7),
     ),
     SemCase(
         name="reflected_mul_int_times_chain_int",
+        frontend="accepts",
         source="3 * U32(4)",
         kind="value",
         expect=U32(12),
     ),
     SemCase(
         name="int_operand_accepted_in_range",
+        frontend="accepts",
         source="U32(5) + 10",
         kind="value",
         expect=U32(15),
@@ -273,6 +319,7 @@ CASES: list[SemCase] = [
         # wherever int is on a numeric chain type (2026-08-26 decision log).
         # Tier-1-only: the compiler tier statically rejects bool-as-int-operand.
         name="bool_leaks_as_int_operand",
+        frontend="rejects",
         source="U32(5) + True",
         kind="value",
         expect=U32(6),
@@ -281,18 +328,21 @@ CASES: list[SemCase] = [
     # --- division/modulo by zero: host trap, not a contract error ------------
     SemCase(
         name="floordiv_by_zero_traps",
+        frontend="accepts",
         source="I32(5) // I32(0)",
         kind="trap",
         trap=ZeroDivisionError,
     ),
     SemCase(
         name="mod_by_zero_traps",
+        frontend="accepts",
         source="I32(5) % I32(0)",
         kind="trap",
         trap=ZeroDivisionError,
     ),
     SemCase(
         name="unsigned_floordiv_by_zero_traps",
+        frontend="accepts",
         source="U32(5) // U32(0)",
         kind="trap",
         trap=ZeroDivisionError,
@@ -300,42 +350,49 @@ CASES: list[SemCase] = [
     # --- coercion / cross-type rejects: authoring-time, no implicit widening -
     SemCase(
         name="out_of_range_int_operand_rejected",
+        frontend="rejects",
         source="U32(5) + 2**32",
         kind="reject",
         trap=ValueError,
     ),
     SemCase(
         name="cross_width_unsigned_add_rejected",
+        frontend="rejects",
         source="U32(1) + U64(1)",
         kind="reject",
         trap=TypeError,
     ),
     SemCase(
         name="cross_signedness_add_rejected",
+        frontend="rejects",
         source="I32(1) + I64(1)",
         kind="reject",
         trap=TypeError,
     ),
     SemCase(
         name="pow_operator_omitted",
+        frontend="rejects",
         source="U32(2) ** U32(3)",
         kind="reject",
         trap=TypeError,
     ),
     SemCase(
         name="divmod_operator_omitted",
+        frontend="rejects",
         source="divmod(U32(5), U32(2))",
         kind="reject",
         trap=TypeError,
     ),
     SemCase(
         name="bitwise_and_operator_omitted",
+        frontend="rejects",
         source="I32(1) & I32(1)",
         kind="reject",
         trap=TypeError,
     ),
     SemCase(
         name="bool_has_no_arithmetic",
+        frontend="rejects",
         source="Bool(True) + U32(1)",
         kind="reject",
         trap=TypeError,
@@ -343,24 +400,28 @@ CASES: list[SemCase] = [
     # --- time types: no arithmetic at all, not even same-type (2026-08-26) --
     SemCase(
         name="timepoint_plus_duration_rejected",
+        frontend="rejects",
         source="Timepoint(5) + Duration(1)",
         kind="reject",
         trap=TypeError,
     ),
     SemCase(
         name="timepoint_plus_timepoint_rejected",
+        frontend="rejects",
         source="Timepoint(1) + Timepoint(1)",
         kind="reject",
         trap=TypeError,
     ),
     SemCase(
         name="duration_unary_minus_rejected",
+        frontend="rejects",
         source="-Duration(5)",
         kind="reject",
         trap=TypeError,
     ),
     SemCase(
         name="duration_times_int_rejected",
+        frontend="rejects",
         source="Duration(3) * 2",
         kind="reject",
         trap=TypeError,
@@ -368,6 +429,7 @@ CASES: list[SemCase] = [
     # --- payload equality across the Bytes family (2026-08-26 decision) -----
     SemCase(
         name="bytes32_equals_bytes_same_payload",
+        frontend="accepts",
         source='Bool(Bytes32(b"\\x00" * 32) == Bytes(b"\\x00" * 32))',
         kind="value",
         expect=Bool(True),
@@ -377,6 +439,7 @@ CASES: list[SemCase] = [
     # raw-operand coercion.
     SemCase(
         name="symbol_does_not_coerce_from_str",
+        frontend="rejects",
         source='Bool(Symbol("abc") == "abc")',
         kind="value",
         expect=Bool(False),
@@ -384,6 +447,7 @@ CASES: list[SemCase] = [
     ),
     SemCase(
         name="bytes_does_not_coerce_from_raw_bytes",
+        frontend="rejects",
         source='Bool(Bytes(b"abc") == b"abc")',
         kind="value",
         expect=Bool(False),
@@ -394,12 +458,15 @@ CASES: list[SemCase] = [
         # The flagged Bytes-before-Symbol case: ScValType rank 13 < 15, so a
         # Bytes key sorts first however it compares to the Symbol payload.
         name="map_orders_bytes_before_symbol",
+        frontend="not_expressible",
+        not_expressible_reason="a Map(Symbol, U32, ...) literal's keys must match the declared key type (F.1's typed-constructor rule); a Bytes key cannot be built there, so this cross-type rank observable has no compiled form (task-7b-report.md's ledgered limitation).",
         source='Map(Symbol, U32, [(Symbol("z"), U32(1)), (Bytes(b"a"), U32(2))]).keys().get(0)',
         kind="value",
         expect=Bytes(b"a"),
     ),
     SemCase(
         name="map_orders_same_type_keys_by_payload",
+        frontend="accepts",
         source="Map(U32, U32, [(U32(5), U32(1)), (U32(1), U32(2))]).keys().get(0)",
         kind="value",
         expect=U32(1),
@@ -408,6 +475,8 @@ CASES: list[SemCase] = [
         # Bool has the lowest ScValType rank (0) of any chain type, so it
         # always sorts first against any other scalar key -- Symbol (15) here.
         name="map_orders_bool_before_symbol",
+        frontend="not_expressible",
+        not_expressible_reason="a Map(Symbol, U32, ...) literal's keys must match the declared key type (F.1's typed-constructor rule); a Bool key cannot be built there, so this cross-type rank observable has no compiled form (task-7b-report.md's ledgered limitation).",
         source='Map(Symbol, U32, [(Symbol("a"), U32(1)), (Bool(True), U32(2))]).keys().get(0)',
         kind="value",
         expect=Bool(True),
@@ -419,6 +488,7 @@ CASES: list[SemCase] = [
         # packed codes rather than raw bytes, this answer flips. See the
         # module docstring.
         name="symbol_underscore_vs_A_ascii_order",
+        frontend="accepts",
         source='Bool(Symbol("_") < Symbol("A"))',
         kind="value",
         expect=Bool(False),
@@ -428,6 +498,7 @@ CASES: list[SemCase] = [
     # no-negative-indexing ruling.
     SemCase(
         name="bytes_negative_index_traps",
+        frontend="rejects",
         source='Bytes(b"ab")[-1]',
         kind="trap",
         trap=IndexError,
@@ -435,30 +506,37 @@ CASES: list[SemCase] = [
     ),
     SemCase(
         name="bytes_positive_out_of_range_traps",
+        frontend="accepts",
         source='Bytes(b"ab")[5]',
         kind="trap",
         trap=IndexError,
     ),
     SemCase(
         name="vec_get_out_of_bounds_traps",
+        frontend="accepts",
         source="Vec(U32, [U32(1), U32(2)]).get(5)",
         kind="trap",
         trap=IndexError,
     ),
     SemCase(
         name="vec_pop_back_of_empty_traps",
+        frontend="not_expressible",
+        not_expressible_reason="`Vec(U32).pop_back()` calls a mutator on a temporary receiver -- SPT1034 rejects it (no binding to rebind) before the empty-pop trap this case pins is ever reachable; recognize.py names this exact shape as its own canonical example. Not one of task-11a-brief.md's three named cases -- a 4th instance found while classifying, flagged in task-11a-report.md for controller confirmation.",
         source="Vec(U32).pop_back()",
         kind="trap",
         trap=IndexError,
     ),
     SemCase(
         name="map_get_missing_key_traps",
+        frontend="accepts",
         source='Map(Symbol, U32).get(Symbol("missing"))',
         kind="trap",
         trap=KeyError,
     ),
     SemCase(
         name="vec_wrong_element_type_rejected",
+        frontend="not_expressible",
+        not_expressible_reason="`Vec(U32, [...]).push_back(...)` calls a mutator on a temporary receiver -- SPT1034 rejects it (no binding to rebind) before the wrong-element-type check this case pins is ever reached (task-10-report.md §3's MJ-14 reconciliation).",
         source='Vec(U32, [U32(1)]).push_back(Symbol("x"))',
         kind="reject",
         trap=TypeError,
@@ -466,12 +544,14 @@ CASES: list[SemCase] = [
     # --- Symbol validation edges ----------------------------------------------
     SemCase(
         name="symbol_empty_rejected",
+        frontend="rejects",
         source='Symbol("")',
         kind="reject",
         trap=ValueError,
     ),
     SemCase(
         name="symbol_too_long_rejected",
+        frontend="rejects",
         source='Symbol("a" * 33)',
         kind="reject",
         trap=ValueError,
@@ -479,12 +559,14 @@ CASES: list[SemCase] = [
     # --- Bytes fixed-length validation edges ----------------------------------
     SemCase(
         name="bytes32_wrong_length_rejected",
+        frontend="rejects",
         source='Bytes32(b"x")',
         kind="reject",
         trap=ValueError,
     ),
     SemCase(
         name="bytes64_wrong_length_rejected",
+        frontend="rejects",
         source='Bytes64(b"x" * 10)',
         kind="reject",
         trap=ValueError,
@@ -492,12 +574,14 @@ CASES: list[SemCase] = [
     # --- Address: ordering (account before contract) and no coercion --------
     SemCase(
         name="address_account_orders_before_contract",
+        frontend="accepts",
         source=f'Bool(Address("{_ACCOUNT}") < Address("{_CONTRACT}"))',
         kind="value",
         expect=Bool(True),
     ),
     SemCase(
         name="address_rejects_malformed_strkey",
+        frontend="rejects",
         source='Address("not-a-strkey")',
         kind="reject",
         trap=ValueError,

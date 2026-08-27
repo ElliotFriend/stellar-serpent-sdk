@@ -76,6 +76,11 @@ class Bytes(_ChainPayload[bytes]):
     -- chain types all the way down. Slicing returns a plain `Bytes` even from a
     fixed-length subclass, since the length invariant no longer holds. Always a
     host object on-chain, so `to_val()`/`from_val()` await sub-plan B.
+
+    Two sub-range forms coexist, and they do NOT agree on out-of-range bounds:
+    `slice(lo, hi)` is the host-faithful one (it traps, like `Vec.slice`) and is
+    what the compiler accepts; `[a:b]` is serpent-side python sugar that clamps.
+    See `slice`'s own docstring (ruling MJ-1).
     """
 
     __slots__ = ()
@@ -132,6 +137,27 @@ class Bytes(_ChainPayload[bytes]):
                 f"{len(self._payload)} (the host indexes with a u32)"
             )
         return U32(self._payload[index])
+
+    def slice(self, lo: int, hi: int) -> "Bytes":
+        """`self[lo:hi]` as a new `Bytes`; the host traps rather than clamping.
+
+        The METHOD form of a sub-range (ruling MJ-1, from E18): the compiler
+        rejects `b[a:b]` and points here (`SPT1013`), so the oracle has to be
+        able to RUN what the compiler accepts. Semantics are `Vec.slice`'s,
+        deliberately NOT python slicing's -- `bytes_slice` (`b.f`) traps on an
+        out-of-range bound, so `b.slice(0, len(b) + 1)` raises `IndexError`
+        where `b[0 : len(b) + 1]` would silently clamp. Both forms stay
+        available and both stay faithful to what they compile to: the
+        subscript sugar is unchanged and remains serpent-side only.
+
+        A fixed-length subclass slices to a plain `Bytes`, exactly as `[a:b]`
+        does: the length invariant no longer holds.
+        """
+        if not 0 <= lo <= hi <= len(self._payload):
+            raise IndexError(
+                f"slice({lo}, {hi}) out of range for Bytes of length {len(self._payload)}"
+            )
+        return Bytes(self._payload[lo:hi])
 
     # Ordering is widened from `Self` to the family root: every `BytesN` is the
     # same ScVal case as `Bytes`, so they are mutually comparable.

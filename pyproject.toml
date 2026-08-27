@@ -34,6 +34,11 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests", "spikes"]
+# `tests/must_reject/` fixtures (M1-C Task 2) are deliberately invalid-as-
+# formatted Python -- excluded from `ruff format --check` too, not just lint
+# (dossier E15, plan BL-2; there is precedent for the opposite in this repo,
+# E3, so this exclusion must be deliberate and commented, not silent).
+extend-exclude = ["tests/must_reject"]
 
 [tool.ruff.lint.per-file-ignores]
 # Historical evidence copied verbatim from the original throwaway spike
@@ -45,11 +50,22 @@ src = ["src", "tests", "spikes"]
 # Transcribed verbatim from the Task 1 (val.py) brief, including the import
 # order; do not reorder to appease ruff's import-sort rule (I001).
 "tests/unit/test_val_properties.py" = ["I001"]
+# `tests/must_reject/` fixtures are the executable must_reject/ subset spec
+# (M1-C Task 2): deliberately invalid-as-linted Python (bare int error
+# members, missing param annotations, ...), read AS TEXT by the runner
+# (tests/unit/test_must_reject.py) and never imported (dossier E15, BL-2).
+"tests/must_reject/**" = ["ALL"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
+# `tests/must_reject/` fixtures (M1-C Task 2) are deliberately invalid-as-
+# typed Python -- the executable must_reject/ subset spec, compiled AS TEXT
+# by the runner and never imported (dossier E15, BL-2; precedent for the
+# opposite exists in this repo, E3, so this exclusion is deliberate and
+# commented, not silent).
+exclude = ["^tests/must_reject/"]
 
 [build-system]
 requires = ["uv_build>=0.12,<0.13"]

@@ -8,13 +8,13 @@ and a second, independent proof (alongside `test_public_api.py` and the
 authoring surface.
 """
 
-import re
-
 import pytest
 
 import serpent
+from serpent.compiler.diagnostics import CompileError
 from serpent.errors import ContractError
 from tests.semantics.cases import CASES, SemCase
+from tests.unit.test_frontend_semantics import compile_case
 
 #: `serpent.__all__` names ONLY. `eval`'s two-argument form still lets Python
 #: inject `__builtins__` (needed for `bool`, `True`/`False` literals, and
@@ -53,35 +53,36 @@ def test_semantics_case(case: SemCase) -> None:
         pytest.fail(f"unknown SemCase kind: {case.kind!r}")
 
 
-# --- meta-test: tier1_only accounting matches the decision log ----------------
+# --- meta-test: tier1_only <-> a real frontend reject (F.2.2) ----------------
 
-# Simple, regex-based stand-ins for the constructs the decision log declares
-# compile-rejected. This is deliberately crude -- sub-plan C's real frontend
-# checks are what will actually enforce these; until then this regex sweep is
-# a tripwire against a case silently drifting onto compile-rejected ground
-# without being marked `tier1_only`.
-_BOOL_AS_INT_OPERAND = re.compile(r"[+\-*/%]\s*(True|False)\b|\b(True|False)\s*[+\-*/%]")
-_NEGATIVE_INDEX_LITERAL = re.compile(r"\[-")
-_RAW_LITERAL_COMPARED_VIA_EQ = re.compile(r"==\s*b?['\"]|b?['\"][^'\"]*['\"]\s*==")
+# Task 11a retires the three placeholder regexes that used to stand in here
+# ("sub-plan C's real frontend checks are what will actually enforce these",
+# the retired meta-test's own docstring): `compile_case` (the Task 11a
+# harness, `tests/unit/test_frontend_semantics.py`) now runs the real
+# frontend, so the reconciliation below is exact rather than approximated.
+#
+# `kind == "reject"` cases are excluded: they are tier-1-only BY CONSTRUCTION
+# (this module's own docstring, "authoring-time misuse... before any chain
+# semantics are exercised"), so `tier1_only` is never required for them.
+# `frontend == "not_expressible"` cases are excluded too -- neither side of
+# the biconditional is meaningful for a case the compiler cannot probe for
+# the reason it was written to pin (see each one's `not_expressible_reason`).
+_F22_CASES = [
+    case for case in CASES if case.kind != "reject" and case.frontend != "not_expressible"
+]
 
 
-_NON_TIER1_ONLY_CASES = [case for case in CASES if not case.tier1_only]
-
-
-@pytest.mark.parametrize(
-    "case", _NON_TIER1_ONLY_CASES, ids=[case.name for case in _NON_TIER1_ONLY_CASES]
-)
-def test_non_tier1_only_cases_avoid_compile_rejected_constructs(case: SemCase) -> None:
-    assert not _BOOL_AS_INT_OPERAND.search(case.source), (
-        f"{case.name}: bool used as an int operand, but the compiler tier "
-        "statically rejects that -- mark this case tier1_only"
-    )
-    assert not _NEGATIVE_INDEX_LITERAL.search(case.source), (
-        f"{case.name}: negative index literal, but the compiler tier "
-        "statically rejects that -- mark this case tier1_only"
-    )
-    assert not _RAW_LITERAL_COMPARED_VIA_EQ.search(case.source), (
-        f"{case.name}: raw str/bytes literal compared to a chain type via "
-        "==, but that coercion answer is undecided until sub-plan C settles "
-        "raw-operand coercion -- mark this case tier1_only"
+@pytest.mark.parametrize("case", _F22_CASES, ids=[case.name for case in _F22_CASES])
+def test_tier1_only_matches_a_frontend_reject(case: SemCase) -> None:
+    """F.2.2: `tier1_only` holds if and only if the frontend rejects `source`."""
+    try:
+        compile_case(case)
+        compiled = True
+    except CompileError:
+        compiled = False
+    assert case.tier1_only == (not compiled), (
+        f"{case.name}: tier1_only={case.tier1_only} but the frontend "
+        f"{'accepted' if compiled else 'rejected'} it -- the table is frozen, "
+        "so this mismatch is a controller decision, not something to silently "
+        "reflag"
     )
