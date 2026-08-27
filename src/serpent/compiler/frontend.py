@@ -697,6 +697,10 @@ def _collect_runtime_parts(ir: ModuleIR) -> frozenset[str]:
       instruction, so each operator it uses is a distinct guest-runtime
       routine (spec SS 6). The names follow the dossier's own examples
       (`i128_add`, `i128_mul`).
+
+    These part names are C-coined and await sub-plan D's ratification: D may
+    rename them when it authors the guest-runtime routines, updating this
+    function and its pinning test together. They are not frozen API.
     """
     parts: set[str] = set()
     for node in walk(ir):

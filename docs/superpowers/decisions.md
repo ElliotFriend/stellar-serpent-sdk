@@ -244,3 +244,22 @@ Format:
   the append-only public-API guarantee.
 - Reversal cost: none — any code that later becomes reachable just gets its
   fixture and leaves the allowlist.
+
+## 2026-08-27 compile_expression retired in favor of compile_module-only API
+- Context: the M1-C plan's Global Constraints named a `compile_expression`
+  export; Task 11a instead built a test-side harness (wrap_case +
+  compile_module) and the final whole-branch review flagged the substitution
+  as unrecorded.
+- Decision: compile_module is the single public compiler entry point; no
+  expression-level API ships in M1. The semantics-classification harness
+  lives in tests (test_frontend_semantics.py).
+- Why: one entry point keeps the public contract reviewable; an
+  expression-level API has no consumer outside tests.
+- Reversal cost: additive — export a wrapper later if D/E want one.
+
+## 2026-08-27 M1-C final-review minors folded into parked passes
+- Minors 2 and 3 from the final whole-branch review (registry intent strings
+  hardcode limit numbers; frontend.py imports _host._protocol via the private
+  path) are folded into the already-parked sanctioned wording/cleanup passes
+  (see the M1-C attention file §8-9). Minor 4 (runtime_parts ratification
+  caveat) fixed in-code at merge time; Minor 1 is the entry above.
