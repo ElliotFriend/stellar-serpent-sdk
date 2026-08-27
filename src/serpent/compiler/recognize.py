@@ -854,6 +854,10 @@ def _malformed_env_chain_step(node: ast.expr, ctx: FuncCtx) -> IRExpr | None:
       `_recognize_env_top_level` that owns the standalone `env.storage` case,
       so the two spellings cannot drift apart.
 
+    A third shape has every link written correctly but STOPS SHORT of a method
+    (`x = env.storage().instance()`) -> `SPT1038` as well; see the comment at
+    that branch.
+
     The chain must be rooted at the `env` NAME. Without that guard a struct
     field or local called `instance` would collect an env diagnostic
     (`holder.instance(1)`), which is the opposite of naming the right link.
@@ -886,6 +890,25 @@ def _malformed_env_chain_step(node: ast.expr, ctx: FuncCtx) -> IRExpr | None:
             if not called and _is_env_name(link.value):
                 _recognize_env_top_level(ctx, Loc.from_node(ctx.path, link), link.attr)
                 return _invalid(Loc.from_node(ctx.path, node))
+
+    # Every LINK is well formed, but the chain STOPS SHORT: a storage bucket is
+    # not a value, it is the receiver a method is called on. `env.storage()`,
+    # `env.ledger()` and `env.events()` already reach `_recognize_env_top_level`
+    # through `recognize_call`'s own `env`-name branch; the bucket step is the
+    # one spelling with no such branch, and it used to fall through to the
+    # catch-all's "this construct is not supported". That is the same
+    # wrong-in-kind wording the miscalled-step case above fixes: the surface IS
+    # supported, and SPT1038 ("env API used with an unsupported call shape") is
+    # its literal intent. The shared `help` names the missing method step.
+    bucket = _match_storage_bucket(node)
+    if bucket is not None:
+        _error(
+            ctx,
+            "SPT1038",
+            Loc.from_node(ctx.path, node),
+            f"`env.storage().{bucket}()` selects a storage bucket; it is not a value on its own",
+        )
+        return _invalid(Loc.from_node(ctx.path, node))
     return None
 
 

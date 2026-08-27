@@ -856,6 +856,27 @@ def test_an_uncalled_chain_step_still_gets_spt1038() -> None:
     assert (diagnostic.loc.col, diagnostic.loc.end_col) == (8, 19)
 
 
+def test_a_chain_that_stops_short_of_a_method_is_spt1038() -> None:
+    """Fix round 2: every link is correct, the chain is just incomplete.
+
+    A storage bucket is the receiver a method is called on, not a value, so
+    `x = env.storage().instance()` is a recognized env surface used with an
+    unsupported CALL SHAPE -- SPT1038's literal intent. It previously drew
+    SPT1037's "this construct is not supported", the same wrong-in-kind wording
+    the miscalled-step case fixes: nothing here is unsupported. The `help` is
+    the band's shared one, which names the missing method step
+    (`....instance().get(...)`).
+    """
+    for chain in ("x = env.storage().instance()", "env.storage().temporary()"):
+        exc = _expect_reject(_chain_source(chain), "SPT1038")
+        (diagnostic,) = exc.diagnostics
+        assert diagnostic.loc.kind is LocKind.NODE
+        assert diagnostic.loc.line == 7
+        assert "selects a storage bucket" in diagnostic.message
+        assert diagnostic.help is not None
+        assert ".instance().get(" in diagnostic.help
+
+
 def test_the_chain_check_does_not_claim_a_non_env_receiver() -> None:
     """The `env`-rooted guard on the chain walk.
 
