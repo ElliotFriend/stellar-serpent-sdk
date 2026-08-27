@@ -1,0 +1,12 @@
+[package]
+name = "serpent_host"
+version = "0.0.1"
+edition = "2021"
+
+[lib]
+name = "serpent_host"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+soroban-sdk = { version = "27", features = ["testutils"] }
