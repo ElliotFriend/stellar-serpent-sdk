@@ -2,7 +2,9 @@
 
 Stays INSIDE the zero-dep walk (`tests/unit/test_core_zero_dep.py`): it must
 reach `stellar_sdk` only transitively through `serpent.spec`, and this
-subpackage never imports `serpent.spec` directly.
+subpackage never imports `stellar_sdk` directly (`serpent.spec` is the
+sanctioned transitive path -- individual submodules, e.g. `types_.py`, import
+it directly when they need it).
 
 Task 1 lands the diagnostics core and the complete `SPT####` code registry
 (`serpent.compiler.codes`). The rest of the public surface --

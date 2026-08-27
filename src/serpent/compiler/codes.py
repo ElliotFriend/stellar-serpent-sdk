@@ -512,7 +512,7 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "SPT3xxx",
         "Local rebound at a different type than its first binding (SS C.3 rule 1)",
         "a local's type is fixed by its first binding",
-        "Task 6",
+        "Task 4",
     ),
     CodeEntry(
         "SPT3018",

@@ -327,7 +327,12 @@ class Ty:
     @property
     def wasm_arith_width(self) -> int | None:
         """32 or 64 for the natively-arithmetic int types; `None` otherwise
-        (F.1.11)."""
+        (F.1.11). `U128`/`I128` report 64, but that is NOT a single native
+        wasm instruction width the way it is for `U32`/`I32`/`U64`/`I64` --
+        their arithmetic is a guest-runtime sequence of 64-bit limb ops (spec
+        §6, `hi64`/`lo64`), so a consumer must branch on the `Ty` tag itself
+        (dossier §C.1) before deciding whether one `wasm_arith_width`-sized
+        instruction suffices or a limb sequence is required."""
         return _ARITH_WIDTH.get(self.tag)
 
     def render(self) -> str:
