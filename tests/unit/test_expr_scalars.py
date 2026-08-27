@@ -45,6 +45,7 @@ from serpent.compiler.ir import (
     CompareOp,
     Const,
     ConstRef,
+    FuncKind,
     HostCall,
     IfExp,
     IsZero,
@@ -316,6 +317,10 @@ def _ctx() -> FuncCtx:
         alias_sets=AliasTable(),
         fn_name="go",
         path=PATH,
+        # `go` is a method of the fixture's @contract class, so `self` is in
+        # scope inside it -- identity, not a name lookup (Task 8 fix round 1).
+        fn_kind=FuncKind.EXPORT,
+        has_self=True,
     )
 
 

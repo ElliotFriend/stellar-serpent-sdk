@@ -54,7 +54,7 @@ from typing import Any
 from serpent.compiler import codes
 from serpent.compiler.ctx import AliasTable, FuncCtx, InternalSig, SlotTable
 from serpent.compiler.diagnostics import Diagnostics, Loc, LocKind
-from serpent.compiler.expr import check_expr
+from serpent.compiler.expr import RECOGNIZED_BUILTINS, check_expr
 from serpent.compiler.ir import (
     Const,
     ConstDecl,
@@ -99,9 +99,13 @@ _CYCLE_HELP = (
 )
 
 _COLLISION_HELP = (
-    "rename one of them: a module-level helper and a private method both compile to a "
-    "non-exported wasm function, and they share one namespace"
+    "rename one of them: every function a contract module declares -- exports, "
+    "module-level helpers, private methods -- has to be reachable under a name of its own"
 )
+
+#: `expr.py`'s by-name builtin dispatch, imported rather than restated (MJ-5):
+#: a helper under one of these names could never be called.
+_RECOGNIZED_BUILTINS = RECOGNIZED_BUILTINS
 
 
 # --- the resolved declarations ------------------------------------------------
@@ -126,6 +130,12 @@ class FuncSig:
       `self._fee`) and `""` for an export -- an export is called by the HOST,
       never from contract code (E8 (b) allows helpers and private methods
       only).
+    * `has_self` is whether `self` is in scope inside this function's BODY:
+      true for every method of the `@contract` class, false for a
+      module-level helper. It goes onto `FuncCtx` (`ctx.has_self`) so a call
+      site decides `self.<method>(...)` from the enclosing declaration's
+      IDENTITY -- two functions can share a name, so a name comparison cannot
+      answer it (fix round 1, I-1).
     """
 
     py_name: str
@@ -138,6 +148,7 @@ class FuncSig:
     node: ast.FunctionDef
     takes_env: bool
     surface: str
+    has_self: bool
 
     def internal_sig(self) -> InternalSig:
         """The call-site projection (E8). Only valid for an INTERNAL kind."""
@@ -409,9 +420,12 @@ def is_static_const_value(value: IRExpr) -> bool:
 def _module_ctx(loaded: LoadedModule, sink: Diagnostics, name: str) -> FuncCtx:
     """A `FuncCtx` for checking one module-level constant's value.
 
-    Module scope has no parameters, no locals and no internal-call targets: a
-    constant's value is a literal, and every other shape is refused either by
-    expression checking or by `is_static_const_value`.
+    Module scope has no parameters, no locals, no internal-call targets and no
+    `self`: a constant's value is a literal, and every other shape is refused
+    either by expression checking or by `is_static_const_value`. The identity
+    fields are passed EXPLICITLY even though they match `FuncCtx`'s
+    conservative defaults, because "module scope has no `self`" is a fact
+    worth stating at the construction site.
     """
     return FuncCtx(
         loaded=loaded,
@@ -423,6 +437,8 @@ def _module_ctx(loaded: LoadedModule, sink: Diagnostics, name: str) -> FuncCtx:
         alias_sets=AliasTable(),
         fn_name=name,
         path=loaded.path,
+        fn_kind=FuncKind.INTERNAL,
+        has_self=False,
     )
 
 
@@ -458,6 +474,9 @@ def _signatures(loaded: LoadedModule, sink: Diagnostics) -> tuple[FuncSig, ...]:
                 continue
             if not isinstance(member, ast.FunctionDef):
                 continue
+            if _is_name_mangled(member.name):
+                _reject_name_mangled(member, loaded, sink)
+                continue
             func = attributes.get(member.name)
             if not inspect.isfunction(func):
                 # Not a plain function in the executed view (a `staticmethod`,
@@ -490,6 +509,45 @@ def _signatures(loaded: LoadedModule, sink: Diagnostics) -> tuple[FuncSig, ...]:
         if sig is not None:
             signatures.append(sig)
     return tuple(signatures)
+
+
+def _is_name_mangled(name: str) -> bool:
+    """Python's private-name-mangling rule, exactly: at least two leading
+    underscores and at most one trailing one (`__x` yes, `__init__` no)."""
+    return name.startswith("__") and not name.endswith("__")
+
+
+def _reject_name_mangled(node: ast.FunctionDef, loaded: LoadedModule, sink: Diagnostics) -> None:
+    """Refuse a name-mangled method (fix round 1, I-2, controller ruling).
+
+    `def __x(self)` inside `class Bank` binds the class attribute `_Bank__x`,
+    and every `self.__x` reference in the class body is rewritten to
+    `self._Bank__x` -- so the AST view says `__x` while the executed view says
+    `_Bank__x`, and a compiler that resolved calls by the written name would
+    silently drop the method (the shape that reached this fix round: no
+    signature, a `Ty.Invalid` call result, and an EMPTY sink). Mangling
+    support would be additive later; refusing it now keeps the two views in
+    agreement and costs an author one underscore.
+
+    `SPT1037` is MJ-11's catch-all, used here because no `SPT4xxx` row fits by
+    KIND: the member kind is legitimate (a method in a `@contract` class body,
+    so not `SPT4020`), the signature shape is legitimate (not
+    `SPT4001`-`SPT4007`), and the name is within the Symbol charset and the
+    30-character cap (not `SPT5001`). What is unsupported is the CONSTRUCT --
+    a name the language rewrites -- which is exactly what this row says.
+    """
+    sink.error(
+        _FALLBACK_CODE,
+        Loc.from_node(loaded.path, node),
+        f"{_INTENT[_FALLBACK_CODE]}: `{node.name}` is a name-mangled method",
+        help=f"use a single leading underscore for a private method: `_{node.name.lstrip('_')}`",
+        notes=(
+            (
+                f"python rewrites `self.{node.name}` to `self._<Class>{node.name}` inside the "
+                "class body, so the declared name and the compiled name would disagree"
+            ),
+        ),
+    )
 
 
 def _method_kind(name: str) -> FuncKind:
@@ -585,6 +643,7 @@ def _resolve_signature(
         node=node,
         takes_env=takes_env,
         surface=surface,
+        has_self=expects_self,
     )
 
 
@@ -710,35 +769,79 @@ def _param_loc(path: str, node: ast.FunctionDef, name: str) -> Loc | None:
 def _check_internal_name_collisions(
     signatures: Sequence[FuncSig], loaded: LoadedModule, sink: Diagnostics
 ) -> None:
-    """A module-level helper and a private method may not share a name.
+    """Refuse a module-level helper whose name is already taken.
 
-    Both compile to a NON-EXPORTED wasm function, and `InternalCall.fn_name`
-    is that function's python name -- so two targets under one name would make
-    a lowered call ambiguous. Python allows it (the two live in different
-    namespaces), which is exactly why C has to refuse it; `SPT2004`
-    ("name shadows an existing declaration") is the rule being stated.
+    Three collisions, all reported as `SPT2004` ("name shadows an existing
+    declaration") because all three are one name meaning two things:
+
+    * **helper vs. private method** -- both compile to a NON-EXPORTED wasm
+      function and `InternalCall.fn_name` is that function's python name, so
+      two targets under one name make a lowered call ambiguous.
+    * **helper vs. export** (fix round 1, M-4) -- legal python, and the shape
+      spec Sec.2 nearly writes (a `balance` helper beside a `balance` export),
+      but two functions of one name in one module make every mention of it
+      ambiguous to a READER: `balance(env, x)` is the helper while
+      `self.balance(...)` would have been the export. Refusing is the
+      no-shadowing posture the rest of the compiler takes; relaxing it later
+      is additive.
+    * **helper vs. a compiler-recognized builtin** (M-5) -- `len` and `bool`
+      are dispatched by NAME in `expr.py` before any helper lookup (D3/MJ-1),
+      so a helper called `len` could never be called at all. Naming that at
+      the declaration beats a mystifying call site.
+
+    Private methods are exempt from the last two: `self._x` cannot collide
+    with a bare `len(...)` or with an export's own call shape.
     """
-    seen: dict[str, FuncSig] = {}
+    internal_seen: dict[str, FuncSig] = {}
+    exported: dict[str, FuncSig] = {
+        sig.py_name: sig for sig in signatures if sig.kind is not FuncKind.INTERNAL
+    }
     for sig in signatures:
         if sig.kind is not FuncKind.INTERNAL:
             continue
-        previous = seen.get(sig.py_name)
+        previous = internal_seen.get(sig.py_name)
         if previous is not None:
-            sink.error(
-                "SPT2004",
-                sig.loc,
-                f"{_INTENT['SPT2004']}: `{sig.py_name}`",
-                help=_COLLISION_HELP,
-                notes=(
-                    (
-                        f"`{previous.surface}` (line {previous.loc.line}) and "
-                        f"`{sig.surface}` both compile to an internal function named "
-                        f"`{sig.py_name}`"
-                    ),
+            _report_collision(
+                sig,
+                sink,
+                (
+                    f"`{previous.surface}` (line {previous.loc.line}) and `{sig.surface}` "
+                    f"both compile to an internal function named `{sig.py_name}`"
                 ),
             )
             continue
-        seen[sig.py_name] = sig
+        internal_seen[sig.py_name] = sig
+        if sig.has_self:
+            continue
+        export = exported.get(sig.py_name)
+        if export is not None:
+            _report_collision(
+                sig,
+                sink,
+                (
+                    f"`{sig.py_name}` is also a contract method (line {export.loc.line}), "
+                    f"exported as `{export.export_name}`"
+                ),
+            )
+        elif sig.py_name in _RECOGNIZED_BUILTINS:
+            _report_collision(
+                sig,
+                sink,
+                (
+                    f"`{sig.py_name}(...)` is a builtin the compiler recognizes by name, so "
+                    "a call would never reach this helper"
+                ),
+            )
+
+
+def _report_collision(sig: FuncSig, sink: Diagnostics, note: str) -> None:
+    sink.error(
+        "SPT2004",
+        sig.loc,
+        f"{_INTENT['SPT2004']}: `{sig.py_name}`",
+        help=_COLLISION_HELP,
+        notes=(note,),
+    )
 
 
 def _internal_call_edges(
@@ -779,6 +882,11 @@ def _check_call_graph(
     stack-depth and budget reasoning trivial, and it is checked HERE -- before
     any body is walked -- so a recursive helper is a located diagnostic rather
     than a compiler that recurses.
+
+    The DFS keeps its own EXPLICIT stack rather than recursing (fix round 1,
+    M-3): this function promises never to raise, and a module with a long
+    helper chain would otherwise hit python's recursion limit -- a compiler
+    that dies on a call chain while checking for call chains.
     """
     targets = {sig.surface: sig for sig in signatures if sig.kind is FuncKind.INTERNAL}
     edges = {
@@ -788,27 +896,34 @@ def _check_call_graph(
 
     #: 0 = unvisited, 1 = on the current path, 2 = finished.
     state: dict[str, int] = dict.fromkeys(targets, 0)
-    path_stack: list[str] = []
     reported: set[frozenset[str]] = set()
 
-    def visit(surface: str) -> None:
-        state[surface] = 1
-        path_stack.append(surface)
-        for target, loc in edges[surface]:
+    for root in targets:
+        if state[root] != 0:
+            continue
+        # Each frame is (surface, iterator over its remaining edges); the
+        # surfaces currently in `frames` ARE the path, which is what a cycle is
+        # sliced out of.
+        frames: list[tuple[str, Iterator[tuple[str, Loc]]]] = [(root, iter(edges[root]))]
+        state[root] = 1
+        while frames:
+            surface, remaining = frames[-1]
+            edge = next(remaining, None)
+            if edge is None:
+                state[surface] = 2
+                frames.pop()
+                continue
+            target, loc = edge
             if state[target] == 1:
-                cycle = path_stack[path_stack.index(target) :]
+                path = [frame for frame, _edges in frames]
+                cycle = path[path.index(target) :]
                 key = frozenset(cycle)
                 if key not in reported:
                     reported.add(key)
                     _report_cycle(cycle, loc, sink)
             elif state[target] == 0:
-                visit(target)
-        path_stack.pop()
-        state[surface] = 2
-
-    for surface in targets:
-        if state[surface] == 0:
-            visit(surface)
+                state[target] = 1
+                frames.append((target, iter(edges[target])))
 
 
 def _report_cycle(cycle: Sequence[str], loc: Loc, sink: Diagnostics) -> None:

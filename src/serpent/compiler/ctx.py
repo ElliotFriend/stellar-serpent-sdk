@@ -44,7 +44,7 @@ from enum import Enum, auto
 
 from serpent.compiler import codes
 from serpent.compiler.diagnostics import Diagnostics, Loc
-from serpent.compiler.ir import IfExp, IRExpr, LocalRef
+from serpent.compiler.ir import FuncKind, IfExp, IRExpr, LocalRef
 from serpent.compiler.loader import LoadedModule
 from serpent.compiler.types_ import Ty, TyTag
 
@@ -355,6 +355,26 @@ class FuncCtx:
       `decls` reports a bad callee declaration ONCE, against the declaration,
       and a call site that finds no signature for a target that DOES exist
       stays silent rather than cascading.
+    * `fn_kind` / `has_self` -- the IDENTITY of the declaration this body
+      belongs to, straight off its `decls.FuncSig`: which kind of function it
+      is, and whether `self` is in scope inside it. `has_self` is what decides
+      whether `self.<method>(...)` may resolve at all -- a module-level helper
+      has no `self`, so such a call is a tier-1 `NameError` even though the
+      lowered internal call would work on chain (an oracle-unrunnable accept,
+      A18).
+
+      **Both are identity, never a name.** An earlier revision derived
+      `has_self` by asking whether `fn_name` appeared among the contract
+      class's method names, which silently misjudged the shape spec Sec.2
+      itself illustrates: a module-level helper `balance(env, from_)` beside a
+      `balance` EXPORT would have been treated as a method and let
+      `self._helper(...)` through. Two functions can share a name; only the
+      declaration knows what it is.
+
+      The DEFAULTS are the conservative answer (`INTERNAL`, no `self`): a
+      caller that forgets to pass them gets a loud reject on a legitimate
+      `self._helper(...)` rather than a silent accept of one that cannot run
+      at tier 1.
     """
 
     loaded: LoadedModule
@@ -367,3 +387,5 @@ class FuncCtx:
     fn_name: str
     path: str
     internal_sigs: Mapping[str, InternalSig] = field(default_factory=dict)
+    fn_kind: FuncKind = FuncKind.INTERNAL
+    has_self: bool = False

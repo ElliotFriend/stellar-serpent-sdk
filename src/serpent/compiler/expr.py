@@ -126,6 +126,7 @@ from serpent.types import (
 
 __all__ = [
     "NODE_KIND_CODES",
+    "RECOGNIZED_BUILTINS",
     "check_condition",
     "check_expr",
     "fold_literal",
@@ -138,6 +139,14 @@ _INTENT: dict[str, str] = {entry.code: entry.message_intent for entry in codes.R
 
 #: MJ-11's catch-all: any AST node kind no other row covers.
 _FALLBACK_CODE = "SPT1037"
+
+#: The builtins `_check_call` dispatches BY NAME, before any user-declared
+#: function of the same name is looked up: `bool(x)` (D3's zero-test) and
+#: `len(x)` (MJ-1's ruled scope). Exported because `decls.py` refuses a
+#: module-level helper called `len` or `bool` -- such a helper could never be
+#: reached -- and that check must read the dispatch's own list rather than
+#: keeping a second copy of it (MJ-5).
+RECOGNIZED_BUILTINS: Final[frozenset[str]] = frozenset({"bool", "len"})
 
 
 # --- the exhaustive-dispatch default table (MJ-11) ---------------------------
@@ -1142,12 +1151,26 @@ def _check_call(node: ast.Call, ctx: FuncCtx) -> IRExpr:
         return _deferred(node, ctx, "Task 7a/7b", "a call of a computed value")
 
     name = func.id
-    if name == "bool":
+    if name == "bool":  # RECOGNIZED_BUILTINS, dispatched by name
         return _check_bool_call(node, ctx, loc)
-    if name == "len":
+    if name == "len":  # RECOGNIZED_BUILTINS, dispatched by name
         return _check_len_call(node, ctx, loc)
 
     obj = ctx.loaded.namespace.get(name)
+    if obj is bytes_n:
+        # `bytes_n(N)` is resolved in ANNOTATION position, where the hybrid
+        # frontend has already evaluated it into the generated fixed-length
+        # subclass (A16/E20). In a VALUE position it is the annotation-only
+        # form SPT3014 names -- not an undefined name, which is what the
+        # generic fall-through below would have claimed (fix round 1, M-8).
+        _error(
+            ctx,
+            "SPT3014",
+            loc,
+            f"`{name}(...)` is the annotation-only fixed-length Bytes form",
+            help=f"annotate with it (`x: {name}(32)`) and construct the value with Bytes(...)",
+        )
+        return _invalid(loc)
     if obj is Vec or obj is Map:
         # TASK-7B: `recognize.recognize_call` checks Vec(T[, items]) /
         # Map(K, V[, pairs]) (D2/A13, MJ-15); this dispatch reaches it once
@@ -1221,11 +1244,15 @@ def _check_self_call(node: ast.Call, ctx: FuncCtx, loc: Loc, attr: str) -> IRExp
     all, so `self._fee(...)` there is a `NameError` at tier 1 while the
     compiled internal call would work perfectly on chain -- an
     oracle-unrunnable accept (A18), and the one shape of it this dispatch could
-    have introduced. Availability is decided from the enclosing function's own
-    name: `self` is in scope exactly inside a method of the `@contract` class.
+    have introduced. Availability comes from `ctx.has_self`, the IDENTITY of
+    the declaration being checked (`decls.FuncSig.has_self`) -- never from a
+    name comparison: a module-level helper may share a name with an export
+    (spec Sec.2 nearly writes exactly that, a `balance` helper beside a
+    `balance` export), and asking "is `ctx.fn_name` one of the class's method
+    names" would call that helper a method and let the unrunnable call through
+    (fix round 1, I-1).
     """
-    methods = _contract_method_names(ctx)
-    if ctx.fn_name not in methods:
+    if not ctx.has_self:
         _error(
             ctx,
             "SPT2001",
@@ -1235,10 +1262,17 @@ def _check_self_call(node: ast.Call, ctx: FuncCtx, loc: Loc, attr: str) -> IRExp
                 "a module-level function has no `self`; call another module-level helper, "
                 "or move the step into one"
             ),
-            notes=("`self` exists only inside a method of the @contract class",),
+            notes=(
+                (
+                    "`self` exists only inside a method of the @contract class; "
+                    f"`{ctx.fn_name}` is compiled as a non-method function "
+                    f"(kind: {ctx.fn_kind.name})"
+                ),
+            ),
         )
         return _invalid(loc)
 
+    methods = _contract_method_names(ctx)
     sig = ctx.internal_sigs.get(f"self.{attr}")
     if sig is not None:
         return _check_internal_call(node, ctx, loc, sig)
@@ -1266,7 +1300,16 @@ def _check_self_call(node: ast.Call, ctx: FuncCtx, loc: Loc, attr: str) -> IRExp
         # (or this `FuncCtx` carries no declaration table -- see
         # `FuncCtx.internal_sigs`), so the diagnostic is already in the sink.
         return _invalid(loc)
-    _error(ctx, "SPT2001", loc, f"`self.{attr}` is not a method of this contract")
+    _error(
+        ctx,
+        "SPT2001",
+        loc,
+        f"`self.{attr}` is not a method of this contract",
+        help=(
+            f"declare `_{attr.lstrip('_')}` as a private method on the @contract class, or "
+            "call a module-level helper"
+        ),
+    )
     return _invalid(loc)
 
 
@@ -1336,9 +1379,13 @@ def _check_internal_call(node: ast.Call, ctx: FuncCtx, loc: Loc, sig: InternalSi
     if sig.takes_env:
         first = args.pop(0)
         if not (isinstance(first, ast.Name) and first.id == "env"):
+            # SPT1037 (MJ-11's catch-all), NOT SPT1038: that row is "env API
+            # used with an unsupported call shape" -- the `env.<...>` surface
+            # SS C.4 recognizes -- and this is a user-declared function that
+            # happens to take the host handle first (fix round 1, I-3).
             _error(
                 ctx,
-                "SPT1038",
+                _FALLBACK_CODE,
                 loc,
                 f"`{sig.surface}(...)` takes the host handle `env` as its first argument",
                 help=f"pass `env` through: `{sig.render()}`",

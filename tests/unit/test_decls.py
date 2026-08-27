@@ -19,9 +19,14 @@ import pytest
 
 from serpent.compiler import codes
 from serpent.compiler.ctx import AliasTable, FuncCtx, Ownership, SlotTable
-from serpent.compiler.decls import Declarations, check_declarations, is_static_const_value
+from serpent.compiler.decls import (
+    Declarations,
+    FuncSig,
+    check_declarations,
+    is_static_const_value,
+)
 from serpent.compiler.diagnostics import Diagnostic, Diagnostics, Loc
-from serpent.compiler.expr import check_expr
+from serpent.compiler.expr import RECOGNIZED_BUILTINS, check_expr
 from serpent.compiler.ir import (
     Binary,
     BinaryOp,
@@ -55,6 +60,7 @@ from serpent import (
     Event,
     Symbol,
     Vec,
+    bytes_n,
     contract,
     contracterror,
     contractevent,
@@ -100,7 +106,7 @@ def label(name: Symbol) -> Symbol:
     return name
 
 
-def get(env: Env, amount: U32) -> U32:
+def has(env: Env, amount: U32) -> U32:
     """A helper whose name collides with a CONTAINER method name."""
     return amount
 
@@ -373,7 +379,7 @@ def test_internal_signatures_cover_helpers_and_private_methods() -> None:
     decls = _ok()
     assert sorted(decls.internal_sigs) == [
         "double",
-        "get",
+        "has",
         "keeper",
         "label",
         "self._fee",
@@ -404,7 +410,7 @@ def test_internal_functions_are_marked_internal() -> None:
         "_flat",
         "_log",
         "double",
-        "get",
+        "has",
         "keeper",
         "label",
     ]
@@ -471,8 +477,26 @@ def test_a_helper_and_a_private_method_may_not_share_a_name() -> None:
 # --- internal calls (E8) ------------------------------------------------------
 
 
-def _ctx(decls: Declarations, loaded: LoadedModule, *, fn_name: str = "top_up") -> FuncCtx:
-    """A `FuncCtx` for `Bank.top_up`, wired with the declaration table."""
+def _ctx(
+    decls: Declarations,
+    loaded: LoadedModule,
+    *,
+    fn_name: str = "top_up",
+    sig: FuncSig | None = None,
+) -> FuncCtx:
+    """A `FuncCtx` for one of the module's own functions, wired with the
+    declaration table.
+
+    The IDENTITY fields come off the `FuncSig` -- never from the name -- which
+    is how Task 10's assembly will build them (one `FuncCtx` per signature),
+    and what makes the I-1 repro meaningful. `sig` is passed explicitly
+    wherever a name is ambiguous, which is precisely the repro's point: a
+    helper and an export can share one name.
+    """
+    if sig is None:
+        sig = next((s for s in decls.signatures if s.py_name == fn_name), None)
+    else:
+        fn_name = sig.py_name
     loc = Loc.whole_file(PATH)
     params = [("amount", Ty.U32, loc), ("v", Ty.Vec(Ty.U32), loc)]
     slots = SlotTable(reserved={name: "a parameter" for name, _ty, _loc in params})
@@ -487,6 +511,8 @@ def _ctx(decls: Declarations, loaded: LoadedModule, *, fn_name: str = "top_up") 
         fn_name=fn_name,
         path=PATH,
         internal_sigs=decls.internal_sigs,
+        fn_kind=sig.kind if sig is not None else FuncKind.INTERNAL,
+        has_self=sig.has_self if sig is not None else False,
     )
 
 
@@ -552,8 +578,8 @@ def test_a_helper_named_like_a_container_method_still_resolves() -> None:
     container-method table, so a helper called `get` is an internal call and
     not a container surface (whose receiver check would report something
     else entirely)."""
-    node = _call_ok("get(env, amount)")
-    assert node.fn_name == "get"
+    node = _call_ok("has(env, amount)")
+    assert node.fn_name == "has"
 
 
 def test_calling_an_exported_method_through_self_is_rejected() -> None:
@@ -590,8 +616,11 @@ def test_internal_call_literals_coerce_to_the_parameter_type() -> None:
 
 
 def test_the_env_argument_must_be_the_env_name() -> None:
+    """`SPT1037`, not `SPT1038`: that row is the `env.<...>` API's own
+    call-shape reject (SS C.4), and this is a user-declared function that
+    happens to take the host handle first (fix round 1, I-3)."""
     diag = _call_reject("double(amount, amount)")
-    _assert_reject(diag, "SPT1038", "env")
+    _assert_reject(diag, "SPT1037", "env")
 
 
 def test_internal_calls_do_not_take_keyword_arguments() -> None:
@@ -813,3 +842,228 @@ def test_a_private_method_may_call_another_private_method() -> None:
     node = check_expr(ast.parse("self._flat(amount)", mode="eval").body, ctx)
     assert not ctx.sink, [(d.code, d.message) for d in ctx.sink.diagnostics]
     assert isinstance(node, InternalCall) and node.fn_name == "_flat"
+
+
+# --- fix round 1 --------------------------------------------------------------
+
+_HELPER_SHARING_AN_EXPORT_NAME = '''"""The shape spec Sec.2 nearly writes: a `balance` helper beside a `balance`
+export."""
+
+from serpent import U32, Address, Env, contract
+
+
+def balance(env: Env, owner: Address) -> U32:
+    return U32(0)
+
+
+@contract
+class Token:
+    """A token."""
+
+    def balance(self, env: Env, owner: Address) -> U32:
+        return balance(env, owner)
+
+    def _fee(self, env: Env, amount: U32) -> U32:
+        return amount
+'''
+
+
+def test_self_availability_is_decided_by_identity_not_by_name() -> None:
+    """I-1: a module-level helper named the same as an export must NOT be
+    mistaken for a method. Deciding from `ctx.fn_name` against the class's
+    method names let `self._fee(...)` inside the helper `balance` compile to a
+    working `InternalCall` with zero diagnostics -- while tier 1 raises
+    `NameError`, because a module-level function has no `self`.
+    """
+    loaded = load_module(_HELPER_SHARING_AN_EXPORT_NAME, PATH)
+    sink = Diagnostics()
+    decls = check_declarations(loaded, sink)
+    # M-4: the collision itself is now refused, naming both declarations.
+    assert [d.code for d in sink.diagnostics] == ["SPT2004"]
+    assert "balance" in sink.diagnostics[0].message
+
+    helper = next(sig for sig in decls.signatures if sig.py_name == "balance" and not sig.has_self)
+    assert helper.kind is FuncKind.INTERNAL
+    export = next(sig for sig in decls.signatures if sig.kind is FuncKind.EXPORT)
+    assert export.py_name == "balance" and export.has_self is True
+
+    # The helper's own context: `self` is not in scope, whatever it is called.
+    ctx = _ctx(decls, loaded, sig=helper)
+    assert ctx.has_self is False
+    check_expr(ast.parse("self._fee(env, amount)", mode="eval").body, ctx)
+    assert len(ctx.sink) == 1
+    _assert_reject(ctx.sink.diagnostics[0], "SPT2001", "self")
+
+
+def test_a_method_may_still_reach_its_private_methods() -> None:
+    """The other direction of I-1: identity says `self` IS in scope inside a
+    method, so an export calling a private method still resolves."""
+    loaded = _load()
+    sink = Diagnostics()
+    decls = check_declarations(loaded, sink)
+    assert not sink
+    ctx = _ctx(decls, loaded, fn_name="top_up")
+    assert ctx.has_self is True and ctx.fn_kind is FuncKind.EXPORT
+    node = check_expr(ast.parse("self._fee(env, amount)", mode="eval").body, ctx)
+    assert not ctx.sink, [(d.code, d.message) for d in ctx.sink.diagnostics]
+    assert isinstance(node, InternalCall) and node.fn_name == "_fee"
+
+
+_MANGLED = '''"""A name-mangled private method."""
+
+from serpent import U32, Env, contract
+
+
+@contract
+class Bank:
+    """A bank."""
+
+    def go(self, env: Env, amount: U32) -> U32:
+        return self.__fee(env, amount)
+
+    def __fee(self, env: Env, amount: U32) -> U32:
+        return amount
+'''
+
+
+def test_a_name_mangled_method_is_a_located_reject() -> None:
+    """I-2: `def __fee(self)` inside `class Bank` binds `_Bank__fee`, so the
+    AST name and the executed name disagree and the method used to be dropped
+    in silence. Rejected at the declaration, with the single-underscore
+    rewrite in `help`."""
+    diag = _reject_decls(_MANGLED)
+    _assert_reject(diag, "SPT1037", "__fee")
+    assert "_fee" in (diag.help or "")
+
+
+def test_a_dunder_method_is_not_name_mangled() -> None:
+    """Python's rule is "at least two leading underscores, at most one
+    trailing" -- so `__init__` is NOT mangled and the I-2 reject must not fire
+    on the constructor (the fixture module declares one and checks clean)."""
+    decls = _ok()
+    assert decls.constructor is not None
+    assert decls.constructor.py_name == "__init__"
+
+
+def test_no_path_produces_an_invalid_node_with_an_empty_sink() -> None:
+    """The sink invariant (minor 13): a `Ty.Invalid` result always has a
+    diagnostic behind it. The name-mangled repro is where it broke -- the
+    declaration produced no signature and the call site reported nothing --
+    so it is asserted end-to-end, on ONE shared sink, the way `compile_module`
+    will run it."""
+    loaded = load_module(_MANGLED, PATH)
+    sink = Diagnostics()
+    sink.extend(loaded.diagnostics)
+    decls = check_declarations(loaded, sink)
+    assert [d.code for d in sink.diagnostics] == ["SPT1037"]
+
+    loc = Loc.whole_file(PATH)
+    ctx = FuncCtx(
+        loaded=loaded,
+        sink=sink,
+        params=[("amount", Ty.U32, loc)],
+        locals=SlotTable(),
+        loop_depth=0,
+        return_ty=Ty.U32,
+        alias_sets=AliasTable(),
+        fn_name="go",
+        path=PATH,
+        internal_sigs=decls.internal_sigs,
+        fn_kind=FuncKind.EXPORT,
+        has_self=True,
+    )
+    node = check_expr(ast.parse("self.__fee(env, amount)", mode="eval").body, ctx)
+    assert node.ty == Ty.Invalid
+    assert sink, "an Invalid node must never leave the sink empty"
+
+
+_HELPER_NAMED_LEN = '''"""A helper shadowing a recognized builtin."""
+
+from serpent import U32, Env, contract
+
+
+def len(env: Env, amount: U32) -> U32:  # noqa: A001
+    return amount
+
+
+@contract
+class K:
+    """k."""
+
+    def go(self, env: Env, amount: U32) -> U32:
+        return amount
+'''
+
+
+def test_a_helper_may_not_shadow_a_recognized_builtin() -> None:
+    """M-5: `len`/`bool` are dispatched BY NAME in `expr.py` before any helper
+    lookup, so a helper under one of those names could never be called at
+    all. The list is imported from the dispatch, never restated."""
+    diag = _reject_decls(_HELPER_NAMED_LEN)
+    _assert_reject(diag, "SPT2004", "len")
+    assert "len" in RECOGNIZED_BUILTINS and "bool" in RECOGNIZED_BUILTINS
+
+
+def test_the_unknown_self_method_reject_carries_a_help() -> None:
+    """M-2: the sibling `self.<export>(...)` site had a rewrite in `help` and
+    this one did not."""
+    diag = _call_reject("self.nope(amount)")
+    _assert_reject(diag, "SPT2001", "nope")
+    assert "private method" in (diag.help or "")
+
+
+def test_bytes_n_in_a_value_position_names_the_annotation_form() -> None:
+    """M-8: `B4 = bytes_n(4)` used to draw "`bytes_n` is not defined in this
+    contract", which is false -- it is imported and it works in an annotation.
+    The reject stands (annotation position only, SS B.2); the message is now
+    true."""
+    diag = _reject_decls(_SOURCE.replace("LIMIT = U32(10)", "LIMIT = bytes_n(4)"))
+    _assert_reject(diag, "SPT3014", "bytes_n")
+
+
+def test_a_deep_helper_chain_does_not_exhaust_the_python_stack() -> None:
+    """M-3: `_check_call_graph` promises never to raise, so its DFS keeps an
+    explicit stack. A 1200-long helper chain is well past python's default
+    recursion limit."""
+    depth = 1200
+    lines = ['"""A long chain."""', "", "from serpent import U32, Env, contract", "", ""]
+    for index in range(depth):
+        nxt = f"    return h{index + 1}(env, amount)" if index + 1 < depth else "    return amount"
+        lines += [f"def h{index}(env: Env, amount: U32) -> U32:", nxt, "", ""]
+    lines += [
+        "@contract",
+        "class Chain:",
+        '    """A contract."""',
+        "",
+        "    def go(self, env: Env, amount: U32) -> U32:",
+        "        return h0(env, amount)",
+        "",
+    ]
+    decls = _ok("\n".join(lines))
+    assert len(decls.internal_sigs) == depth
+
+
+def test_a_deep_helper_chain_that_closes_a_cycle_is_still_reported() -> None:
+    """The same chain, with the last link calling the first: one located
+    `SPT7005`, from the iterative walk."""
+    depth = 400
+    lines = ['"""A long cycle."""', "", "from serpent import U32, Env, contract", "", ""]
+    for index in range(depth):
+        target = f"h{(index + 1) % depth}"
+        lines += [
+            f"def h{index}(env: Env, amount: U32) -> U32:",
+            f"    return {target}(env, amount)",
+            "",
+            "",
+        ]
+    lines += [
+        "@contract",
+        "class Chain:",
+        '    """A contract."""',
+        "",
+        "    def go(self, env: Env, amount: U32) -> U32:",
+        "        return h0(env, amount)",
+        "",
+    ]
+    diag = _reject_decls("\n".join(lines))
+    _assert_reject(diag, "SPT7005", "h0")
