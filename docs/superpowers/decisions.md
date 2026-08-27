@@ -83,3 +83,24 @@ Format:
 - Why: host vec_get/bytes_get take U32Vals; negative indices are unrepresentable
   on-chain, and oracle surfaces must not answer questions the chain cannot.
 - Reversal cost: two lines + tests.
+
+## 2026-08-26 Storage keys are any chain value, not Symbol-only
+- Context: Task 9's Env surface typed storage keys as Symbol; Rust storage keys
+  are any Val (DataKey enums like Balance(Address) are the dominant pattern).
+- Decision: widen key annotations to the chain-value surface (chain types +
+  @contracttype instances); implementer picks the exact spelling. Also accepted
+  implementer rulings: ledger().timestamp() -> U64 (Rust parity; Timepoint
+  bridge exists for opting in), has() -> Bool, @contract rejects static/classmethods.
+- Why: Symbol-only would break the moment a token contract needs composite keys.
+- Reversal cost: annotation-level now; breaking later.
+
+## 2026-08-26 Event authoring form: inherit from serpent Event base
+- Context: Task 9 review — a decorator cannot add statically visible members,
+  so `evt.publish(env)` failed mypy strict on @contractevent classes.
+- Decision: events inherit a serpent `Event` base declaring publish(env) (still
+  NotImplementedError until sub-plan E); @contractevent validates the base is
+  present. Also: event topics are heterogeneous (chain-value tuple), not
+  Vec[Symbol] — canonical token topics are (Symbol, Address, Address).
+- Why: inheritance is the only zero-plugin path to static visibility; Vec is
+  homogeneous by design.
+- Reversal cost: authoring-surface change — cheap now, breaking after docs/examples.
