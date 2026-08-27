@@ -13,6 +13,7 @@ from serpent.types.buffers import (
     String,
     bytes_n,
 )
+from serpent.types.containers import Map, Vec
 from serpent.types.numeric import (
     I32,
     I64,
@@ -38,8 +39,10 @@ __all__ = [
     "Bytes32",
     "Bytes64",
     "Duration",
+    "Map",
     "String",
     "Symbol",
     "Timepoint",
+    "Vec",
     "bytes_n",
 ]
