@@ -98,8 +98,10 @@ pub enum Error {
 class Counter:
     """The Phase 0 counter interface: two zero-arg u32 getters, no docs.
 
-    (This class docstring is not emitted anywhere -- only *method* docs reach
-    the spec -- which is why it does not disturb the 64-byte golden.)
+    (A *contract* class's docstring is not emitted: `contractspecv0` has no
+    entry for the contract itself, only its functions -- which is why this text
+    does not disturb the 64-byte golden. `@contracttype` and `@contracterror`
+    class docstrings ARE emitted, on their UDT entries.)
     """
 
     def get(self) -> U32:

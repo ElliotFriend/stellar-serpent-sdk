@@ -273,6 +273,11 @@ def _struct_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntr
     return xdr.SCSpecEntry(
         kind=xdr.SCSpecEntryKind.SC_SPEC_ENTRY_UDT_STRUCT_V0,
         udt_struct_v0=xdr.SCSpecUDTStructV0(
+            # NOT COVERED BY THE ON-CHAIN ANCHOR. spike1's `Settings` carries no
+            # docstring and the Phase 0 reference hardcoded `doc=b""` for UDTs,
+            # so the 348-byte byte-identity check passes whatever this line
+            # does. Validating it needs a Rust-artifact comparison of a
+            # DOCUMENTED struct -- banked for sub-plan D.
             doc=_doc_bytes(_class_doc(declared), declared.__name__),
             # `lib` names the foreign crate a type was imported from; serpent
             # has no cross-module type references, so it is always empty.
@@ -296,6 +301,10 @@ def _enum_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntry:
     return xdr.SCSpecEntry(
         kind=xdr.SCSpecEntryKind.SC_SPEC_ENTRY_UDT_ERROR_ENUM_V0,
         udt_error_enum_v0=xdr.SCSpecUDTErrorEnumV0(
+            # NOT COVERED BY THE ON-CHAIN ANCHOR, exactly as for a struct's doc
+            # above: spike1's `Error` enum has no docstring either, so
+            # byte-identity says nothing about this choice. Needs a
+            # Rust-artifact comparison of a documented enum -- sub-plan D.
             doc=_doc_bytes(_class_doc(declared), declared.__name__),
             lib=b"",
             name=name.encode("utf-8"),
@@ -436,6 +445,10 @@ def _class_doc(declared: type) -> str:
     is also dropped -- an acceptable trade for never emitting the synthetic
     one; the deployed `spike.wasm` carries `doc=b""` for its `Settings` struct,
     which is the behavior pinned by test.)
+
+    Emitting a class docstring at all is serpent's own choice: it is the one
+    thing the on-chain anchor cannot validate, since spike1's types carry no
+    docstrings (see the markers at the two emission sites).
     """
     doc = _own_doc(declared)
     return "" if doc and doc == _synthetic_dataclass_doc(declared) else doc
