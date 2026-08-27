@@ -4,7 +4,15 @@ import pytest
 import serpent_host
 from stellar_sdk import scval, xdr
 
-WASM = (pathlib.Path(__file__).parent.parent / "spike1" / "spike.wasm").read_bytes()
+_WASM_PATH = pathlib.Path(__file__).parent.parent / "spike1" / "spike.wasm"
+if not _WASM_PATH.exists():
+    pytest.skip(
+        "spike.wasm not built - run: uv run python spikes/spike1/build.py "
+        "spikes/spike1/contract_src.py -o spikes/spike1/spike.wasm",
+        allow_module_level=True,
+    )
+
+WASM = _WASM_PATH.read_bytes()
 
 
 def _u32(result_xdr: bytes) -> int:

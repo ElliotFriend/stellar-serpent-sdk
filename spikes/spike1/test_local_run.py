@@ -4,7 +4,15 @@ import pytest
 from emitter import STORAGE_INSTANCE, error_val, symbol_small
 from harness import TAG_MAP_OBJECT, TAG_STRING_OBJECT, HostError, SpikeHost, mask, to_wasm
 
-WASM = str(pathlib.Path(__file__).parent / "spike.wasm")
+_WASM_PATH = pathlib.Path(__file__).parent / "spike.wasm"
+if not _WASM_PATH.exists():
+    pytest.skip(
+        "spike.wasm not built - run: uv run python spikes/spike1/build.py "
+        "spikes/spike1/contract_src.py -o spikes/spike1/spike.wasm",
+        allow_module_level=True,
+    )
+
+WASM = str(_WASM_PATH)
 
 
 def test_bump_sequence_and_error() -> None:

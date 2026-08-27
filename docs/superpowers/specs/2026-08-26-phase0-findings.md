@@ -3,7 +3,7 @@
 **Date:** 2026-08-26
 **Plan:** `docs/superpowers/plans/2026-08-26-phase0-spikes.md`
 **Spec:** `docs/superpowers/specs/2026-08-26-serpent-python-soroban-sdk-design.md`
-**Branch:** `phase0` (10 commits, `3429cd4..dd9de2a`)
+**Branch:** `phase0` (10 commits, `c2d1dfd..dd9de2a` plus this report)
 
 ## Gate decision: GO (with spec changes)
 
@@ -32,13 +32,27 @@ Module: 877 bytes, sha256 `bc2e8063…a9920`, byte-identical on fetch; the on-ch
 | 9 | Sections via `stellar_sdk` XDR byte-match goldens | PASS — env-meta golden exact; spec section renders in the Rust tooling |
 | 10 | `mypy --strict` findings recorded with resolutions | PASS — three finding classes; see §4 |
 
+### Gate-time re-verification (Task 8/final review)
+
+Three checks cited above were re-run read-only at gate time by two independent
+reviewers via read-only RPC, beyond what the Task 6 evidence docs recorded:
+
+- **Row 4 (no retries):** corroborated by gapless account sequence numbers.
+- **Row 5 (`bump()` returns 1, 2, 3):** decoded directly from transaction result
+  meta, not just CLI output.
+- **Row 7 (struct round-trips through instance storage):** proven directly, not
+  just behaviorally — `getLedgerEntries` on the `ContractInstance` entry shows
+  `SETTINGS => map{counter_limit: u32 3, display_name: "serpent phase zero"}`
+  on-chain.
+
 ## 2. Spike 2: PyO3-embedded real host — ADOPT as tier-2b
 
 The same 877 bytes reproduce testnet behavior exactly on an embedded
 `soroban-env-host` (via `soroban-sdk` 27.0.6 testutils, resolved env-host 27.0.1):
 1, 2, 3, then contract error 7 discriminated correctly from host errors.
 
-- **Performance:** 20.2–20.4 µs per invocation (~49k/sec, release build; debug ≈
+- **Performance:** 20.4 µs per invocation (release; 20.2 µs on the fix-round
+  re-run) (~49k/sec, release build; debug ≈
   worse and `maturin develop` defaults to debug — documented). Fresh
   `RealEnv()`+`register`: 0.133 ms. This is *faster* than the wasmtime mini-host and
   carries real auth/budget/storage/comparison semantics.
@@ -128,7 +142,7 @@ each would have cost far more discovered mid-M1.
 ## 6. What M1 inherits
 
 - **Keep (as reference evidence, still throwaway):** `spikes/spike1` (frontend, emitter,
-  sections, mini-host + 38 tests across both spikes), `spikes/spike2` (PyO3 wrapper,
+  sections, mini-host + 37 tests across both spikes (31 + 6)), `spikes/spike2` (PyO3 wrapper,
   FINDINGS.md). M1 rewrites these properly under `src/serpent/`; the spike tests
   become golden references.
 - **Facts for the spec appendix:** items §3.1–§3.5 above.
