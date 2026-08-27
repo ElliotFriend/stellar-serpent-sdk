@@ -21,27 +21,35 @@ check, per SS C.4 'not in M1' surface, per SS C.3 scope/flow rule":
   a row naming several AST node kinds that share one rejection message
   (e.g. `AsyncFunctionDef`/`AsyncFor`/`AsyncWith`/`Await`) is ONE code,
   the same way `errors.CODE_ABI_CHECK_FAILED` is one code for every
-  argument position (position is a message concern, not a code concern).
+  argument position (position is a message concern, not a code concern) --
+  and conversely, a row whose prose blends two genuinely different
+  rewrites (e.g. `in` vs. `is`) gets two codes.
 * SS B.3 -- every declaration-shape check `decorators.py`/`sections.py`
   already enforce as a location-free `ValueError`, which C must re-report
   located.
 * SS C.4 -- the Env-API recognition table's "not in M1" surfaces
-  (recognized host names deferred to M2) and the `Event.publish(env)`
-  ruling (E12).
+  (recognized host names deferred to M2), the `topics[0]`-must-be-a-short-
+  Symbol convention (S11), and the `Event.publish(env)` ruling (E12).
 * SS C.3 -- the four `Locals` rules (single-typed, definite assignment,
   definite return, shadowing) plus the "`self` binds but any use is a
   diagnostic" scope fact.
 
 Several dossier rulings named directly in the plan's Global Constraints
-(E9-E13, E19, D6, MJ-1, S8, T1/T5) also get their own rows even where the
-literal SS B table row is a SUPPORT line with an embedded reject clause,
-because a later task (3 through 11b) explicitly needs the code and a
-"complete" registry cannot make that task invent one out of band -- see the
-task-1 report for the exact row count and a full citation per row.
+(E8, E9-E13, E19, D6, MJ-1, MJ-11, S8, S11, T1/T5) also get their own rows
+even where the literal SS B table row is a SUPPORT line with an embedded
+reject clause, because a later task (3 through 11b) explicitly needs the
+code and a "complete" registry cannot make that task invent one out of
+band -- see the task-1 report for the exact row count and a full citation
+per row. This includes MJ-11's exhaustive-dispatch default branch (any AST
+node kind `NODE_KIND_CODES` does not otherwise cover) and E8's call-graph
+cycle rejection, neither of which is one specific SS B/B.3/C.3/C.4 line but
+both of which a downstream task cannot ship without.
 
 `codes.validate()` is the automated form of this discipline: uniqueness,
-band-prefix correctness, non-empty owning task, and
-`NO_FIXTURE_ALLOWLIST` (subset)of the registry.
+band-prefix correctness, non-empty owning task, and `NO_FIXTURE_ALLOWLIST`
+(subset) of the registry. `CODES` is the derived set `diagnostics.py` uses
+to reject an unregistered code at the sink (codes are public API; an
+un-registered code is a bug, not a valid diagnostic).
 """
 
 from __future__ import annotations
@@ -67,14 +75,14 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "nested FunctionDef / closures",
         "nested functions and closures are not supported; contracts are a flat set of "
         "methods and module-level helpers",
-        "Task 5",
+        "Task 6",
     ),
     CodeEntry(
         "SPT1002",
         "SPT1xxx",
         "AsyncFunctionDef / AsyncFor / AsyncWith / Await",
         "there is no event loop on chain; contract methods are synchronous",
-        "Task 5",
+        "Task 6",
     ),
     CodeEntry(
         "SPT1003",
@@ -136,69 +144,76 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
     CodeEntry(
         "SPT1011",
         "SPT1xxx",
-        "Compare -- `in`/`not in`/`is`/`is not`",
-        "membership and identity tests have no on-chain meaning; use Map.has(k), "
-        "Vec.first_index_of(v), or ==",
+        "Compare -- `in` / `not in`",
+        "use Map.has(k) or Vec.first_index_of(v) instead of `in`",
         "Task 5",
     ),
     CodeEntry(
         "SPT1012",
+        "SPT1xxx",
+        "Compare -- `is` / `is not`",
+        "identity has no on-chain meaning; use ==",
+        "Task 5",
+    ),
+    CodeEntry(
+        "SPT1013",
         "SPT1xxx",
         "Subscript slice (`Bytes[a:b]`, `Vec[a:b]`)",
         "slicing via subscript is not supported; use .slice(lo, hi)",
         "Task 7b",
     ),
     CodeEntry(
-        "SPT1013",
+        "SPT1014",
         "SPT1xxx",
         "Tuple outside event topics",
         "tuple structs are not supported",
         "Task 5",
     ),
     CodeEntry(
-        "SPT1014",
+        "SPT1015",
         "SPT1xxx",
         "List / Dict / Set display outside Vec(...)/Map(...)",
         "there is no python list/dict/set on chain; build a Vec(T, [...]) or Map(K, V, [...])",
         "Task 5",
     ),
     CodeEntry(
-        "SPT1015",
+        "SPT1016",
         "SPT1xxx",
         "Attribute -- chain-type introspection property (.value/.text/.data/.strkey/...)",
         "this property has no host equivalent",
         "Task 5",
     ),
     CodeEntry(
-        "SPT1016",
+        "SPT1017",
         "SPT1xxx",
         "Call -- rejected builtin (sum/min/max/abs/int/str/print/isinstance/...)",
         "this builtin is not supported",
         "Task 5",
     ),
     CodeEntry(
-        "SPT1017",
+        "SPT1018",
         "SPT1xxx",
         "For ... else",
         "the for ... else clause is not supported",
         "Task 6",
     ),
     CodeEntry(
-        "SPT1018",
+        "SPT1019",
         "SPT1xxx",
         "For ... in map / bytes / tuple",
-        "iterate map.keys() (or .values()) instead",
+        "iterate a Map via map.keys()/map.values(); walk Bytes with a while loop indexed "
+        "by bytes[i] up to len(b); tuples cannot be iterated",
         "Task 6",
     ),
     CodeEntry(
-        "SPT1019",
+        "SPT1020",
         "SPT1xxx",
         "For i in range(...) -- 3-arg or negative-step form",
         "range() supports only range(stop) and range(start, stop) in M1",
         "Task 6",
     ),
     CodeEntry(
-        "SPT1020",
+        "SPT1021",
         "SPT1xxx",
         "Raise -- non-error-enum form (raise X(...), bare raise, raise ... from ...)",
         "only raise <ErrorEnum>.<Member> is supported; contract errors are u32 codes, not "
@@ -206,28 +221,28 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Task 6",
     ),
     CodeEntry(
-        "SPT1021",
+        "SPT1022",
         "SPT1xxx",
         "Try / TryStar / except / finally",
         "a contract cannot catch its own errors; validate before acting",
         "Task 6",
     ),
     CodeEntry(
-        "SPT1022",
+        "SPT1023",
         "SPT1xxx",
         "With",
         "there is no context-manager protocol on chain",
         "Task 6",
     ),
     CodeEntry(
-        "SPT1023",
+        "SPT1024",
         "SPT1xxx",
         "Match",
         "structural pattern matching is not supported",
         "Task 6",
     ),
     CodeEntry(
-        "SPT1024",
+        "SPT1025",
         "SPT1xxx",
         "Assert",
         "assert has no on-chain meaning; raise <Error>.<Member> to fail with a code the "
@@ -235,21 +250,21 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Task 6",
     ),
     CodeEntry(
-        "SPT1025",
+        "SPT1026",
         "SPT1xxx",
         "Delete (`del x`)",
         "use storage.del_(key), Vec.del_(i), or Map.del_(k)",
         "Task 6",
     ),
     CodeEntry(
-        "SPT1026",
+        "SPT1027",
         "SPT1xxx",
         "Global / Nonlocal",
         "contract state lives in storage; module-level names are compile-time constants",
         "Task 6",
     ),
     CodeEntry(
-        "SPT1027",
+        "SPT1028",
         "SPT1xxx",
         "Expr statement -- discarded non-void expression",
         "a non-void expression cannot be a statement on its own; assign it or discard it "
@@ -257,21 +272,21 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Task 6",
     ),
     CodeEntry(
-        "SPT1028",
+        "SPT1029",
         "SPT1xxx",
         "Assign -- tuple/multi target",
         "assign one name at a time",
         "Task 6",
     ),
     CodeEntry(
-        "SPT1029",
+        "SPT1030",
         "SPT1xxx",
         "Assign -- subscript target",
         "use Vec.put(i, v) or Map.set(k, v)",
         "Task 6/7b",
     ),
     CodeEntry(
-        "SPT1030",
+        "SPT1031",
         "SPT1xxx",
         "Module body -- unsupported top-level statement",
         "a contract module's top level may only contain imports, module-level chain "
@@ -279,14 +294,14 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Task 3",
     ),
     CodeEntry(
-        "SPT1031",
+        "SPT1032",
         "SPT1xxx",
         "Call -- <Event instance>.publish(env)",
         "deferred to sub-plan E; use env.events().publish(topics, data)",
         "Task 7a",
     ),
     CodeEntry(
-        "SPT1032",
+        "SPT1033",
         "SPT1xxx",
         "Recognized Env/host surface not lowerable in M1 (logs, call/try_call, crypto, "
         "PRNG, current_contract_address, ledger_version, network_id, deployer)",
@@ -294,7 +309,7 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Task 7a",
     ),
     CodeEntry(
-        "SPT1033",
+        "SPT1034",
         "SPT1xxx",
         "Container mutation through an aliased binding or a temporary receiver",
         "host container operations are functional; mutate only a local this method owns, "
@@ -302,12 +317,27 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Task 7b",
     ),
     CodeEntry(
-        "SPT1034",
+        "SPT1035",
         "SPT1xxx",
         "Call -- keyword argument outside the recognition table / @contracttype / event "
         "construction",
         "keyword arguments are only accepted where the recognized API names the parameter",
         "Task 7a/7b",
+    ),
+    CodeEntry(
+        "SPT1036",
+        "SPT1xxx",
+        "AnnAssign in a function body with no value",
+        "uninitialized locals are not supported; give x: T a value",
+        "Task 6",
+    ),
+    CodeEntry(
+        "SPT1037",
+        "SPT1xxx",
+        "Any AST node kind not covered by the rows above -- the NODE_KIND_CODES "
+        "exhaustive-dispatch default branch (MJ-11)",
+        "this construct is not supported by the serpent subset",
+        "Task 5",
     ),
 )
 
@@ -390,7 +420,8 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
     CodeEntry(
         "SPT3005",
         "SPT3xxx",
-        "BinOp -- omitted operator (** @ & | ^ << >>)",
+        "BinOp -- omitted operator (** @ & | ^ << >>); also covers the AugAssign forms "
+        "(**=, &=, |=, ^=, <<=, >>=), which desugar to this BinOp before typing (A5/D2)",
         "this operator is not supported",
         "Task 5",
     ),
@@ -432,26 +463,19 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
     CodeEntry(
         "SPT3011",
         "SPT3xxx",
-        "Call -- @contracttype construction with positional args",
-        "struct construction takes keyword arguments only",
-        "Task 7b",
-    ),
-    CodeEntry(
-        "SPT3012",
-        "SPT3xxx",
         "Subscript -- negative literal index (D6)",
         "negative indices are not representable on chain",
         "Task 7b",
     ),
     CodeEntry(
-        "SPT3013",
+        "SPT3012",
         "SPT3xxx",
         "BoolOp -- non-Bool/non-comparison operand (E9)",
         "and/or are restricted to Bool-typed and comparison operands",
         "Task 5",
     ),
     CodeEntry(
-        "SPT3014",
+        "SPT3013",
         "SPT3xxx",
         "Annotation -- unmappable to the contract spec (B7: U256/I256/MuxedAddress/Val/"
         "Result/Tuple, bare Vec/Map, non-Optional unions, plain int/str/bytes/bool, "
@@ -461,7 +485,7 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "Task 4",
     ),
     CodeEntry(
-        "SPT3015",
+        "SPT3014",
         "SPT3xxx",
         "Subscript -- annotation-only generic form (Vec[T]/Map[K,V]/Optional[X]) used in "
         "a value position",
@@ -469,7 +493,7 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "Task 4/5",
     ),
     CodeEntry(
-        "SPT3016",
+        "SPT3015",
         "SPT3xxx",
         "If/While condition -- truthiness of a non-numeric chain value (E10)",
         "truthiness is only defined for numeric chain types and Bool; write the explicit "
@@ -477,11 +501,34 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "Task 5/6",
     ),
     CodeEntry(
-        "SPT3017",
+        "SPT3016",
         "SPT3xxx",
         "Compare -- chain value vs. raw str/bytes literal via == (E13/T4)",
         "compare against the chain type's constructor, e.g. Symbol('abc'), not the raw literal",
         "Task 5",
+    ),
+    CodeEntry(
+        "SPT3017",
+        "SPT3xxx",
+        "Local rebound at a different type than its first binding (SS C.3 rule 1)",
+        "a local's type is fixed by its first binding",
+        "Task 6",
+    ),
+    CodeEntry(
+        "SPT3018",
+        "SPT3xxx",
+        "Declared-vs-actual type mismatch: AnnAssign-with-value disagreeing with its "
+        "annotation, Return disagreeing with a non-None return annotation, or a call "
+        "argument disagreeing with an InternalCall/recognized-API parameter type",
+        "value's type does not match the declared/expected type",
+        "Task 4/6/7a/7b",
+    ),
+    CodeEntry(
+        "SPT3019",
+        "SPT3xxx",
+        "events().publish(topics, data) -- topics[0] is not a short Symbol (S11)",
+        "the first event topic must be a short Symbol naming the event",
+        "Task 7a",
     ),
 )
 
@@ -569,7 +616,7 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "SPT4xxx",
         "@contracttype -- non-chain field annotation",
         "struct fields need a chain-type annotation",
-        "Task 8",
+        "Task 3",
     ),
     CodeEntry(
         "SPT4013",
@@ -611,10 +658,9 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
     CodeEntry(
         "SPT4018",
         "SPT4xxx",
-        "__constructor name / every parameter name -- the name checks decorators.py "
-        "never runs (B11)",
-        "name is too long or uses characters outside the Symbol charset",
-        "Task 9",
+        "Call -- @contracttype construction with positional args",
+        "struct construction takes keyword arguments only",
+        "Task 7b",
     ),
 )
 
@@ -623,7 +669,9 @@ _SPT5XXX: tuple[CodeEntry, ...] = (
     CodeEntry(
         "SPT5001",
         "SPT5xxx",
-        "function/field/param name -- length > 30 or non-Symbol charset (S12/D10)",
+        "function/field/param name -- length > 30 or non-Symbol charset (S12/D10); also "
+        "covers __constructor's name and every parameter name, which decorators.py never "
+        "checks at all (B11)",
         "name is too long (> 30) or uses characters outside [a-zA-Z0-9_]",
         "Task 9",
     ),
@@ -687,36 +735,35 @@ _SPT7XXX: tuple[CodeEntry, ...] = (
     CodeEntry(
         "SPT7003",
         "SPT7xxx",
-        "Local rebound at a different type than its first binding (SS C.3 rule 1)",
-        "a local's type is fixed by its first binding",
-        "Task 6",
-    ),
-    CodeEntry(
-        "SPT7004",
-        "SPT7xxx",
         "Break / Continue outside a loop",
         "break/continue must be inside a while or for loop",
         "Task 6",
     ),
     CodeEntry(
-        "SPT7005",
-        "SPT7xxx",
-        "AnnAssign in a function body with no value",
-        "uninitialized locals are not supported; give x: T a value",
-        "Task 5/6",
-    ),
-    CodeEntry(
-        "SPT7006",
+        "SPT7004",
         "SPT7xxx",
         "Statement unreachable after a terminal return/raise",
         "unreachable code after a return or raise",
         "Task 6",
+    ),
+    CodeEntry(
+        "SPT7005",
+        "SPT7xxx",
+        "Call-graph cycle among module-level helpers / private methods (InternalCall) -- "
+        "recursion is rejected (E8)",
+        "recursive and mutually-recursive calls are not supported",
+        "Task 8",
     ),
 )
 
 REGISTRY: tuple[CodeEntry, ...] = (
     _SPT1XXX + _SPT2XXX + _SPT3XXX + _SPT4XXX + _SPT5XXX + _SPT6XXX + _SPT7XXX
 )
+
+#: The bare set of codes, for O(1) "is this code registered" checks (used by
+#: `diagnostics.Diagnostics.error`, which rejects an unregistered code --
+#: codes are public API, and an unregistered one is a compiler bug).
+CODES: frozenset[str] = frozenset(entry.code for entry in REGISTRY)
 
 #: Codes provably without a source-level fixture trigger (dossier BL-1c).
 #: Meta-test B (Task 11b) consults this to know which registry codes are

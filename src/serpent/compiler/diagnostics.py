@@ -27,6 +27,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
+from serpent.compiler import codes
+
 
 class LocKind(Enum):
     """What a `Loc` points at.
@@ -126,8 +128,10 @@ class Diagnostic:
         if not (0 <= idx < len(source_lines)):
             return []
         line_text = source_lines[idx]
-        gutter = f"{self.loc.line:>5} |"
-        blank_gutter = f"{'':>5} |"
+        # One space after the gutter's `|` on both the source and caret rows
+        # (matches the dossier D.2 golden and the mypy/ruff/rustc shape).
+        gutter = f"{self.loc.line:>5} | "
+        blank_gutter = f"{'':>5} | "
         if self.loc.end_line == self.loc.line:
             caret_len = max(1, self.loc.end_col - self.loc.col)
         else:
@@ -141,8 +145,11 @@ class Diagnostics:
 
     `error()` is the sink convention every checker in `serpent.compiler`
     reports through -- no `X | Diagnostic` return unions (minor 13). It
-    enforces the SPT1xxx-requires-help rule: every "unsupported construct"
-    diagnostic must carry a rewrite the author can act on (F.2.11).
+    enforces two rules: every code must already be in `codes.REGISTRY`
+    (codes are public API -- an unregistered code is a compiler bug, not a
+    valid diagnostic), and every SPT1xxx ("unsupported construct")
+    diagnostic must carry a non-empty `help` rewrite the author can act on
+    (F.2.11).
     """
 
     def __init__(self) -> None:
@@ -161,6 +168,11 @@ class Diagnostics:
         help: str | None = None,
         notes: tuple[str, ...] = (),
     ) -> None:
+        if code not in codes.CODES:
+            raise ValueError(
+                f"{code!r} is not in the SPT code registry (serpent.compiler.codes.REGISTRY); "
+                "codes are public API and must be registered before they can be raised"
+            )
         if code.startswith("SPT1") and not help:
             raise ValueError(
                 f"{code}: SPT1xxx (unsupported construct) diagnostics must carry a non-empty "

@@ -11,6 +11,7 @@ Task 10); importing them here before then would break every import of this
 package, so they are not re-exported yet.
 """
 
+from serpent.compiler import codes  # noqa: F401 -- imported first: diagnostics.py needs it
 from serpent.compiler.diagnostics import (
     CompileError,
     Diagnostic,

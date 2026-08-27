@@ -52,6 +52,17 @@ def test_loc_whole_file() -> None:
     assert loc.line == 0 and loc.col == 0
 
 
+def test_loc_from_node_asserts_on_a_synthetic_node() -> None:
+    # A hand-built node with no end_lineno/end_col_offset -- the P2 "never
+    # fabricate a location" guard must fire rather than silently emitting
+    # Loc(..., end_line=None, ...).
+    synthetic = ast.Name(
+        id="x", ctx=ast.Load(), lineno=1, col_offset=0, end_lineno=None, end_col_offset=None
+    )
+    with pytest.raises(AssertionError, match="end_lineno"):
+        Loc.from_node("a.py", synthetic)
+
+
 def test_loc_is_frozen_and_hashable() -> None:
     loc = Loc.whole_file("a.py")
     with pytest.raises(AttributeError):
@@ -78,12 +89,35 @@ def test_render_node_golden() -> None:
     rendered = diag.render(lines)
     assert rendered == (
         "contracts/token.py:2:12: error[SPT1003]: comprehensions are not supported\n"
-        "    2 |    return [x for x in v]\n"
-        "      |           ^^^^^^^^^^^^^^\n"
+        "    2 |     return [x for x in v]\n"
+        "      |            ^^^^^^^^^^^^^^\n"
         "   help: build the container explicitly, e.g. Vec(U32, [...]), or fill it in a "
         "while loop\n"
         "   note: the supported subset is documented at docs/subset.md#comprehensions"
     )
+
+
+def test_render_multiline_span_caps_carets_at_end_of_first_line() -> None:
+    source = "def f(self, env):\n    x = Vec(\n        U32,\n    )\n"
+    lines = source.splitlines()
+    tree = ast.parse(source)
+    call = tree.body[0].body[0].value  # type: ignore[attr-defined]
+    loc = Loc.from_node("a.py", call)
+    assert loc.end_line != loc.line  # the span really does cross lines
+    diag = Diagnostic(code="SPT2001", loc=loc, message="m", help=None)
+    rendered = diag.render(lines)
+    caret_row = rendered.splitlines()[2]
+    first_line_text = lines[loc.line - 1]
+    expected_carets = len(first_line_text) - loc.col
+    assert caret_row.count("^") == expected_carets
+    assert caret_row.endswith("^" * expected_carets)
+
+
+def test_render_out_of_range_line_falls_back_to_header_only() -> None:
+    loc = Loc(path="a.py", kind=LocKind.NODE, line=99, col=0, end_line=99, end_col=1)
+    diag = Diagnostic(code="SPT2001", loc=loc, message="m", help=None)
+    rendered = diag.render(["only one line"])
+    assert rendered == "a.py:99:1: error[SPT2001]: m"
 
 
 def test_render_whole_file_golden() -> None:
@@ -119,6 +153,12 @@ def test_diagnostic_is_frozen() -> None:
 
 
 # --- Diagnostics sink -----------------------------------------------------
+
+
+def test_sink_error_rejects_an_unregistered_code() -> None:
+    sink = Diagnostics()
+    with pytest.raises(ValueError, match="SPT9999"):
+        sink.error("SPT9999", Loc.whole_file("a.py"), "not a real code")
 
 
 def test_sink_error_requires_help_for_spt1xxx() -> None:
@@ -213,11 +253,102 @@ def test_registry_rows_name_a_construct_and_message_intent() -> None:
         assert entry.message_intent.strip()
 
 
+#: A frozen snapshot of the registry's code set. Deliberately exact and
+#: hardcoded (not `len(...) >= N`): deleting, renumbering, or silently
+#: adding a row must fail this test loudly, since codes are public API
+#: (dossier E17) and `tests/must_reject/` fixtures cite them by exact
+#: string starting next task. Update this list -- deliberately -- alongside
+#: any registry change, never to make a test pass without reading the diff.
+_EXPECTED_CODES = frozenset(
+    {
+        *(f"SPT1{n:03d}" for n in range(1, 38)),
+        *(f"SPT2{n:03d}" for n in range(1, 7)),
+        *(f"SPT3{n:03d}" for n in range(1, 20)),
+        *(f"SPT4{n:03d}" for n in range(1, 19)),
+        *(f"SPT5{n:03d}" for n in range(1, 6)),
+        "SPT6001",
+        *(f"SPT7{n:03d}" for n in range(1, 6)),
+    }
+)
+
+
 def test_registry_is_complete_not_a_sample() -> None:
     # ~55 is the dossier's own approximate count (F.3); the task brief is
-    # explicit this is a floor, not a target ("not >= 40"). See
-    # docs.../task-1-report.md for the row-by-row derivation.
-    assert len(codes.REGISTRY) >= 50
+    # explicit this is a floor, not a target ("not >= 40"). This registry
+    # settled at 91 rows after the Task 1 review round added four missing
+    # rows (recursion/E8, event-topic-Symbol/S11, a declared-vs-actual type
+    # mismatch family, and MJ-11's exhaustive-dispatch catch-all) -- see
+    # task-1-report.md for the row-by-row derivation.
+    assert len(codes.REGISTRY) == 91
+
+
+def test_registry_code_set_matches_the_frozen_snapshot() -> None:
+    actual = {entry.code for entry in codes.REGISTRY}
+    missing = _EXPECTED_CODES - actual
+    extra = actual - _EXPECTED_CODES
+    assert not missing, f"codes removed/renumbered out from under the snapshot: {sorted(missing)}"
+    assert not extra, f"codes added without updating the snapshot: {sorted(extra)}"
+
+
+def test_review_round_findings_landed() -> None:
+    by_code = {entry.code: entry for entry in codes.REGISTRY}
+
+    # Finding 1: four previously-missing rows.
+    recursion = [
+        e for e in codes.REGISTRY if e.band == "SPT7xxx" and "recursi" in e.message_intent.lower()
+    ]
+    assert recursion and recursion[0].owning_task == "Task 8"
+
+    topic_symbol = [
+        e
+        for e in codes.REGISTRY
+        if "topic" in e.construct.lower() and "symbol" in e.message_intent.lower()
+    ]
+    assert topic_symbol and topic_symbol[0].owning_task == "Task 7a"
+
+    type_mismatch = [
+        e
+        for e in codes.REGISTRY
+        if e.band == "SPT3xxx" and "declared-vs-actual" in e.construct.lower()
+    ]
+    assert type_mismatch
+
+    catchall = [
+        e for e in codes.REGISTRY if "NODE_KIND_CODES" in e.construct and e.band == "SPT1xxx"
+    ]
+    assert catchall and catchall[0].owning_task == "Task 5"
+
+    # Finding 2: SPT4018 duplicate deleted; SPT5001 widened to cover B11.
+    assert "constructor" not in by_code["SPT4018"].construct.lower()
+    assert "B11" in by_code["SPT5001"].construct
+
+    # Minor 5: band moves landed (old numbers are gone or repurposed; the
+    # content now lives under the new band).
+    assert any(
+        e.band == "SPT1xxx" and "AnnAssign" in e.construct and "uninitialized" in e.message_intent
+        for e in codes.REGISTRY
+    )
+    assert any(e.band == "SPT3xxx" and "rebound" in e.construct for e in codes.REGISTRY)
+    assert any(e.band == "SPT4xxx" and "positional args" in e.construct for e in codes.REGISTRY)
+
+    # Minor 6: `in` vs `is` split, with the dossier's framing.
+    assert (
+        by_code["SPT1011"].message_intent
+        == "use Map.has(k) or Vec.first_index_of(v) instead of `in`"
+    )
+    assert by_code["SPT1012"].message_intent == "identity has no on-chain meaning; use =="
+    assert (
+        "keys()" in by_code["SPT1019"].message_intent
+        or "while loop" in by_code["SPT1019"].message_intent
+    )
+
+    # Minor 7: owning-task consistency.
+    assert by_code["SPT1001"].owning_task == "Task 6"
+    assert by_code["SPT1002"].owning_task == "Task 6"
+    assert by_code["SPT4012"].owning_task == "Task 3"
+
+    # Minor 8: SPT3005 names the AugAssign desugaring.
+    assert "AugAssign" in by_code["SPT3005"].construct
 
 
 def test_no_fixture_allowlist_is_subset_of_registry() -> None:
