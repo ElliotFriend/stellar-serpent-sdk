@@ -328,9 +328,11 @@ def test_udt_name_comes_from_the_class_not_the_metadata() -> None:
     assert udt.name == b"Settings"
 
 
-def test_spec_package_exports_only_the_typemap_surface() -> None:
-    """Task 4 adds the three section builders; at this task the subpackage is
-    exactly `to_spec_type` + `SpecTypeError`."""
-    import serpent.spec
+def test_typemap_module_exports_exactly_its_two_names() -> None:
+    """The type mapping's own surface. (The whole `serpent.spec` package export
+    list is pinned in `test_sections.py`, which owns the section builders.)"""
+    from serpent.spec import typemap
 
-    assert serpent.spec.__all__ == ["SpecTypeError", "to_spec_type"]
+    assert typemap.__all__ == ["SpecTypeError", "to_spec_type"]
+    assert typemap.to_spec_type is to_spec_type
+    assert typemap.SpecTypeError is SpecTypeError

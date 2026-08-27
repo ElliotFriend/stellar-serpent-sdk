@@ -44,10 +44,23 @@ this README plus a second, correctly ON-CHAIN-anchored golden/check.
   `test_sections.py` builds spec entries for spike1's real, deployed
   interface (`setup(counter_limit: U32) -> None`, `bump() -> U32`, the
   `Settings` struct, and the `LimitExceeded = 7` error case) and asserts
-  `serpent`'s rendering matches `stellar contract info interface --wasm
-  spikes/spike1/spike.wasm` byte-for-byte -- that contract's on-chain
-  deployment and that exact CLI render are recorded in
-  `spikes/spike1/DEPLOY_LOG.md`.
+  they are **byte-identical to the `contractspecv0` section of
+  `spikes/spike1/spike.wasm`**, which is stronger than the structural
+  equality originally planned and turned out to be achievable (serpent takes
+  its docs from the same docstrings the spike's frontend did). Task 4 landed
+  it as three linked assertions:
+
+  1. `sha256(spike.wasm)` equals the hash of the wasm **fetched back off
+     testnet** (`bc2e8063…`, recorded in `spikes/spike1/DEPLOY_LOG.md`) --
+     the anchor; without it the rest is only a local comparison.
+  2. serpent's `build_spec_entries(...)` output equals that wasm's
+     `contractspecv0` payload byte for byte (plus a field-by-field
+     structural assertion, so a failure says *what* diverged).
+  3. `stellar contract info interface --wasm spikes/spike1/spike.wasm`
+     renders exactly the interface recorded in `DEPLOY_LOG.md` (which that
+     log shows identical to the `--id` render taken from the live network).
+     Only trailing newlines are normalized. Skipped when the `stellar` CLI
+     is absent (CI has no such binary), never silently passed.
 
 ## Rules for adding a new golden
 

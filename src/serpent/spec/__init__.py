@@ -12,14 +12,26 @@ Consequently **the package root never re-exports this subpackage**: `import
 serpent` must not be able to drag `stellar_sdk` in, so `serpent.spec` is
 imported explicitly by the compiler (sub-plan D) and by tests.
 
-Re-exports only; nothing is defined here. At this task the surface is the type
-mapping alone -- `build_env_meta`, `build_spec_entries` and `build_meta` land
-with `spec/sections.py`.
+Re-exports only; nothing is defined here. `typemap` turns one annotation into
+an `SCSpecTypeDef`; `sections` builds the three custom-section payloads out of
+`_serpent_type_` metadata and those type defs.
 """
 
+from serpent.spec.sections import (
+    SpecDocError,
+    SpecNameError,
+    build_env_meta,
+    build_meta,
+    build_spec_entries,
+)
 from serpent.spec.typemap import SpecTypeError, to_spec_type
 
 __all__ = [
+    "SpecDocError",
+    "SpecNameError",
     "SpecTypeError",
+    "build_env_meta",
+    "build_meta",
+    "build_spec_entries",
     "to_spec_type",
 ]
