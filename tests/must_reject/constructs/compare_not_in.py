@@ -8,4 +8,4 @@ from serpent import Bool, Env, U32, Vec, contract
 @contract
 class Contract:
     def compute(self, env: Env, v: Vec[U32], x: U32) -> Bool:
-        return Bool(x in v)  # HERE
+        return Bool(x not in v)  # HERE

@@ -1,17 +1,26 @@
 """Bridging completeness (Task 11b, dossier F.2.12).
 
-`tests/unit/test_loader.py` (Task 3) already proves every individual §B.3
-check produces a located diagnostic; its coverage is thorough but spread
-across ~20 separate test functions, so the COMPLETENESS of that coverage --
-"every check the loader's exec-time bridge (`loader._BRIDGE_RULES`) and
-module-shape validator can raise is exercised" -- is not visible in any one
-place. This module is that one place: `_ROWS` lists every §B.3 row by name,
-each row compiles a minimal module through the FULL `compile_module` pipeline
-(not just `load_module`) and asserts a LOCATED diagnostic with the row's code
--- proving no raw traceback escapes end-to-end -- and
+`tests/unit/test_loader.py` (Task 3) already proves every individual
+exec-time-bridge and module-shape §B.3 check produces a located diagnostic;
+its coverage is thorough but spread across ~20 separate test functions, so
+the COMPLETENESS of that coverage -- "every check the loader's exec-time
+bridge (`loader._BRIDGE_RULES`) and module-shape validator can raise is
+exercised" -- is not visible in any one place. This module is that one
+place: `_ROWS` lists every `loader._BRIDGE_RULES` needle and every
+module-shape check by name (plus `SyntaxError`, which is neither), each row
+compiles a minimal module through the FULL `compile_module` pipeline (not
+just `load_module`) and asserts a LOCATED diagnostic with the row's code --
+proving no raw traceback escapes end-to-end -- and
 `test_every_bridge_rule_needle_has_a_row` pins the row set against
 `loader._BRIDGE_RULES` itself, so a bridge rule added later with no matching
 row here fails loudly instead of silently losing coverage.
+
+This module does NOT cover the rest of dossier §B.3: the `spec/sections.py`
+limits (type/case name length, docstring length) and the `__constructor`/
+parameter-name checks `Diagnostics`/`limits.py` pre-empt at Task 9 are a
+different check family, at a different compile phase, with their own
+`tests/must_reject/limits/` fixtures -- not `loader.py` exec-time bridging,
+and out of scope here.
 """
 
 from __future__ import annotations
