@@ -13,9 +13,17 @@ import subprocess
 
 import pytest
 
+from serpent.compiler.frontend import compile_module
 from serpent.emitter import encode, module, opcodes, validate
 from serpent.emitter.frame import BuildLimitError, EmitError
-from tests.unit.test_emitter_module import COUNTER_SRC, NAMER_SRC, build
+from tests.unit.test_emitter_module import (
+    _TOKEN_STYLE,
+    COUNTER_SRC,
+    HELPED_SRC,
+    NAMER_SRC,
+    WIDE_SRC,
+    build,
+)
 
 _MAGIC = b"\x00asm\x01\x00\x00\x00"
 
@@ -386,9 +394,17 @@ def test_validate_external_returns_None_when_wasm_tools_is_absent(
     shutil.which("wasm-tools") is None,
     reason="wasm-tools is not installed (ruling E5: optional-if-present, never silently passed)",
 )
-def test_wasm_tools_accepts_a_real_assembled_module() -> None:
-    assert validate.validate_external(build(COUNTER_SRC)) is True
-    assert validate.validate_external(build(NAMER_SRC)) is True
+def test_wasm_tools_accepts_every_module_this_sub_plan_can_assemble() -> None:
+    """The independent instruction-stream check (D.3): `frame.Fn` validated
+    every operand stack at lowering time, and this is the second opinion. The
+    fixture set spans the shapes that differ structurally -- memoryless, pooled
+    literals, a constructor plus an internal call, and runtime parts with a
+    scratch slot -- plus the richest contract in the repo."""
+    for src in (COUNTER_SRC, NAMER_SRC, WIDE_SRC, HELPED_SRC):
+        assert validate.validate_external(build(src)) is True, src.splitlines()[0]
+    token_style = _TOKEN_STYLE.read_text(encoding="utf-8")
+    wasm = module.assemble(compile_module(token_style, str(_TOKEN_STYLE)), meta={}, version=None)
+    assert validate.validate_external(wasm) is True
 
 
 @pytest.mark.skipif(
