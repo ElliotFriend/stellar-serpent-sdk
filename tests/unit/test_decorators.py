@@ -445,6 +445,47 @@ def test_a_prefix_topic_longer_than_nine_characters_is_legal() -> None:
     assert _meta(Long)["prefix_topics"] == ("transfer_from",)
 
 
+def test_no_prefix_topics_at_all_is_legal() -> None:
+    """Deliberate (review M3): an event whose topic list is exactly its
+    `Annotated[T, topic]` fields is an accurate spec, not a lie."""
+
+    @contractevent(topics=())
+    class Prefixless(Event):
+        who: Annotated[Address, topic]
+        amount: U32
+
+    assert _meta(Prefixless)["prefix_topics"] == ()
+
+
+def test_a_bare_string_of_topics_is_refused_not_exploded() -> None:
+    """`str` IS a `Sequence[str]`, so mypy accepts `topics="transfer"` with no
+    complaint (this line carries no `type: ignore`, and `--strict` would flag an
+    unused one) and `tuple()` would make it eight one-letter topics. Reported as
+    the missing comma it is, not as "at most 2 prefix topics (got 8)"."""
+    with pytest.raises(ValueError, match="not one string") as exc_info:
+
+        @contractevent(topics="transfer")
+        class Stringy(Event):
+            amount: U32
+
+    assert "topics=('transfer',)" in str(exc_info.value)
+
+
+def test_an_over_long_DERIVED_prefix_topic_blames_the_class_name() -> None:
+    """The author never wrote this topic, so the message must not read as if
+    they did: it names the derivation and points at `topics=` (review M2)."""
+    with pytest.raises(ValueError) as exc_info:
+
+        @contractevent
+        class ThisEventsClassNameIsThirtyThreeX(Event):  # 33 characters
+            amount: U32
+
+    message = str(exc_info.value)
+    assert "derived from the class name" in message
+    assert "topics=" in message
+    assert "this_events_class_name_is_thirty_three_x" in message
+
+
 def test_three_prefix_topics_are_refused_at_the_declaration_site() -> None:
     """The XDR caps `prefix_topics` at 2 (R5's negative control: a serpent error
     naming the class, never a bare `stellar_sdk` ValueError from deep inside an

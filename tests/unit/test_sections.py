@@ -49,6 +49,7 @@ from serpent import (
     topic,
 )
 from serpent._host import declared_protocol
+from serpent.decorators import DATA_FORMATS, DATA_LOCATION, TOPIC_LOCATION
 from serpent.spec import (
     SpecDocError,
     SpecNameError,
@@ -57,6 +58,7 @@ from serpent.spec import (
     build_meta,
     build_spec_entries,
 )
+from serpent.spec.sections import _DATA_FORMATS, _PARAM_LOCATIONS
 from tests.fixtures import token_style
 
 # The same eight Phase 0 host functions `test_protocol_floor.py` pins, imported
@@ -691,6 +693,63 @@ def test_an_unknown_data_format_in_metadata_is_refused_naming_the_class() -> Non
     vars(Odd)["_serpent_type_"]["data_format"] = "tuple"
     with pytest.raises(SpecTypeError, match="Odd"):
         build_spec_entries(Counter, events=(Odd,))
+
+
+def test_single_value_over_two_data_params_is_refused_naming_the_class() -> None:
+    """The XDR would encode this happily, and the result would be a LIE: a
+    SINGLE_VALUE event whose spec declares two data params. The arity rule is
+    the decorator's, re-run here because this is where the entry is built."""
+
+    @contractevent
+    class Pair(Event):
+        amount: I128
+        fee: I128
+
+    vars(Pair)["_serpent_type_"]["data_format"] = "single-value"
+    with pytest.raises(SpecTypeError) as exc_info:
+        build_spec_entries(Counter, events=(Pair,))
+    message = str(exc_info.value)
+    assert "Pair" in message
+    assert "exactly one non-topic field" in message
+
+
+def test_a_locations_map_that_does_not_match_the_fields_is_refused() -> None:
+    """A MISSING key was a bare `KeyError` naming nothing; an EXTRA key was
+    silently ignored, which is how a topic field could publish as data."""
+
+    @contractevent
+    class Skewed(Event):
+        who: Annotated[Address, topic]
+        amount: I128
+
+    metadata = vars(Skewed)["_serpent_type_"]
+    original = dict(metadata["locations"])
+
+    metadata["locations"] = {"who": "topic"}
+    with pytest.raises(SpecTypeError) as exc_info:
+        build_spec_entries(Counter, events=(Skewed,))
+    assert "Skewed" in str(exc_info.value)
+    assert "missing amount" in str(exc_info.value)
+
+    metadata["locations"] = {**original, "ghost": "data"}
+    with pytest.raises(SpecTypeError, match="unknown field"):
+        build_spec_entries(Counter, events=(Skewed,))
+
+    metadata["locations"] = {**original, "amount": "footer"}
+    with pytest.raises(SpecTypeError, match="'footer'"):
+        build_spec_entries(Counter, events=(Skewed,))
+
+    metadata["locations"] = original
+    assert build_spec_entries(Counter, events=(Skewed,))
+
+
+def test_every_authorable_data_format_and_location_has_an_xdr_case() -> None:
+    """The authoring surface (`decorators.DATA_FORMATS`, and the two location
+    constants) and this module's XDR tables cannot drift: a new format string
+    with no case here would `KeyError` at emission."""
+    assert set(_DATA_FORMATS) == set(DATA_FORMATS)
+    assert len(set(_DATA_FORMATS.values())) == len(DATA_FORMATS)
+    assert set(_PARAM_LOCATIONS) == {TOPIC_LOCATION, DATA_LOCATION}
 
 
 def test_an_event_name_over_the_symbol_cap_is_refused() -> None:

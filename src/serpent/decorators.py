@@ -398,8 +398,23 @@ def _mentions_topic(annotation: object) -> bool:
 
 
 def _prefix_topics(cls: type[Any], topics: Sequence[str] | None) -> tuple[str, ...]:
-    """The validated `prefix_topics` tuple: the author's, or the default one."""
-    declared = (_snake_case(cls.__name__),) if topics is None else tuple(topics)
+    """The validated `prefix_topics` tuple: the author's, or the default one.
+
+    `topics=()` is DELIBERATELY legal (review M3). An event with no prefix topic
+    at all is an accurate spec -- its topic list is exactly whatever its
+    `Annotated[T, topic]` fields are -- not a lie, so nothing here refuses the
+    empty case, and Task 6's desugar publishes an empty prefix knowingly.
+    """
+    if isinstance(topics, str):
+        _reject_string_topics(cls, topics)
+    derived = topics is None
+    # Spelled out rather than a conditional expression so the `None` narrowing
+    # is one mypy can see.
+    declared: tuple[str, ...]
+    if topics is None:
+        declared = (_snake_case(cls.__name__),)
+    else:
+        declared = tuple(topics)
     if len(declared) > PREFIX_TOPIC_LIMIT:
         raise ValueError(
             f"{cls.__name__}: an event declares at most {PREFIX_TOPIC_LIMIT} prefix "
@@ -412,15 +427,55 @@ def _prefix_topics(cls: type[Any], topics: Sequence[str] | None) -> tuple[str, .
         # through linear memory at the publish site, which is a cost, not an
         # error.
         if not isinstance(declared_topic, str) or not val.is_valid_symbol(declared_topic):
-            raise ValueError(
-                f"{cls.__name__}: prefix topic {declared_topic!r} must be a valid Symbol "
-                f"of 1 to {val.SCSYMBOL_LIMIT} characters (a-z, A-Z, 0-9, _)"
-            )
+            raise ValueError(_bad_prefix_topic(cls, declared_topic, derived=derived))
     return declared
 
 
+def _reject_string_topics(cls: type[Any], topics: str) -> NoReturn:
+    """Refuse `topics="transfer"`: a sequence of characters, not of topics.
+
+    A `str` IS a `Sequence[str]`, so mypy accepts it with no complaint and
+    `tuple(...)` would explode it into one prefix topic PER CHARACTER -- which
+    an author would then read as "at most 2 prefix topics (got 8)" for what is
+    really a missing comma.
+
+    A `ValueError` like every other decoration-site failure here, and in its own
+    function so the raise is not lexically inside an `isinstance` guard (the
+    same reason `_reject_bare_member` and `_reject_bound_method` exist).
+    """
+    raise ValueError(
+        f"{cls.__name__}: topics= takes a sequence of topics, not one string -- "
+        f"write `topics=({topics!r},)`. A bare string is a sequence of its "
+        "characters, which would declare one prefix topic per letter"
+    )
+
+
+def _bad_prefix_topic(cls: type[Any], declared_topic: object, *, derived: bool) -> str:
+    """Why one prefix topic is unusable -- worded for who actually wrote it.
+
+    A DEFAULT topic is derived from the class name, so blaming "prefix topic
+    'this_events_class_name_is_thirty_three'" sends the author looking for a
+    `topics=` argument they never passed (review M2). Name the derivation and
+    the remedy instead.
+    """
+    cap = f"a valid Symbol of 1 to {val.SCSYMBOL_LIMIT} characters (a-z, A-Z, 0-9, _)"
+    if derived:
+        return (
+            f"{cls.__name__}: the default prefix topic {declared_topic!r}, derived from "
+            f"the class name, is not {cap} -- declare a shorter one explicitly with "
+            "`@contractevent(topics=(...))`"
+        )
+    return f"{cls.__name__}: prefix topic {declared_topic!r} must be {cap}"
+
+
 def _check_data_format(cls: type[Any], data_format: str, locations: Mapping[str, str]) -> str:
-    """Validate `data_format` and, for `"single-value"`, the field arity."""
+    """Validate `data_format` and, for `"single-value"`, the field arity.
+
+    Shared with `spec.sections._event_entry`, which re-runs it against the
+    metadata it is handed rather than keeping a second copy of the rule: a
+    `SINGLE_VALUE` entry over two data params is valid XDR and a lie, so the
+    arity has to be checked wherever the entry is actually built.
+    """
     if data_format not in DATA_FORMATS:
         raise ValueError(
             f"{cls.__name__}: data_format must be one of "

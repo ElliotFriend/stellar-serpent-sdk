@@ -60,7 +60,14 @@ from stellar_sdk import xdr
 
 import serpent
 from serpent import val
-from serpent.decorators import _METADATA_ATTR, NAME_LIMIT, PREFIX_TOPIC_LIMIT
+from serpent.decorators import (
+    _METADATA_ATTR,
+    DATA_LOCATION,
+    NAME_LIMIT,
+    PREFIX_TOPIC_LIMIT,
+    TOPIC_LOCATION,
+    _check_data_format,
+)
 from serpent.env import Env
 from serpent.spec.typemap import SpecTypeError, to_spec_type
 
@@ -346,33 +353,41 @@ def _enum_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntry:
 
 
 #: `@contractevent`'s `data_format` string -> its `SCSpecEventDataFormat` case.
-#: The decorator has already refused anything outside this mapping at the
-#: declaration site; the `KeyError` guard below is for metadata that did not
-#: come from it.
+#: Its keys are exactly `decorators.DATA_FORMATS`, the strings an author writes.
+#: A dict literal cannot express that tie, so `test_sections.py` pins it: a
+#: format the decorator accepts with no case here would `KeyError` at emission.
 _DATA_FORMATS: Final[dict[str, xdr.SCSpecEventDataFormat]] = {
     "map": xdr.SCSpecEventDataFormat.SC_SPEC_EVENT_DATA_FORMAT_MAP,
     "vec": xdr.SCSpecEventDataFormat.SC_SPEC_EVENT_DATA_FORMAT_VEC,
     "single-value": xdr.SCSpecEventDataFormat.SC_SPEC_EVENT_DATA_FORMAT_SINGLE_VALUE,
 }
 
-#: A field's recorded `location` -> its `SCSpecEventParamLocationV0` case.
+#: A field's recorded `location` -> its `SCSpecEventParamLocationV0` case. The
+#: keys are the decorator's own constants, never restated string literals.
 _PARAM_LOCATIONS: Final[dict[str, xdr.SCSpecEventParamLocationV0]] = {
-    "topic": xdr.SCSpecEventParamLocationV0.SC_SPEC_EVENT_PARAM_LOCATION_TOPIC_LIST,
-    "data": xdr.SCSpecEventParamLocationV0.SC_SPEC_EVENT_PARAM_LOCATION_DATA,
+    TOPIC_LOCATION: xdr.SCSpecEventParamLocationV0.SC_SPEC_EVENT_PARAM_LOCATION_TOPIC_LIST,
+    DATA_LOCATION: xdr.SCSpecEventParamLocationV0.SC_SPEC_EVENT_PARAM_LOCATION_DATA,
 }
 
 
 def _event_entry(declared: type) -> xdr.SCSpecEntry:
     """One `@contractevent` class's `SC_SPEC_ENTRY_EVENT_V0` entry.
 
-    Every cap is pre-checked here, source-located, before `stellar_sdk` sees a
-    byte (R5): the event's own name and its prefix topics against the SCSymbol
-    cap of 32, the prefix-topic COUNT against the XDR's `SCSymbol<2>`, each
-    param name against the 30-byte cap, and the `data_format` against the three
-    cases the XDR has. `@contractevent` has already refused all of this at the
-    declaration site, so a failure here means metadata that did not come from
-    the decorator -- and it still names the class rather than leaking a
-    `stellar_sdk` ValueError that names only a field.
+    Every cap and every rule is re-checked here, source-located, before
+    `stellar_sdk` sees a byte (R5): the event's own name and its prefix topics
+    against the SCSymbol cap of 32, the prefix-topic COUNT against the XDR's
+    `SCSymbol<2>`, each param name against the 30-byte cap, the `fields` and
+    `locations` views against each other, and the `data_format` -- including
+    `"single-value"`'s field arity -- through the DECORATOR's own
+    `_check_data_format`, so there is exactly one copy of that rule.
+
+    **Belt and braces, not paranoia.** `@contractevent` refuses all of this at
+    the declaration site, so a failure here means metadata that did not come
+    from the decorator. But this is the function that turns metadata into a
+    published spec, and every one of these rules is a case where the XDR would
+    happily encode a LIE: `SINGLE_VALUE` over two data params, a param whose
+    location was never recorded. Refusing here, naming the class, is what keeps
+    "valid XDR" and "true" the same thing.
     """
     metadata = _metadata_of(declared)
     if metadata is None or metadata.get("kind") != "event":
@@ -391,15 +406,19 @@ def _event_entry(declared: type) -> xdr.SCSpecEntry:
             "`SCSpecEventV0.prefix_topics` is an XDR `SCSymbol<2>`"
         )
 
-    data_format = metadata["data_format"]
-    if data_format not in _DATA_FORMATS:
-        raise SpecTypeError(
-            f"{declared.__name__}: data_format {data_format!r} is not one of "
-            f"{', '.join(repr(f) for f in _DATA_FORMATS)}"
-        )
-
     fields: Sequence[tuple[str, object]] = metadata["fields"]
     locations: Mapping[str, str] = metadata["locations"]
+    _check_locations(declared, fields, locations)
+
+    data_format: str = metadata["data_format"]
+    try:
+        # ONE copy of the format/arity rule, the decorator's. Its `ValueError`
+        # already names the class; re-raising as `SpecTypeError` puts it in the
+        # family every other refusal in this module belongs to.
+        _check_data_format(declared, data_format, locations)
+    except ValueError as exc:
+        raise SpecTypeError(str(exc)) from exc
+
     return xdr.SCSpecEntry(
         kind=xdr.SCSpecEntryKind.SC_SPEC_ENTRY_EVENT_V0,
         event_v0=xdr.SCSpecEventV0(
@@ -431,6 +450,36 @@ def _event_entry(declared: type) -> xdr.SCSpecEntry:
             data_format=_DATA_FORMATS[data_format],
         ),
     )
+
+
+def _check_locations(
+    declared: type, fields: Sequence[tuple[str, object]], locations: Mapping[str, str]
+) -> None:
+    """Refuse a `fields` / `locations` skew, naming the class and the skew.
+
+    The two views must describe exactly the same field set. Without this check a
+    MISSING key is a bare `KeyError('amount')` that names neither the class nor
+    what went wrong, and an EXTRA key is worse: silently ignored, so an event
+    whose metadata says a field is a topic can publish a spec that says it is
+    data. An unknown location value is caught here too, for the same reason.
+    """
+    named = [name for name, _annotation in fields]
+    missing = [name for name in named if name not in locations]
+    extra = sorted(set(locations) - set(named))
+    if missing or extra:
+        raise SpecTypeError(
+            f"{declared.__name__}: the event's `locations` map does not describe its "
+            f"fields -- {'missing ' + ', '.join(missing) if missing else ''}"
+            f"{'; ' if missing and extra else ''}"
+            f"{'unknown field(s) ' + ', '.join(extra) if extra else ''}. Every field "
+            "carries exactly one location, and only the fields do"
+        )
+    unknown = sorted({locations[name] for name in named} - set(_PARAM_LOCATIONS))
+    if unknown:
+        raise SpecTypeError(
+            f"{declared.__name__}: location {', '.join(repr(u) for u in unknown)} is "
+            f"not one of {', '.join(repr(k) for k in _PARAM_LOCATIONS)}"
+        )
 
 
 # --- contractmetav0 --------------------------------------------------------
