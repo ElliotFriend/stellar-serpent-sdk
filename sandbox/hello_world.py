@@ -1,4 +1,5 @@
 from serpent import Env, Symbol, Vec, contract, contracterror, errorcode
+
 # from .storage import set_greeting_salutation
 
 def set_greeting_salutation(env: Env, greeting: Symbol) -> Symbol:
