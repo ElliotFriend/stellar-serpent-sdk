@@ -472,6 +472,31 @@ Format:
   surface becomes breaking-after-docs (D4's own note) — which is why it
   lands now, in the last cheap moment.
 
+## 2026-08-28 Constructor-bearing contracts raise the protocol floor to 22
+- Context: Elliot caught a live gap while playing — his rolodex contract
+  (with __init__ → __constructor) declared protocol 20. The floor is
+  computed over host-function IMPORTS (D13/E9), but the constructor is an
+  EXPORT-name capability gated at protocol 22 (spec §13 / dossier S26,
+  CAP-0058) and invisible to declared_protocol. Bytes declaring 20 with a
+  __constructor would deploy on a 20/21 network and simply never run the
+  constructor: deployable-but-uninitialized, the honest-declaration rule
+  violated.
+- Decision: the floor computation gains FEATURE gates alongside import
+  gates. CONSTRUCTOR_MIN_PROTOCOL = 22 lives in serpent._host._protocol
+  with the S26 citation; compile_module's resolved protocol is
+  max(import_floor, 22) when the module declares a constructor; an
+  explicit target_protocol below 22 with a constructor is a located
+  SPT6001 at the __init__ definition naming the gate. Pins updated:
+  constructor-bearing fixtures/examples now declare 22; constructor-less
+  ones (counter, spike1_reauthored — whose on-chain env-meta anchor is
+  unchanged) stay at the import floor.
+- Why: S6's "declared protocol is computed, never hand-set" only stays
+  honest if the computation sees every gated capability the module uses,
+  not just its imports. This is the first non-import gate; the mechanism
+  is named so future ones (if any) extend it rather than re-deriving.
+- Reversal cost: none — raising a floor is the safe direction; the change
+  is test-pinned in both directions.
+
 ## 2026-08-28 M1-E plan-review rulings (all findings adopted)
 - Context: adversarial review of the M1-E plan — 7 blockers, 8 majors, 10
   minors, all probe-evidenced (triage record:
