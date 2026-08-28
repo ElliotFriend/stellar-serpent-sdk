@@ -22,10 +22,19 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
 - **M1-C** (compiler frontend — the whole checking pipeline through
   `compile_module`, 96-code SPT registry, 95 must_reject fixtures, fuzz +
   goldens, generated `docs/subset.md`): merged to main. ~2053 tests.
-- **Next: M1-D (the WASM emitter)** — lowering FuncIR to wasm32v1-none
-  bytes. Then E (Env runtime), F (testing tiers), G (CLI as a Stellar CLI
-  plugin, `stellar serpent build`). M1 ENDS with a user-approved testnet
-  deployment (HARD STOP — Elliot must explicitly approve it in-session).
+- **M1-D** (the WASM emitter — `serpent.emitter` with `build_wasm`/
+  `build_file`, symbolic-call serialization, the guest runtime library incl.
+  128-bit limb arithmetic via the i256 route, ABI prologues, the three
+  custom sections, internal + wasm-tools validation, the dev-only wasmtime
+  mini-host in `tests/harness/`, the 35-case semantics differential, and
+  disassembly snapshots): merged to main 2026-08-28. 3552 tests.
+  `contractspecv0` byte-identical to the deployed Phase 0 artifact; the
+  registry gained the sanctioned SPT8xxx band (100 codes).
+- **Next: M1-E (Env runtime semantics + examples)** — dossier compiled
+  (specs/2026-08-28-m1e-inputs-dossier.md), controller triage pending. Then
+  F (testing tiers), G (CLI as a Stellar CLI plugin). M1 ENDS with a
+  user-approved testnet deployment (HARD STOP — Elliot must explicitly
+  approve it in-session).
 
 ## How each sub-plan runs (the loop that built A, B, C)
 
