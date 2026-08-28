@@ -20,6 +20,7 @@ the tests read the emitted bytes back through the protocol's own decoder.
 """
 
 import hashlib
+import importlib.metadata
 import pathlib
 import shutil
 import subprocess
@@ -757,10 +758,40 @@ def test_meta_is_pinned_against_serpents_own_output() -> None:
 
 @pytest.mark.parametrize(("name", "version"), [("", "1.0.0"), ("counter", "")])
 def test_meta_requires_a_name_and_a_version(name: str, version: str) -> None:
-    """Both keys are always present in the payload, so an empty value would
-    publish a contract whose name or version reads as blank."""
+    """`name` is always present in the payload, and `version` is present
+    whenever it is GIVEN, so an empty value would publish a contract whose name
+    or version reads as blank. Omitting the version entirely is `None`, not
+    `""` -- see the next two tests."""
     with pytest.raises(ValueError, match="non-empty"):
         build_meta(name, version)
+
+
+def test_meta_omits_the_version_entry_when_it_is_none() -> None:
+    """Ruling E8 (M1-D Task 10's sanctioned edit): a contract that declares no
+    version gets NO `version` entry. Inventing one -- `"0.0.0"`, or serpent's
+    own version -- would publish a claim the author never made."""
+    pairs = _unpack_meta(build_meta("counter", None))
+    assert pairs == [
+        (b"name", b"counter"),
+        (b"serpentver", serpent.__version__.encode()),
+    ]
+
+
+def test_meta_keeps_the_reserved_key_order_when_the_version_is_omitted() -> None:
+    """`serpentver` stays third-in-spirit: the entries a reader sees are in the
+    same relative order with the version simply missing, and user pairs still
+    follow every reserved key."""
+    pairs = _unpack_meta(build_meta("counter", None, {"repo": "https://example.test/x"}))
+    assert [key for key, _value in pairs] == [b"name", b"serpentver", b"repo"]
+
+
+def test_serpent_version_does_not_drift_from_the_installed_distribution() -> None:
+    """Ruling E8's cannot-drift intent, at lower churn (M1-D plan-review):
+    `build_meta` writes `serpent.__version__` into `serpentver`, and THIS test
+    is what keeps that string equal to the version the distribution actually
+    ships -- so bumping one without the other fails here rather than shipping a
+    contract whose `serpentver` names a release that was never built."""
+    assert serpent.__version__ == importlib.metadata.version("serpent")
 
 
 def test_meta_round_trips_through_stellar_sdk() -> None:

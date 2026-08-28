@@ -92,6 +92,7 @@ _BAND_TITLES: dict[str, str] = {
     "SPT5xxx": "spec / XDR limits",
     "SPT6xxx": "protocol gating",
     "SPT7xxx": "flow analysis",
+    "SPT8xxx": "emitter limits",
 }
 
 #: This module's own directory is `src/serpent/compiler/`; the repo root is

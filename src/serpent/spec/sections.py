@@ -82,7 +82,10 @@ DOC_LIMIT: Final = 1024
 CONSTRUCTOR_NAME: Final = "__constructor"
 
 #: `build_meta` writes these three first, in this order (spec Sec.7); a caller
-#: pair colliding with one is an error rather than a silent duplicate.
+#: pair colliding with one is an error rather than a silent duplicate. All
+#: three stay reserved even when `version=None` omits its entry: the key is
+#: serpent's to write, and a user pair claiming it would be indistinguishable
+#: from a contract version this build never declared.
 RESERVED_META_KEYS: Final = ("name", "version", "serpentver")
 
 _U32_MAX: Final = 2**32 - 1
@@ -325,7 +328,7 @@ def _enum_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntry:
 # --- contractmetav0 --------------------------------------------------------
 
 
-def build_meta(name: str, version: str, pairs: Mapping[str, str] = _NO_PAIRS) -> bytes:
+def build_meta(name: str, version: str | None, pairs: Mapping[str, str] = _NO_PAIRS) -> bytes:
     """The `contractmetav0` payload: a stream of key/value `SCMetaEntry`.
 
     `("name", name)`, `("version", version)` and `("serpentver",
@@ -334,17 +337,27 @@ def build_meta(name: str, version: str, pairs: Mapping[str, str] = _NO_PAIRS) ->
     order is preserved. A caller key colliding with a reserved one is a
     `ValueError` rather than a duplicate entry, since the reader takes the
     first.
+
+    **`version=None` OMITS the entry entirely** (ruling E8, M1-D Task 10's
+    sanctioned edit): most contracts carry no version of their own, and writing
+    an invented one -- `"0.0.0"`, or serpent's version standing in for the
+    contract's -- would publish a claim the author never made. An empty string
+    is still a `ValueError`: a blank version reads as a version.
+
+    `serpentver` always names the compiler that produced the artifact and is
+    read straight off `serpent.__version__`; `tests/unit/test_sections.py`
+    holds that string equal to `importlib.metadata.version("serpent")`, so the
+    two cannot drift.
     """
     if not name:
         raise ValueError("meta `name` must be a non-empty string")
-    if not version:
-        raise ValueError("meta `version` must be a non-empty string")
+    if version is not None and not version:
+        raise ValueError("meta `version` must be a non-empty string when it is given")
 
-    entries: list[tuple[str, str]] = [
-        ("name", name),
-        ("version", version),
-        ("serpentver", serpent.__version__),
-    ]
+    entries: list[tuple[str, str]] = [("name", name)]
+    if version is not None:
+        entries.append(("version", version))
+    entries.append(("serpentver", serpent.__version__))
     for key, value in pairs.items():
         if key in RESERVED_META_KEYS:
             raise ValueError(
