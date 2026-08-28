@@ -84,7 +84,7 @@ from serpent.types import (
     Address,
     Bytes,
 )
-from tests.harness.engine import HostError, HostTrap
+from tests.harness.errors import HostError, HostTrap
 from tests.harness.i256 import Wide256Host
 from tests.harness.objects import ObjectStore
 

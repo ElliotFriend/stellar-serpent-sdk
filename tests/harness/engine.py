@@ -19,6 +19,14 @@ ends. The original throwaway emulator got this wrong in one spot and produced
 plausible-looking nonsense for every `Val` with the high bit set -- which is
 every `Error` `Val` with a large code. A per-callback `& mask` sprinkled where
 it seemed necessary is precisely how that happens, so the mask is structural.
+
+`HostError`/`HostTrap` (M-3)
+----------------------------
+The two abort classes live in `tests.harness.errors` now, wasmtime-free, so a
+caller that needs only `pytest.raises(HostError)` never pays for a `wasmtime`
+import. Imported here and re-exported for compatibility: every existing
+`from tests.harness.engine import HostError` and `engine.HostError` site keeps
+working unchanged.
 """
 
 from collections.abc import Callable, Mapping
@@ -27,6 +35,12 @@ import wasmtime
 
 from serpent import val
 from serpent._host import functions_by_name
+
+#: Explicit `as`-reexport (mypy `--strict`'s `--no-implicit-reexport`): every
+#: `engine.HostError`/`from tests.harness.engine import HostError` site must
+#: keep type-checking after the M-3 move.
+from tests.harness.errors import HostError as HostError  # noqa: PLC0414 -- mypy reexport
+from tests.harness.errors import HostTrap as HostTrap  # noqa: PLC0414 -- mypy reexport
 
 #: The name a Soroban module exports its one memory under; `testmod` writes it.
 #: Spelled here too rather than imported, so `engine` stays independent of the
@@ -83,38 +97,6 @@ def make_config() -> wasmtime.Config:
     # Enabled, matching the emitter's `wasm-tools validate --features=` line.
     config.wasm_bulk_memory = True
     return config
-
-
-class HostError(Exception):
-    """The contract aborted through `fail_with_error`, carrying its `Val`.
-
-    `fail_with_error` "does not actually return" (env.json), so a Python
-    exception is the honest model of it. `val` is the **unsigned** error `Val`
-    word, which is what a client would see.
-    """
-
-    def __init__(self, error_val: int) -> None:
-        word = val.as_u64(error_val)
-        super().__init__(f"contract aborted with Val {word:#018x}")
-        self.val = word
-
-
-class HostTrap(Exception):
-    """The host TRAPPED: an env.json "Traps if ..." precondition was violated.
-
-    A distinct class from `HostError` because the two are different on-chain
-    outcomes and the semantics table pins them separately: a `HostError` is a
-    contract that ABORTED with a `Val` a client can classify, while a trap has
-    no error `Val` at all (an out-of-bounds `vec_get`, a `map_get` on a missing
-    key). Task 13's differential run asserts the two kinds against different
-    expectations, so a rig that raised one class for both could not tell a
-    passing `kind="trap"` case from a passing `kind="contract_error"` one.
-
-    Deliberately NOT an `AssertionError`: this rig keeps `AssertionError` for
-    its own broken invariants -- a dangling handle, an object with the wrong
-    tag, map keys the emitter failed to sort -- which mean the harness or the
-    lowering is wrong, not that the contract did something the host forbids.
-    """
 
 
 def _valtype(name: str) -> wasmtime.ValType:

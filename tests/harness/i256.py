@@ -42,6 +42,7 @@ here.
 from collections.abc import Callable
 
 from serpent import val
+from tests.harness.errors import HostError
 
 MASK64 = (1 << 64) - 1
 MASK128 = (1 << 128) - 1
@@ -54,8 +55,9 @@ U256_MAX = (1 << 256) - 1
 
 #: What a failed `{i,u}256_div` hands back. The real host returns an `ScError`
 #: (its XDR code is NOT pinned in this repo), which the VM surfaces as an abort;
-#: `HostError` is `engine.py`'s model of an abort, so the harness raises one
-#: carrying a distinctive Error `Val` of the VALUE type. Tests assert against
+#: `HostError` (`tests.harness.errors`, M-3) is the harness's model of an
+#: abort, so it raises one carrying a distinctive Error `Val` of the VALUE
+#: type. Tests assert against
 #: this constant, never against a literal word -- the word is a harness
 #: convention standing in for an unpinned XDR code, not a fact about the host.
 DIV_ERROR_VAL = val.error_val(0, val.ERROR_TYPE_VALUE)
@@ -232,17 +234,17 @@ class Wide256Host:
     def bindings(self) -> dict[str, Callable[..., int]]:
         """Every callback D's 128-bit lowerings can name, by pinned host-fn name.
 
-        `WideHostFailure` is translated to `engine.HostError` here rather than
-        raised as itself, so a test sees the same abort class it sees for
-        `fail_with_error`. The import is local to keep this module usable as a
-        pure arithmetic oracle without pulling in wasmtime.
+        `WideHostFailure` is translated to `HostError` here rather than raised
+        as itself, so a test sees the same abort class it sees for
+        `fail_with_error`. `HostError` comes from `tests.harness.errors` (M-3),
+        which is wasmtime-free, so this module stays usable as a pure
+        arithmetic oracle without pulling wasmtime in.
 
         The eight 256-bit limb accessors are built from their shift rather than
         written out one by one: `hi_lo` and `lo_hi` are one character apart,
         and a transposed pair in a hand-written table is exactly the kind of
         silently-wrong wiring this whole harness exists to catch.
         """
-        from tests.harness.engine import HostError
 
         def failing(name: str, impl: Callable[..., int]) -> Callable[..., int]:
             def wrapped(*args: int) -> int:

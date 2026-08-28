@@ -65,6 +65,7 @@ from collections.abc import Callable, Mapping
 from typing import ClassVar
 
 from serpent import val
+from serpent._host._scalars import STORAGE_TYPE
 from serpent.types import (
     I32,
     I64,
@@ -83,15 +84,20 @@ from serpent.types import (
     Vec,
 )
 from serpent.types._ordering import ChainValue, val_cmp
-from tests.harness.engine import HostError, HostTrap, MiniHost
+from serpent.types._storage_key import storage_key
+from tests.harness.engine import MiniHost
+from tests.harness.errors import HostError, HostTrap
 
 __all__ = ["ObjectStore"]
 
 #: Every `(storage_type, key)` bucket is a plain dict; these are the raw
 #: `StorageType` immediates the frontend emits (`RawScalarKind.STORAGE_TYPE`).
-STORAGE_TEMPORARY = 0
-STORAGE_PERSISTENT = 1
-STORAGE_INSTANCE = 2
+#: Re-derived from the pinned source (M-1) rather than restated as local
+#: literals, so a re-pin of `StorageType`'s ordinal values cannot silently
+#: leave this rig testing the wrong bucket numbers.
+STORAGE_TEMPORARY = STORAGE_TYPE["temporary"]
+STORAGE_PERSISTENT = STORAGE_TYPE["persistent"]
+STORAGE_INSTANCE = STORAGE_TYPE["instance"]
 
 
 class _RankOnly:
@@ -414,10 +420,12 @@ class ObjectStore:
           through `map_put` (whose keys are `Val`s) answer `map_get` the same;
         * a vec or a map becomes its CONTENTS, recursively (a `frozenset` for a
           map, so entry order cannot matter) -- this is the struct-key case;
-        * every other modelled value becomes `(rank, payload)`, which collapses
-          the small and object forms of one number to one key and makes
-          `Bytes32` and `Bytes` with equal payloads one key, exactly as tier
-          1's own `__eq__` does;
+        * every other modelled value delegates to `types._storage_key.storage_key`
+          (M-2: the value-level twin of this word-level decode) applied to the
+          decoded `chain_value`, which normalizes to `(rank, payload)` --
+          collapsing the small and object forms of one number to one key and
+          making `Bytes32` and `Bytes` with equal payloads one key, exactly as
+          tier 1's own `__eq__` does;
         * a value with no tier-1 model (`Void`, `Error`, the 256-bit family)
           keeps its raw word. Canonical for every one of those that has a
           single encoding, and the alternative would be to invent an equality
@@ -440,8 +448,7 @@ class ObjectStore:
                 frozenset((entry, self.map_key(value)) for entry, value in self._map(word).items()),
             )
         elif tag in _MODELLED_TAGS:
-            value = self.chain_value(word)
-            key = (value._SCVAL_RANK, value._cmp_payload())
+            key = storage_key(self.chain_value(word))
         else:
             key = word
         self._key_words.setdefault(key, word)
