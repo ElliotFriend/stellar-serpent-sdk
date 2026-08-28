@@ -1029,11 +1029,23 @@ def test_mangled_fixtures_never_escape_the_diagnostic_family(source: str) -> Non
 def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     """A meta-check on generator (b): the corpus is the real inventory, so a
     fixture added later is fuzzed automatically instead of being silently
-    skipped (the count is asserted as a floor, matching Task 11b's 95)."""
+    skipped (the count is asserted as a floor, matching Task 11b's 95).
+
+    The `fixtures/` list is asserted EXACTLY rather than as a floor, so adding a
+    contract fixture is a deliberate act: Task 13 promoted the two `sandbox/`
+    contracts into `tests/fixtures/` (F.2.8), and they joined this corpus
+    automatically -- which is the intended behavior, and updating this line is
+    how it gets acknowledged.
+    """
     must_reject = [name for name, _ in CORPUS if name.startswith("must_reject/")]
     fixtures = [name for name, _ in CORPUS if name.startswith("fixtures/")]
     assert len(must_reject) >= 95, len(must_reject)
-    assert sorted(fixtures) == ["fixtures/spike1_reauthored.py", "fixtures/token_style.py"]
+    assert sorted(fixtures) == [
+        "fixtures/sandbox_counter.py",
+        "fixtures/sandbox_hello_world.py",
+        "fixtures/spike1_reauthored.py",
+        "fixtures/token_style.py",
+    ]
 
 
 def test_every_mutation_is_reachable_and_changes_something() -> None:

@@ -100,6 +100,7 @@ from serpent.compiler.ir import (
     FieldGet,
     FuncIR,
     HostCall,
+    IfExp,
     IRNode,
     MakeMap,
     MakeStruct,
@@ -107,6 +108,8 @@ from serpent.compiler.ir import (
     MakeVec,
     ModuleIR,
     Raise,
+    RawScalar,
+    RawScalarKind,
     Unary,
     UnaryOp,
     walk,
@@ -127,6 +130,7 @@ __all__ = [
     "LiteralInventory",
     "SpecInputs",
     "compile_module",
+    "guarded_storage_get",
 ]
 
 _INTENT: dict[str, str] = {entry.code: entry.message_intent for entry in codes.REGISTRY}
@@ -149,6 +153,22 @@ _OBJ_CMP_HOST_FN = "obj_cmp"
 _SYMBOL_LM_FN = "symbol_new_from_linear_memory"
 _STRING_LM_FN = "string_new_from_linear_memory"
 _BYTES_LM_FN = "bytes_new_from_linear_memory"
+
+#: An `Address` literal's second host function (review B6). `Address` is a
+#: HOST_OBJECT-repr type with no small Val form and no linear-memory
+#: constructor of its OWN, so a literal one is built in two steps: pool the
+#: strkey's ASCII bytes and call `_STRING_LM_FN`, then convert that
+#: `StringObject` with `strkey_to_address` (`a.1`, whose `strkey` parameter
+#: documents accepting either a `BytesObject` or a `StringObject`). Both names
+#: are CERTAIN uses of an `Address` `Const` -- neither is a route D may choose
+#: against.
+_ADDRESS_FROM_STRKEY_FN = "strkey_to_address"
+
+#: The three names ruling E13's storage-get accounting turns on, sourced from
+#: the recognition table's own rows (MJ-5) rather than restated as literals.
+_STORAGE_HAS_FN, _STORAGE_GET_FN = RECOGNIZED["storage.get_default"].host_fns
+#: The guard's failure call -- the same `fail_with_error` a `raise` reaches.
+_STORAGE_MISSING_FN = _RAISE_HOST_FN
 
 #: Names sourced from the recognition table's own rows rather than restated
 #: (MJ-5): the struct constructor, and the struct field read's two functions.
@@ -179,13 +199,24 @@ _LINEAR_MEMORY_HOST_FNS: frozenset[str] = frozenset(
     }
 )
 
-#: The guest-runtime part every checked arithmetic operation needs (A4/S20):
-#: an out-of-range result must reach `fail_with_error` with the
-#: `ArithmeticOverflow` code, never wrap.
-_OVERFLOW_PART = "overflow_check"
+#: `TyTag` -> the guest-runtime prefix for the widths whose checked `Binary`
+#: is a CALL rather than an inline sequence (ruling E3). 64-bit is here because
+#: the unbox branch alone is 6+ instructions and appears at every use; 128-bit
+#: because there is no native wasm instruction at all (spec SS 6). U32/I32 are
+#: deliberately absent: their checked ops are a shift, an op, and a range
+#: compare -- cheaper inline than the call overhead (S25's break-even).
+_ARITH_PREFIX: dict[TyTag, str] = {
+    TyTag.U64: "u64",
+    TyTag.I64: "i64",
+    TyTag.U128: "u128",
+    TyTag.I128: "i128",
+}
 
-#: `TyTag` -> the guest-runtime prefix for 128-bit arithmetic (spec SS 6): the
-#: only widths with no native wasm instruction.
+#: `TyTag` -> the guest-runtime prefix for the widths whose `NEG` and whose
+#: direct (non-`obj_cmp`) `Compare` are also calls: 128-bit only. At 32 and 64
+#: bits `NEG` is inline (review M6 -- unsigned is "nonzero is overflow, else
+#: 0", signed is "MIN is overflow, else 0 - value") and a compare is one wasm
+#: relop; at 128 bits both are limb code.
 _WIDE_ARITH_PREFIX: dict[TyTag, str] = {TyTag.U128: "u128", TyTag.I128: "i128"}
 
 
@@ -203,6 +234,12 @@ class LiteralInventory:
       which are the only `Symbol`s that need `symbol_new_from_linear_memory`.
     * `strings` / `bytes_literals` -- every `String` and `Bytes`/`BytesN`
       literal; both host forms are linear-memory-only.
+    * `address_strkeys` -- every `Address` literal's strkey, as the ASCII text
+      the source spelled (review B6). Kept SEPARATE from `strings` even though
+      both are pooled as UTF-8: they are different authoring surfaces with
+      different lowerings (an `Address` literal needs
+      `strkey_to_address` after the string constructor), and folding one into
+      the other would make `strings` a claim that is no longer true.
     * `struct_key_descriptor_sets` -- one entry per distinct `@contracttype`
       field-name set, ALREADY in the P7 byte-string order `MakeStruct` fixed.
       `map_new_from_linear_memory` needs the key descriptors in that order at
@@ -213,6 +250,7 @@ class LiteralInventory:
     symbols_over_9: tuple[str, ...]
     strings: tuple[str, ...]
     bytes_literals: tuple[bytes, ...]
+    address_strkeys: tuple[str, ...]
     struct_key_descriptor_sets: tuple[tuple[str, ...], ...]
 
 
@@ -455,6 +493,59 @@ def _flat_functions(ir: ModuleIR) -> tuple[FuncIR, ...]:
 # --- the host-function sets (SS C.2 output 1) ---------------------------------
 
 
+def guarded_storage_get(node: IRNode) -> HostCall | None:
+    """The `get_contract_data` an `IfExp`'s own `has` already proved present.
+
+    Returns that `HostCall` when `node` is EXACTLY the shape
+    `recognize.py`'s `get(key, T, default=d)` builds -- and `None` otherwise,
+    which is the answer that means "this `get` still needs the E13 guard".
+
+    **The test is node IDENTITY, not structural equality** (review M12). The
+    frontend SHARES one key expression between the `has` and the `get`
+    (`recognize.py`'s `_storage_get`: `key` and `imm` are passed to both
+    `HostCall`s), so `cond.args[0] is then.args[0]` holds for the recognized
+    shape and for nothing else. A hand-written
+    `a.get(k, T) if a.has(k2) else d` parses to two DISTINCT key subtrees --
+    even when they are spelled identically and therefore compare `==`, since
+    every IR node is a frozen dataclass with structural equality -- so it fails
+    this test and its `get` is guarded. Keying on the condition alone would
+    silently suppress the guard on exactly that program, and keying on `==`
+    would suppress it whenever the two spellings happened to match while the
+    two evaluations did not have to.
+
+    Public, and the ONE place the shape is recognized: `emitter.lower` calls it
+    to choose the arm-lowering, and `_collect_host_fns` calls it so
+    `host_fns_used` accounts for the guard D will emit (ruling E13, D13's
+    licence). Two copies of this predicate could disagree, and the direction
+    that disagreement breaks is a missing import for a function the emitted
+    body calls.
+    """
+    if not isinstance(node, IfExp):
+        return None
+    cond, then = node.cond, node.then
+    if not (isinstance(cond, HostCall) and cond.fn_name == _STORAGE_HAS_FN):
+        return None
+    if not (isinstance(then, HostCall) and then.fn_name == _STORAGE_GET_FN):
+        return None
+    if len(cond.args) != 2 or len(then.args) != 2:  # pragma: no cover - the pin fixes arity
+        return None
+    if cond.args[0] is not then.args[0]:
+        return None
+    # The storage BUCKET has to match too: `has` in the instance bucket proves
+    # nothing about the persistent one, and the two immediates are the same
+    # shared `RawScalar` node in the recognized shape.
+    has_imm, get_imm = cond.args[1], then.args[1]
+    if not (isinstance(has_imm, RawScalar) and isinstance(get_imm, RawScalar)):
+        return None
+    if has_imm.kind is not RawScalarKind.STORAGE_TYPE:
+        return None
+    if get_imm.kind is not RawScalarKind.STORAGE_TYPE:
+        return None
+    if has_imm.value != get_imm.value:
+        return None
+    return then
+
+
 def _collect_host_fns(
     ir: ModuleIR,
 ) -> tuple[frozenset[str], frozenset[str], dict[str, Loc]]:
@@ -474,9 +565,24 @@ def _collect_host_fns(
                 used.add(name)
             locs.setdefault(name, loc)
 
+    # Ruling E13: a `get_contract_data` that no `has` already covered is
+    # wrapped by D in a guard that calls `has_contract_data` and, on a miss,
+    # `fail_with_error` (`CODE_MISSING_VALUE`, E14). Those two are CERTAIN
+    # uses -- the guard is not a form D chooses between -- so they belong in
+    # `host_fns_used`, and omitting them would under-report both the import
+    # set and the protocol floor. The exemption is the `get` whose own `IfExp`
+    # already proved presence; `guarded_storage_get` is the single place that
+    # shape is recognized, shared with `emitter.lower` so the two cannot drift.
+    # Identity is stable here because `ir` holds every node alive for the walk.
+    gets_covered_by_a_has = {
+        id(get) for get in map(guarded_storage_get, walk(ir)) if get is not None
+    }
+
     for node in walk(ir):
         if isinstance(node, HostCall):
             note((node.fn_name,), node.loc, certain=True)
+            if node.fn_name == _STORAGE_GET_FN and id(node) not in gets_covered_by_a_has:
+                note((_STORAGE_HAS_FN, _STORAGE_MISSING_FN), node.loc, certain=True)
         elif isinstance(node, Raise):
             note((_RAISE_HOST_FN,), node.loc, certain=True)
         elif isinstance(node, Compare) and node.via_obj_cmp:
@@ -495,22 +601,27 @@ def _collect_host_fns(
         elif isinstance(node, MakeMap):
             note(_MAP_BUILD_FNS, node.loc, certain=False)
         elif isinstance(node, Const):
-            literal_fn = _literal_host_fn(node)
-            if literal_fn is not None:
-                note((literal_fn,), node.loc, certain=True)
+            note(_literal_host_fns(node), node.loc, certain=True)
 
     return frozenset(used), frozenset(reachable), locs
 
 
-def _literal_host_fn(node: Const) -> str | None:
-    """The linear-memory constructor `node` needs, or `None` for an immediate."""
+def _literal_host_fns(node: Const) -> tuple[str, ...]:
+    """The host functions `node`'s literal form needs; empty for an immediate.
+
+    A tuple rather than one optional name because of review B6's `Address`
+    case: its literal costs TWO calls (the string constructor, then
+    `strkey_to_address`), and both are certain.
+    """
     if node.ty.tag is TyTag.SYMBOL and isinstance(node.py_value, str):
-        return None if val.fits_symbol_small(node.py_value) else _SYMBOL_LM_FN
+        return () if val.fits_symbol_small(node.py_value) else (_SYMBOL_LM_FN,)
     if node.ty.tag is TyTag.STRING and isinstance(node.py_value, str):
-        return _STRING_LM_FN
+        return (_STRING_LM_FN,)
     if node.ty.tag in (TyTag.BYTES, TyTag.BYTES_N) and isinstance(node.py_value, bytes):
-        return _BYTES_LM_FN
-    return None
+        return (_BYTES_LM_FN,)
+    if node.ty.tag is TyTag.ADDRESS and isinstance(node.py_value, str):
+        return (_STRING_LM_FN, _ADDRESS_FROM_STRKEY_FN)
+    return ()
 
 
 # --- the protocol floor (B4/B5/S18, BL-1) -------------------------------------
@@ -613,6 +724,7 @@ def _collect_literals(ir: ModuleIR) -> LiteralInventory:
     symbols: set[str] = set()
     strings: set[str] = set()
     byte_literals: set[bytes] = set()
+    strkeys: set[str] = set()
     key_sets: set[tuple[str, ...]] = set()
     for node in walk(ir):
         if isinstance(node, Const):
@@ -623,6 +735,11 @@ def _collect_literals(ir: ModuleIR) -> LiteralInventory:
                 strings.add(node.py_value)
             elif node.ty.tag in (TyTag.BYTES, TyTag.BYTES_N) and isinstance(node.py_value, bytes):
                 byte_literals.add(node.py_value)
+            elif node.ty.tag is TyTag.ADDRESS and isinstance(node.py_value, str):
+                # Review B6: the strkey text, pooled as ASCII, is what
+                # `string_new_from_linear_memory` reads before
+                # `strkey_to_address` turns it into an `AddressObject`.
+                strkeys.add(node.py_value)
         elif isinstance(node, MakeStruct):
             # Already in P7's byte-string order -- recorded, never re-sorted.
             key_sets.add(tuple(name for name, _value in node.fields))
@@ -630,6 +747,7 @@ def _collect_literals(ir: ModuleIR) -> LiteralInventory:
         symbols_over_9=tuple(sorted(symbols)),
         strings=tuple(sorted(strings)),
         bytes_literals=tuple(sorted(byte_literals)),
+        address_strkeys=tuple(sorted(strkeys)),
         struct_key_descriptor_sets=tuple(sorted(key_sets)),
     )
 
@@ -665,6 +783,13 @@ def _needs_memory(ir: ModuleIR, literals: LiteralInventory, used: frozenset[str]
     """
     if literals.symbols_over_9 or literals.strings or literals.bytes_literals:
         return True
+    if literals.address_strkeys:
+        # Review B6: `Address` has no small Val form, so a literal one is
+        # ALWAYS a pooled strkey plus `string_new_from_linear_memory`. The
+        # `used` test below would settle it too; this row is here so the
+        # inventory alone answers the question, as it does for every other
+        # pooled literal.
+        return True
     if literals.struct_key_descriptor_sets:
         return True
     if used & _LINEAR_MEMORY_HOST_FNS:
@@ -685,35 +810,53 @@ def _bulk_construction_can_use_memory(node: object) -> bool:
 
 
 def _collect_runtime_parts(ir: ModuleIR) -> frozenset[str]:
-    """Which guest-runtime pieces D must link.
+    """Which guest-runtime pieces D must link -- **a hint, not a manifest**.
 
-    Two families, and nothing invented beyond them:
+    Ratified by sub-plan D (ruling E3) under the licence C2 wrote into this
+    function's previous docstring. What the names mean now:
 
-    * `overflow_check` -- every checked arithmetic operation needs the
-      out-of-range branch that routes to `fail_with_error` with the
-      `ArithmeticOverflow` code (A4/S20). `not` is excluded: it is a Bool
-      operation with nothing to overflow.
-    * `u128_<op>` / `i128_<op>` -- 128-bit arithmetic has no native wasm
-      instruction, so each operator it uses is a distinct guest-runtime
-      routine (spec SS 6). The names follow the dossier's own examples
-      (`i128_add`, `i128_mul`).
+    * `{u,i}64_<op>` / `{u,i}128_<op>` for `op` in add/sub/mul/floordiv/mod --
+      one part per (width, operator), each taking and returning RAW unboxed
+      words and routing its own out-of-range result to `fail_with_error` with
+      the `ArithmeticOverflow` code (A4/S20).
+    * `{u,i}128_neg` and `{u,i}128_cmp` -- 128-bit negation and 128-bit direct
+      comparison are limb code, so they too are calls.
 
-    These part names are C-coined and await sub-plan D's ratification: D may
-    rename them when it authors the guest-runtime routines, updating this
-    function and its pinning test together. They are not frozen API.
+    What is deliberately NOT here, and why:
+
+    * **`overflow_check` is gone.** There was never one shared helper: the
+      out-of-range branch is three instructions specialized to the width, the
+      operator, and the sign, and it lives inside whichever part (or inline
+      sequence) computes the result.
+    * **32-bit `Binary` names nothing.** U32/I32 checked ops lower to an
+      inline shift/op/range-compare -- below S25's call-overhead break-even.
+    * **`NEG` at 32 and 64 bits names nothing.** Review M6: on an unsigned
+      type it is "nonzero is overflow, else 0"; on a signed type it is "MIN is
+      overflow, else 0 - value". Both are inline.
+    * **`Compare(via_obj_cmp=True)` names nothing** -- that is a host call, not
+      a guest-runtime part -- and a comparison's part is chosen from its
+      OPERAND type (`lhs.ty`), never from its own `ty`, which is always Bool.
+
+    **A hint, not a manifest.** D links parts from its own lowering, not from
+    this set; what is pinned between the two is only that D links at least
+    everything named here (`runtime_parts_needed <= runtime_parts_linked`).
+    A part D reaches on its own -- `box_u64`, `unbox_i64`, `tagcheck_bytes_n`
+    -- is a lowering detail C cannot see and must not try to predict.
     """
     parts: set[str] = set()
     for node in walk(ir):
         if isinstance(node, BinaryNode):
-            parts.add(_OVERFLOW_PART)
-            prefix = _WIDE_ARITH_PREFIX.get(node.ty.tag)
+            prefix = _ARITH_PREFIX.get(node.ty.tag)
             if prefix is not None:
                 parts.add(f"{prefix}_{node.op.name.lower()}")
         elif isinstance(node, Unary) and node.op is UnaryOp.NEG:
-            parts.add(_OVERFLOW_PART)
             prefix = _WIDE_ARITH_PREFIX.get(node.ty.tag)
             if prefix is not None:
                 parts.add(f"{prefix}_neg")
+        elif isinstance(node, Compare) and not node.via_obj_cmp:
+            prefix = _WIDE_ARITH_PREFIX.get(node.lhs.ty.tag)
+            if prefix is not None:
+                parts.add(f"{prefix}_cmp")
     return frozenset(parts)
 
 

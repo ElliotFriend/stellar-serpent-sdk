@@ -20,6 +20,7 @@ the tests read the emitted bytes back through the protocol's own decoder.
 """
 
 import hashlib
+import importlib.metadata
 import pathlib
 import shutil
 import subprocess
@@ -67,6 +68,19 @@ SPIKE_WASM = pathlib.Path(__file__).parent.parent.parent / "spikes" / "spike1" /
 #: which `cmp` reported identical to this local file. Pinning it is what makes
 #: the assertions below on-chain-anchored rather than merely local.
 SPIKE_WASM_SHA256 = "bc2e806302f655686084f5c604b4e642900e0fa7812310378667a9cabe4a9920"
+
+#: Review M14 (added by Task 13): `spike.wasm` is a BUILD ARTIFACT and is not
+#: git-tracked (`git ls-files spikes/spike1/` does not list it), so a fresh
+#: clone does not have it. Without this guard the four tests below error with
+#: `FileNotFoundError` there, which reads as a broken suite rather than as
+#: absent evidence. Skipped, never silently passed -- and the same marker is
+#: used by `tests/unit/test_emitter_end_to_end.py`, which imports `SPIKE_WASM`
+#: from here, so the convention is one convention rather than two.
+requires_spike_wasm = pytest.mark.skipif(
+    not SPIKE_WASM.exists(),
+    reason=f"{SPIKE_WASM} is a build artifact and is not git-tracked (R5); "
+    "rebuild it with spikes/spike1/build.py to run the on-chain-anchored checks",
+)
 
 #: The exact stdout of `stellar contract info interface --wasm spike.wasm`,
 #: recorded in `DEPLOY_LOG.md` and there shown identical to the `--id` render
@@ -229,6 +243,7 @@ def test_env_meta_27_is_byte_equal_to_the_on_chain_golden() -> None:
     assert build_env_meta(27) == golden
 
 
+@requires_spike_wasm
 def test_env_meta_matches_the_deployed_contracts_env_meta_section() -> None:
     """The same 12 bytes, read out of the on-chain-verified wasm."""
     wasm = SPIKE_WASM.read_bytes()
@@ -288,11 +303,13 @@ def test_counter_golden_round_trips_through_stellar_sdk() -> None:
 # --- the ON-CHAIN-anchored check -------------------------------------------
 
 
+@requires_spike_wasm
 def test_spike_wasm_is_the_artifact_fetched_back_off_testnet() -> None:
     """Anchor: without this pin, everything below is only a local comparison."""
     assert hashlib.sha256(SPIKE_WASM.read_bytes()).hexdigest() == SPIKE_WASM_SHA256
 
 
+@requires_spike_wasm
 def test_spike_entries_are_byte_identical_to_the_deployed_spec_section() -> None:
     """serpent's `contractspecv0` for spike1's interface == the on-chain bytes.
 
@@ -343,6 +360,7 @@ def test_spike_entries_structurally_match_the_recorded_on_chain_interface() -> N
     assert [output.type for output in bump.outputs] == [xdr.SCSpecType.SC_SPEC_TYPE_U32]
 
 
+@requires_spike_wasm
 @pytest.mark.skipif(shutil.which("stellar") is None, reason="stellar CLI not installed")
 def test_stellar_cli_renders_those_bytes_as_the_recorded_interface() -> None:
     """Closes the loop: the previous test proves serpent's bytes ARE the
@@ -757,10 +775,40 @@ def test_meta_is_pinned_against_serpents_own_output() -> None:
 
 @pytest.mark.parametrize(("name", "version"), [("", "1.0.0"), ("counter", "")])
 def test_meta_requires_a_name_and_a_version(name: str, version: str) -> None:
-    """Both keys are always present in the payload, so an empty value would
-    publish a contract whose name or version reads as blank."""
+    """`name` is always present in the payload, and `version` is present
+    whenever it is GIVEN, so an empty value would publish a contract whose name
+    or version reads as blank. Omitting the version entirely is `None`, not
+    `""` -- see the next two tests."""
     with pytest.raises(ValueError, match="non-empty"):
         build_meta(name, version)
+
+
+def test_meta_omits_the_version_entry_when_it_is_none() -> None:
+    """Ruling E8 (M1-D Task 10's sanctioned edit): a contract that declares no
+    version gets NO `version` entry. Inventing one -- `"0.0.0"`, or serpent's
+    own version -- would publish a claim the author never made."""
+    pairs = _unpack_meta(build_meta("counter", None))
+    assert pairs == [
+        (b"name", b"counter"),
+        (b"serpentver", serpent.__version__.encode()),
+    ]
+
+
+def test_meta_keeps_the_reserved_key_order_when_the_version_is_omitted() -> None:
+    """`serpentver` stays third-in-spirit: the entries a reader sees are in the
+    same relative order with the version simply missing, and user pairs still
+    follow every reserved key."""
+    pairs = _unpack_meta(build_meta("counter", None, {"repo": "https://example.test/x"}))
+    assert [key for key, _value in pairs] == [b"name", b"serpentver", b"repo"]
+
+
+def test_serpent_version_does_not_drift_from_the_installed_distribution() -> None:
+    """Ruling E8's cannot-drift intent, at lower churn (M1-D plan-review):
+    `build_meta` writes `serpent.__version__` into `serpentver`, and THIS test
+    is what keeps that string equal to the version the distribution actually
+    ships -- so bumping one without the other fails here rather than shipping a
+    contract whose `serpentver` names a release that was never built."""
+    assert serpent.__version__ == importlib.metadata.version("serpent")
 
 
 def test_meta_round_trips_through_stellar_sdk() -> None:

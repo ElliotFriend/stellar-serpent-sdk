@@ -871,8 +871,50 @@ _SPT7XXX: tuple[CodeEntry, ...] = (
     ),
 )
 
+# --- SPT8xxx: emitter limits (M1-D; dossier S22/P12, ruling M10) ------------
+#: The emitter band, appended by M1-D Task 10 under the sub-plan's
+#: CONTROLLER-SANCTIONED enumeration (M1-D plan-review B3) and the append-only
+#: rule (D15). The first three rows are exactly the user-visible discriminators
+#: `serpent.emitter.frame.BUILD_LIMITS` carries -- `module_size`, `pool`,
+#: `scratch` -- which is what lets `build_wasm` map a `BuildLimitError` to a
+#: located diagnostic without a second table; the fourth is the emitter's
+#: coverage backstop, reported when the frontend accepts a construct this
+#: emitter version has no lowering for. Every row is emitted from the EMITTER,
+#: never from the frontend's checks, so none of them has (or can have) a
+#: `tests/must_reject/` fixture -- see `NO_FIXTURE_REASONS`.
+_SPT8XXX: tuple[CodeEntry, ...] = (
+    CodeEntry(
+        "SPT8001",
+        "SPT8xxx",
+        "module size",
+        "the compiled module exceeds the network's 131072-byte contract size limit",
+        "M1-D Task 10",
+    ),
+    CodeEntry(
+        "SPT8002",
+        "SPT8xxx",
+        "literal pool",
+        "the literal pool overflows into the scratch region at 0x1000",
+        "M1-D Task 10",
+    ),
+    CodeEntry(
+        "SPT8003",
+        "SPT8xxx",
+        "scratch region",
+        "the scratch region exceeds the module's single 64 KiB memory page",
+        "M1-D Task 10",
+    ),
+    CodeEntry(
+        "SPT8004",
+        "SPT8xxx",
+        "emitter coverage",
+        "the construct compiles but this emitter version cannot lower it yet",
+        "M1-D Task 10",
+    ),
+)
+
 REGISTRY: tuple[CodeEntry, ...] = (
-    _SPT1XXX + _SPT2XXX + _SPT3XXX + _SPT4XXX + _SPT5XXX + _SPT6XXX + _SPT7XXX
+    _SPT1XXX + _SPT2XXX + _SPT3XXX + _SPT4XXX + _SPT5XXX + _SPT6XXX + _SPT7XXX + _SPT8XXX
 )
 
 #: The bare set of codes, for O(1) "is this code registered" checks (used by
@@ -891,8 +933,22 @@ CODES: frozenset[str] = frozenset(entry.code for entry in REGISTRY)
 #: were added by controller ruling during Task 11b's fixture-completion
 #: round: each is a dead dispatch/check branch an earlier, always-first check
 #: already claims on every real-source path (see `NO_FIXTURE_REASONS`), kept
-#: in its owning module as defense-in-depth rather than deleted.
-NO_FIXTURE_ALLOWLIST: frozenset[str] = frozenset({"SPT1009", "SPT4018", "SPT6001", "SPT7003"})
+#: in its owning module as defense-in-depth rather than deleted. The four
+#: `SPT8xxx` rows joined for a different reason: they are EMITTER-side limits,
+#: raised from `serpent.emitter` over a module the frontend already accepted,
+#: so no small source fixture can trip one (see `NO_FIXTURE_REASONS`).
+NO_FIXTURE_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "SPT1009",
+        "SPT4018",
+        "SPT6001",
+        "SPT7003",
+        "SPT8001",
+        "SPT8002",
+        "SPT8003",
+        "SPT8004",
+    }
+)
 
 #: One reason string per `NO_FIXTURE_ALLOWLIST` entry.
 NO_FIXTURE_REASONS: dict[str, str] = {
@@ -916,6 +972,27 @@ NO_FIXTURE_REASONS: dict[str, str] = {
         "check runs; the stmt-layer check is retained as defense-in-depth for "
         "AST-only entry"
     ),
+    "SPT8001": (
+        "emitter-side limit: reported by build_wasm over an already-accepted module, so "
+        "no small source fixture can deterministically trigger it (a 131072-byte module "
+        "would be a fixture nobody could read); proven by an emitter unit test instead"
+    ),
+    "SPT8002": (
+        "emitter-side limit: reported by build_wasm over an already-accepted module, so "
+        "no small source fixture can deterministically trigger it (the pool reaches "
+        "0x1000 only for thousands of literals); proven by an emitter unit test instead"
+    ),
+    "SPT8003": (
+        "emitter-side limit: reported by build_wasm over an already-accepted module, so "
+        "no small source fixture can deterministically trigger it (scratch exceeds one "
+        "64 KiB page only for thousands of call sites); proven by an emitter unit test"
+    ),
+    "SPT8004": (
+        "emitter coverage backstop: it fires exactly when the frontend accepts a "
+        "construct the emitter has no lowering for, which is a defect state rather than "
+        "a language rule -- any fixture for it would be deleted by the lowering that "
+        "fixes it"
+    ),
 }
 
 
@@ -938,7 +1015,8 @@ def validate() -> None:
             problems.append(f"{entry.code!r} is not a well-formed SPT#### code")
             continue
         band_digit = entry.code[3]
-        if band_digit not in "1234567" or not entry.code[4:].isdigit():
+        # Bands 1-8: 1-7 are the frontend's, 8 is M1-D's emitter band.
+        if band_digit not in "12345678" or not entry.code[4:].isdigit():
             problems.append(f"{entry.code!r} is not a well-formed SPT#### code")
             continue
         expected_band = f"SPT{band_digit}xxx"

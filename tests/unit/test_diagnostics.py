@@ -227,7 +227,7 @@ def test_compile_error_render_joins_diagnostics() -> None:
 
 # --- codes.py: the complete registry --------------------------------------
 
-_CODE_RE = re.compile(r"^SPT([1-7])\d{3}$")
+_CODE_RE = re.compile(r"^SPT([1-8])\d{3}$")
 
 
 def test_registry_codes_are_unique() -> None:
@@ -268,6 +268,9 @@ _EXPECTED_CODES = frozenset(
         *(f"SPT5{n:03d}" for n in range(1, 6)),
         "SPT6001",
         *(f"SPT7{n:03d}" for n in range(1, 6)),
+        # M1-D Task 10's CONTROLLER-SANCTIONED emitter band (plan-review B3):
+        # the four emitter-side limits `build_wasm` reports.
+        *(f"SPT8{n:03d}" for n in range(1, 5)),
     }
 )
 
@@ -295,7 +298,14 @@ def test_registry_is_complete_not_a_sample() -> None:
     # repeating a key -- which tier 1 silently swallows and the on-chain
     # literal form cannot represent at all), and fixed SPT1034's wording
     # (controller ruling, task-7b-fix-round-1).
-    assert len(codes.REGISTRY) == 96
+    #
+    # M1-D Task 10 appended the SPT8xxx emitter band -- four rows, exactly as
+    # the sub-plan's CONTROLLER-SANCTIONED enumeration (plan-review B3) lists
+    # them: the three user-visible build limits (`module_size`, `pool`,
+    # `scratch`, matching `emitter.frame.BUILD_LIMITS`) plus SPT8004 for a
+    # construct the frontend accepts and this emitter version cannot lower
+    # yet. Append-only (D15): nothing before SPT8001 moved.
+    assert len(codes.REGISTRY) == 100
 
 
 def test_registry_code_set_matches_the_frozen_snapshot() -> None:

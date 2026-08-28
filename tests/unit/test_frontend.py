@@ -17,6 +17,8 @@ import pytest
 
 from serpent._host import functions_by_name
 from serpent._host._protocol import BASE_PROTOCOL, DEFAULT_TARGET_PROTOCOL
+from serpent._strkey import VERSION_ACCOUNT
+from serpent._strkey import encode as strkey_encode
 from serpent.compiler import codes, frontend
 from serpent.compiler.diagnostics import CompileError, Diagnostic, Loc, LocKind
 from serpent.compiler.frontend import CompiledModule, compile_module
@@ -201,9 +203,10 @@ def test_token_style_needs_memory_and_literal_inventory(token_style: CompiledMod
 
 
 def test_token_style_runtime_parts(token_style: CompiledModule) -> None:
-    # `current + amount` etc. are checked U32 arithmetic (A4); nothing here is
-    # 128-bit, so no guest-runtime arithmetic part is needed.
-    assert token_style.runtime_parts_needed == frozenset({"overflow_check"})
+    # `current + amount` etc. are checked U32 arithmetic (A4), and D lowers
+    # every 32-bit checked op as an INLINE sequence (S25 break-even, ruling
+    # E3) -- so a module whose only arithmetic is 32-bit names NO part at all.
+    assert token_style.runtime_parts_needed == frozenset()
 
 
 def test_token_style_spec_inputs_keep_events_separate(token_style: CompiledModule) -> None:
@@ -256,9 +259,57 @@ def test_a_memoryless_contract_compiles_memoryless() -> None:
     # String/Bytes literal, a struct, or a static bulk construction.
     compiled = _compile(_MINIMAL)
     assert compiled.needs_memory is False
-    assert compiled.literals == frontend.LiteralInventory((), (), (), ())
+    assert compiled.literals == frontend.LiteralInventory((), (), (), (), ())
     assert compiled.host_fns_used == frozenset()
     assert compiled.runtime_parts_needed == frozenset()
+
+
+# --- E13: the no-`default` storage `get` costs THREE host functions ------------
+
+_NO_DEFAULT_GET = """
+from serpent import Env, Symbol, U32, contract
+
+
+@contract
+class C:
+    def go(self, env: Env) -> U32:
+        return env.storage().instance().get(Symbol("k"), U32)
+"""
+
+_WITH_DEFAULT_GET = """
+from serpent import Env, Symbol, U32, contract
+
+
+@contract
+class C:
+    def go(self, env: Env) -> U32:
+        return env.storage().instance().get(Symbol("k"), U32, default=U32(0))
+"""
+
+
+def test_a_no_default_storage_get_names_its_guard_host_fns() -> None:
+    """Ruling E13 (D13's licence): the guard D wraps a bare `get_contract_data`
+    in is not free -- it calls `has_contract_data` and, on a miss,
+    `fail_with_error` (`CODE_MISSING_VALUE`, E14). Both are therefore
+    DEFINITELY used, and a `host_fns_used` that omitted them would under-report
+    the import set and the protocol floor.
+    """
+    compiled = _compile(_NO_DEFAULT_GET)
+    assert compiled.host_fns_used == frozenset(
+        {"get_contract_data", "has_contract_data", "fail_with_error"}
+    )
+
+
+def test_a_with_default_storage_get_does_not_name_fail_with_error() -> None:
+    """The other half of E13, and the reason it is not "every get_contract_data".
+
+    A `get(..., default=...)` is an `IfExp` whose `has` already proved presence
+    (`recognize.py`'s shared-key shape), so D emits no guard and nothing can
+    fail -- claiming `fail_with_error` here would be a false positive in a set
+    whose whole contract is that its members are CERTAIN.
+    """
+    compiled = _compile(_WITH_DEFAULT_GET)
+    assert compiled.host_fns_used == frozenset({"get_contract_data", "has_contract_data"})
 
 
 def test_literal_inventory_collects_every_linear_memory_literal() -> None:
@@ -286,6 +337,42 @@ def test_literal_inventory_collects_every_linear_memory_literal() -> None:
     } <= compiled.host_fns_used
 
 
+#: A structurally valid account strkey, built through `serpent._strkey` rather
+#: than pasted, so a re-pin of the checksum rules cannot leave a stale literal
+#: here that the oracle would reject at compile time.
+ADDRESS_STRKEY = strkey_encode(VERSION_ACCOUNT, bytes(range(32)))
+
+
+def test_address_literal_is_inventoried_and_names_both_host_fns() -> None:
+    """Review B6: an `Address` literal is a POOLED strkey, not an immediate.
+
+    An `Address` has no small Val form at all (`ReprForm.HOST_OBJECT`), so the
+    only way to build one from a literal is to pool the strkey's ASCII bytes,
+    hand them to `string_new_from_linear_memory`, and convert with
+    `strkey_to_address` (`a.1`). Both names are therefore CERTAIN uses, the
+    strkey is a linear-memory literal, and the module needs memory -- none of
+    which the inventory noticed before this test.
+    """
+    compiled = _compile(
+        f"""
+        from serpent import Address, Env, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> Address:
+                return Address("{ADDRESS_STRKEY}")
+        """
+    )
+    assert compiled.literals.address_strkeys == (ADDRESS_STRKEY,)
+    # The strkey is NOT a `String` literal: the two are pooled the same way but
+    # they are different authoring surfaces, and `strings` describes only the
+    # first.
+    assert compiled.literals.strings == ()
+    assert {"string_new_from_linear_memory", "strkey_to_address"} <= compiled.host_fns_used
+    assert compiled.needs_memory is True
+
+
 def test_wide_integer_arithmetic_names_its_guest_runtime_parts() -> None:
     compiled = _compile(
         """
@@ -299,9 +386,105 @@ def test_wide_integer_arithmetic_names_its_guest_runtime_parts() -> None:
                 return a * b + a
         """
     )
-    assert compiled.runtime_parts_needed == frozenset(
-        {"overflow_check", "u128_mul", "u128_add", "i128_neg"}
+    # Ruling E3: the standalone `overflow_check` name is GONE -- every checked
+    # op is either an inline sequence or a per-(width, op) part that fails
+    # internally, so there was never one part to name.
+    assert compiled.runtime_parts_needed == frozenset({"u128_mul", "u128_add", "i128_neg"})
+
+
+def test_sixty_four_bit_arithmetic_names_one_part_per_width_and_op() -> None:
+    # Ruling E3: U64/I64 `Binary` is a call to `{u,i}64_<op>` -- the unbox
+    # branch alone is 6+ instructions and appears at every use (S25), so 64-bit
+    # ops keep a part where 32-bit ops do not.
+    compiled = _compile(
+        """
+        from serpent import Env, I64, U64, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env, a: U64, b: U64, c: I64, d: I64) -> U64:
+                e = c // d
+                f = c % d
+                g = a - b
+                h = a * b
+                return a + b
+        """
     )
+    assert compiled.runtime_parts_needed == frozenset(
+        {"u64_add", "u64_sub", "u64_mul", "i64_floordiv", "i64_mod"}
+    )
+
+
+def test_thirty_two_bit_arithmetic_and_narrow_neg_name_no_part() -> None:
+    # 32-bit `Binary` is inline (S25), and `NEG` at 32 AND 64 bits is inline
+    # too (review M6: unsigned is "nonzero is overflow, else 0"; signed is
+    # "MIN is overflow, else 0 - value" -- neither is worth a call).
+    compiled = _compile(
+        """
+        from serpent import Env, I32, I64, U32, U64, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env, a: U32, b: I32, c: U64, d: I64) -> U32:
+                e = -b
+                f = -c
+                g = -d
+                h = a * a
+                return a + a
+        """
+    )
+    assert compiled.runtime_parts_needed == frozenset()
+
+
+def test_wide_comparison_names_its_compare_part() -> None:
+    # `Compare(via_obj_cmp=False)` on U128/I128 is a limb compare, so it needs
+    # `{u,i}128_cmp` (ruling E3). The comparison's OWN `ty` is Bool -- the part
+    # is chosen from the OPERAND type, which is what `lhs.ty` carries.
+    compiled = _compile(
+        """
+        from serpent import Bool, Env, I128, U128, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env, a: U128, b: U128, c: I128, d: I128) -> Bool:
+                return a < b and c >= d
+        """
+    )
+    assert compiled.runtime_parts_needed == frozenset({"u128_cmp", "i128_cmp"})
+
+
+def test_runtime_parts_are_all_ratified_names() -> None:
+    # The ratified inventory is closed (ruling E3): every name C can emit is
+    # `{u,i}64_<op>`, `{u,i}128_<op>`, `{u,i}128_neg`, or `{u,i}128_cmp`. No
+    # `overflow_check`, no `{u,i}64_neg`, no 32-bit anything.
+    ops = ("add", "sub", "mul", "floordiv", "mod")
+    ratified = {f"{p}_{op}" for p in ("u64", "i64", "u128", "i128") for op in ops}
+    ratified |= {f"{p}_{extra}" for p in ("u128", "i128") for extra in ("neg", "cmp")}
+    compiled = _compile(
+        """
+        from serpent import Bool, Env, I128, I32, I64, U128, U32, U64, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env, a: U64, b: I64, c: U128, d: I128, e: U32, f: I32) -> Bool:
+                g = a + a - a * a // a % a
+                h = b + b - b * b // b % b
+                i = c + c - c * c // c % c
+                j = d + d - d * d // d % d
+                k = e + e - e * e // e % e
+                m = f + f - f * f // f % f
+                n = -c
+                o = -d
+                return c < c and d < d
+        """
+    )
+    assert compiled.runtime_parts_needed <= ratified
+    assert "overflow_check" not in compiled.runtime_parts_needed
+    assert compiled.runtime_parts_needed == ratified
 
 
 def test_static_bulk_construction_needs_memory() -> None:

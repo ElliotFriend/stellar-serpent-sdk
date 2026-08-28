@@ -96,6 +96,44 @@ it is a self-snapshot like the rest.
   else is omitted, and no golden may carry an address, an `id()`, or an
   absolute path -- `test_goldens_have_no_identity_leaks` enforces that.
 
+## `wasm/` -- disassembly snapshots (added by Task 14 of the M1-D plan)
+
+`wasm/*.wat.txt` are the emitter-side sibling of `ir/`: the SAME weak
+**SELF-SNAPSHOT** class (neither ON-CHAIN-verified nor
+RUST-SDK-BYTE-COMPAT-verified, and never citable as evidence serpent's wasm
+output -- or this rendering of it -- is *correct*), one snapshot per fixture
+this time rather than per lowering shape. Each records a per-function,
+WAT-style rendering of what `serpent.emitter` currently assembles a real
+contract into, produced by D's own dependency-free renderer
+(`serpent.emitter.printer.disassemble`, kept because `wasm-tools` is an
+optional dependency, D.2), so a change to a lowering arrives as a reviewable
+diff instead of a silent behavioral change. Unlike `ir/`, every file here
+also carries the class label and the regeneration command as an in-file
+header comment: WAT's `;;` comment syntax makes that free, where the `ir/`
+renderer's dataclass-style dump has no comment syntax to carry it in.
+
+- Source of truth: `tests/unit/test_emitter_printer.py` -- `FIXTURE_NAMES`
+  names the four fixtures, `render_golden` builds each one through
+  `serpent.emitter.build_file` and renders it with
+  `serpent.emitter.printer.disassemble`.
+- Regenerate all of them with:
+
+      SERPENT_REGEN_GOLDENS=1 uv run pytest tests/unit/test_emitter_printer.py
+
+  The test writes the file and then compares, so a regeneration run is also
+  a passing run. **Read the diff.** A golden diff here is a behavioral
+  change to what sub-plan D emits, not noise.
+- The four fixtures: `spike1_reauthored` (Phase 0's re-authored spike, F.2.9),
+  `token_style` (the one realistic hand-authored contract, F.2.7), and the
+  two promoted sandbox contracts `sandbox_counter`/`sandbox_hello_world`
+  (F.2.8) -- the same fixture set `tests/unit/test_emitter_end_to_end.py`
+  builds and runs, so a reader who wants BEHAVIOR rather than a lowering diff
+  knows exactly where to look.
+- Like `ir/`, no golden may carry an object address, an `id()`, or an
+  absolute path (`test_the_wasm_goldens_have_no_identity_leaks`); the
+  renderer never sources one, since every value it prints comes from decoded
+  wasm bytes or a name off the pinned host-function registry.
+
 ## Rules for adding a new golden
 
 1. State its provenance class in this file before (or in the same commit
