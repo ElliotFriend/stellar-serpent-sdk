@@ -353,10 +353,37 @@ def test_a_promoted_sandbox_copy_builds_the_same_module_as_its_original(
     as one more witness for Task 11's determinism claim: the same contract
     through two different `path` arguments is the same module, byte for byte.
 
-    If this fails, the fix is to re-review the sandbox change and re-promote
-    it deliberately, NOT to relax the assertion.
+    **The sandbox side is a SKIP, not a failure, when it does not compile**
+    (review round 1, Important 2). The whole reason the copies exist is that
+    `sandbox/` is scratch an author is invited to break on purpose -- so a test
+    that builds the original unconditionally would put a mid-suite
+    `CompileError` traceback in front of somebody who broke the sandbox
+    deliberately, which is precisely the coupling the promotion removed. The
+    PROMOTED copy is built first and unconditionally, so a real emitter
+    regression still fails here; only the comparison against a currently-broken
+    original is skipped, and it says so.
+
+    The `except Exception` is deliberately broad and it is not hiding anything:
+    compiling EXECUTES a module's top-level code (ruling E1's hybrid frontend),
+    so a half-finished sandbox edit can raise essentially anything -- a
+    `CompileError`, a `SyntaxError` from the loader, a `NameError` out of a
+    decorator, an `OSError` if the file was renamed. Every one of those means
+    the same thing here ("the sandbox is mid-edit"), and none of them can come
+    from the promoted copy, which was already built on the line above.
+
+    If this FAILS (rather than skips), the fix is to re-review the sandbox
+    change and re-promote it deliberately, NOT to relax the assertion.
     """
-    assert build_fixture(promoted).wasm == build_fixture(original).wasm
+    ours = build_fixture(promoted).wasm
+    try:
+        theirs = build_fixture(original).wasm
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        pytest.skip(
+            f"sandbox original does not currently compile -- sandbox/ is scratch and is "
+            f"meant to be broken; drift compare skipped ({original.name}: "
+            f"{type(exc).__name__}: {exc})"
+        )
+    assert ours == theirs
 
 
 def test_sandbox_counter_counts_and_then_refuses() -> None:

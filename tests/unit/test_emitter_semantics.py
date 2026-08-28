@@ -81,6 +81,7 @@ precisely so the day the real host disagrees, it is a one-line diff.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 import pytest
 import wasmtime
@@ -349,10 +350,28 @@ def build_case(case: SemCase) -> tuple[Ty, bytes]:
     it is on PATH), so every one of the 35 modules is externally validated on a
     developer machine and on CI without being unrunnable where the tool is
     absent (ruling E5).
+
+    **The two steps are reconciled here, not assumed.** Step 1 reads the `Ty`
+    off an UNANNOTATED `x = <source>` (the compiler's own inference) and step 2
+    writes `annotation_of(ty)` into a RETURN position, where the compiler
+    resolves it independently -- a different code path (`resolve_annotation`)
+    over a different question. `fn.ret == ty` is what says the round trip
+    closed: if `annotation_of` mis-spelled the type in a way that still
+    compiled (a `U64` written where the expression is `Timepoint`, both of
+    which are 64-bit and both of which have a small form), the differential
+    would go on to compare a value of one type against an oracle answer of
+    another. This assertion is cheap and it is the whole reason step 1 exists.
     """
     ty = observed_ty(case)
     source = wrap_returning(case.source, annotation_of(ty))
-    built = build_wasm(compile_module(source, f"semantics/{case.name}.py"))
+    compiled = compile_module(source, f"semantics/{case.name}.py")
+    (fn,) = compiled.functions
+    assert fn.ret == ty, (
+        f"{case.name}: step 1 inferred {ty.render()} from the unannotated `x = <source>`, "
+        f"but the re-wrapped module's declared return resolved to {fn.ret.render()} -- "
+        f"annotation_of({ty.render()}) == {annotation_of(ty)!r} does not round-trip"
+    )
+    built = build_wasm(compiled)
     return ty, built.wasm
 
 
@@ -459,12 +478,28 @@ def test_every_in_scope_error_case_is_the_arithmetic_overflow_boundary() -> None
     assert {case.code for case in _ERROR_CASES} == {errors.CODE_ARITHMETIC_OVERFLOW}
 
 
-# --- kind == "trap": trap CLASS, not a code ---------------------------------
+# --- kind == "trap": the trap CLASS *and* its CAUSE -------------------------
+#
+# `cases.py` says tier 2 "asserts a VM trap", and a trap carries no error `Val`
+# a client could read -- so the CLASS is the conformance floor. Review round 1
+# (controller re-ruling of Important 1) makes the point that a floor is not a
+# ceiling: this rig knows strictly more than "something refused", and throwing
+# that away is what would let the wrong CAUSE pass. So each case also pins why
+# it trapped:
+#
+# * a `WASM_TRAP` row pins wasmtime's own `TrapCode`. `wasmtime.Trap.trap_code`
+#   is a clean accessor on wasmtime 48 (`wasmtime.TrapCode.
+#   INTEGER_DIVISION_BY_ZERO`), so no message-text matching is needed -- which
+#   matters, because the message is a multi-line backtrace whose text is not a
+#   stable interface.
+# * a `HOST_TRAP` row pins the host function that raised, read off the
+#   harness's own call log. `call_names()[-1]` (not merely `count(...) > 0`) is
+#   the assertion: "the last host call the contract made is the one that
+#   trapped" distinguishes trapping IN `vec_get` from reaching `vec_get`
+#   earlier and then trapping somewhere else entirely.
 
 #: The three shapes a "the host refused" outcome takes in this rig, and what
-#: each one MEANS. `kind == "trap"` asserts the class, never a code -- a trap
-#: carries no error `Val` a client could read (`engine.py`'s `HostTrap`
-#: docstring).
+#: each one MEANS.
 WASM_TRAP = "wasm_trap"
 HOST_TRAP = "host_trap"
 NONCONTRACT_ERROR = "noncontract_error"
@@ -498,56 +533,118 @@ def trap_class_of(exc: BaseException) -> str:
     raise AssertionError(f"{type(exc).__name__} is not a trap-class outcome: {exc}")
 
 
-#: Which trap shape each in-scope `kind="trap"` case takes, derived from WHERE
-#: the trap comes from rather than from running the case:
+@dataclass(frozen=True)
+class TrapExpectation:
+    """What one `kind="trap"` case must do, class AND cause.
+
+    Exactly one of `trap_code`/`host_fn` is set, and which one is set is
+    determined by `kind` -- a `WASM_TRAP` has no host function to name (the
+    guest never called out) and a `HOST_TRAP` has no wasmtime `TrapCode` (the
+    guest is still happily executing when the callback raises).
+    """
+
+    kind: str
+    #: For `WASM_TRAP`: wasmtime's own trap code for the faulting instruction.
+    trap_code: wasmtime.TrapCode | None = None
+    #: For `HOST_TRAP`: the host function that raised, i.e. the LAST call the
+    #: contract made before the trap.
+    host_fn: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind == WASM_TRAP:
+            assert self.trap_code is not None and self.host_fn is None
+        elif self.kind == HOST_TRAP:
+            assert self.host_fn is not None and self.trap_code is None
+        else:  # pragma: no cover - the table below uses only the two
+            raise AssertionError(f"no cause pinned for trap kind {self.kind!r}")
+
+
+#: Which trap each in-scope `kind="trap"` case takes, DERIVED from where the
+#: trap comes from rather than recorded from a run:
+#:
 #: * `//`/`%` by zero on a 32-bit type lowers to `i32.div_s`/`i32.rem_s`/
-#:   `i32.div_u`, whose divide-by-zero is a WASM trap (spec §6: the guest does
-#:   not call the host to divide a 32-bit number).
-#: * every other in-scope trap case is a container/buffer precondition --
-#:   `bytes_get` past the end, `vec_get` out of bounds, `map_get` on a missing
-#:   key -- i.e. an env.json "Traps if ..." row inside a host function.
-#: Asserting the SPECIFIC class per case, rather than "any of the three", is
-#: what keeps this discriminating: a lowering that started routing 32-bit
-#: division through a host function, or a host function that started trapping
-#: the guest instead of raising, would still satisfy a union.
-EXPECTED_TRAP_CLASS: dict[str, str] = {
-    "floordiv_by_zero_traps": WASM_TRAP,
-    "mod_by_zero_traps": WASM_TRAP,
-    "unsigned_floordiv_by_zero_traps": WASM_TRAP,
-    "bytes_positive_out_of_range_traps": HOST_TRAP,
-    "vec_get_out_of_bounds_traps": HOST_TRAP,
-    "map_get_missing_key_traps": HOST_TRAP,
+#:   `i32.div_u` (spec §6: the guest does not call the host to divide a 32-bit
+#:   number), and the wasm spec's trap for those with a zero divisor is
+#:   "integer divide by zero" -- `TrapCode.INTEGER_DIVISION_BY_ZERO`.
+#:   Deliberately NOT `INTEGER_OVERFLOW`, which is the OTHER trap `div_s` can
+#:   take (`INT_MIN / -1`) and which serpent turns into a contract error
+#:   instead (`i32_min_floordiv_neg1_overflows` is a `contract_error` case, not
+#:   a trap case) -- so pinning the code is what keeps those two apart.
+#: * every other in-scope trap case is a container/buffer precondition, i.e. an
+#:   env.json "Traps if ..." row inside one named host function: `bytes_get`
+#:   past the end, `vec_get` out of bounds, `map_get` on a missing key.
+#:
+#: Pinning the class alone would be satisfied by a lowering that started
+#: routing 32-bit division through a host function, by a `div_s` that trapped
+#: on overflow instead of dividing by zero, or by a `vec_get` bounds check that
+#: moved into `vec_len`. Pinning the cause is what rejects all three.
+EXPECTED_TRAP: dict[str, TrapExpectation] = {
+    "floordiv_by_zero_traps": TrapExpectation(
+        WASM_TRAP, trap_code=wasmtime.TrapCode.INTEGER_DIVISION_BY_ZERO
+    ),
+    "mod_by_zero_traps": TrapExpectation(
+        WASM_TRAP, trap_code=wasmtime.TrapCode.INTEGER_DIVISION_BY_ZERO
+    ),
+    "unsigned_floordiv_by_zero_traps": TrapExpectation(
+        WASM_TRAP, trap_code=wasmtime.TrapCode.INTEGER_DIVISION_BY_ZERO
+    ),
+    "bytes_positive_out_of_range_traps": TrapExpectation(HOST_TRAP, host_fn="bytes_get"),
+    "vec_get_out_of_bounds_traps": TrapExpectation(HOST_TRAP, host_fn="vec_get"),
+    "map_get_missing_key_traps": TrapExpectation(HOST_TRAP, host_fn="map_get"),
 }
 
 _TRAP_CASES = [case for case in IN_SCOPE if case.kind == "trap"]
 
 
-def test_expected_trap_class_covers_exactly_the_trap_cases() -> None:
-    assert {case.name for case in _TRAP_CASES} == set(EXPECTED_TRAP_CLASS)
+def test_expected_trap_covers_exactly_the_trap_cases() -> None:
+    assert {case.name for case in _TRAP_CASES} == set(EXPECTED_TRAP)
 
 
 @pytest.mark.parametrize("case", _TRAP_CASES, ids=[case.name for case in _TRAP_CASES])
-def test_a_trap_case_traps(case: SemCase) -> None:
-    """`kind == "trap"` -> a trap-class outcome, and the EXPECTED one.
+def test_a_trap_case_traps_for_the_expected_reason(case: SemCase) -> None:
+    """`kind == "trap"` -> the expected trap CLASS, and the expected CAUSE.
 
-    Deliberately not asserted: any error code. Tier 1 raises a Python builtin
-    (`ZeroDivisionError`, `IndexError`, `KeyError`) which has no on-chain
-    counterpart at all -- what tier 2 can compare is the CLASS of outcome, and
-    `cases.py` says so ("Tier 2 asserts a VM trap").
+    Deliberately not asserted: an error code on the trap itself. Tier 1 raises a
+    Python builtin (`ZeroDivisionError`, `IndexError`, `KeyError`) which has no
+    on-chain counterpart, and a trap carries no error `Val` -- so there is
+    nothing to compare across the tiers there. The cause pinned below is a
+    TIER-2 fact (which instruction faulted, which callback raised), not a
+    translation of tier 1's exception class.
 
     Also asserted: `host.errors == []`. A trap is not an abort, so nothing
     should have gone through `fail_with_error` -- a lowering that turned an
-    out-of-bounds read into a contract error would otherwise pass a
-    class-only check on the wrong outcome.
+    out-of-bounds read into a contract error would otherwise pass a class-only
+    check on the wrong outcome.
     """
+    expectation = EXPECTED_TRAP[case.name]
     _ty, host, mini = start_case(case)
-    # `BaseException` deliberately: the trap CLASS is what `trap_class_of` below
-    # asserts, and narrowing this `raises` would duplicate that decision here
-    # (and make a wasm trap and a HostTrap two different tests).
+    # `BaseException` deliberately: the trap CLASS is what `trap_class_of`
+    # asserts below, and narrowing this `raises` would duplicate that decision
+    # here (and split a wasm trap and a HostTrap into two different tests).
     with pytest.raises(BaseException) as info:
         mini.invoke("go")
-    assert trap_class_of(info.value) == EXPECTED_TRAP_CLASS[case.name]
+    exc = info.value
+    assert trap_class_of(exc) == expectation.kind
     assert host.errors == []
+
+    if expectation.kind == WASM_TRAP:
+        assert isinstance(exc, wasmtime.Trap)
+        assert exc.trap_code == expectation.trap_code, (
+            f"{case.name} trapped in the guest, but on {exc.trap_code!r} rather than "
+            f"{expectation.trap_code!r}"
+        )
+        # The guest faulted on its own instruction, so it never called out --
+        # which is the other half of "this is a wasm trap, not a host one".
+        assert host.call_names() == []
+    else:
+        assert isinstance(exc, engine.HostTrap)
+        calls = host.call_names()
+        assert calls and calls[-1] == expectation.host_fn, (
+            f"{case.name} raised HostTrap, but the last host call was "
+            f"{calls[-1] if calls else None!r} rather than {expectation.host_fn!r} -- "
+            f"the trap did not come from the callback this case is about (log: {calls})"
+        )
+        assert host.count(expectation.host_fn) > 0
 
 
 def test_the_noncontract_host_error_is_trap_class() -> None:
