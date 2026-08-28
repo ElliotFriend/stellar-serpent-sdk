@@ -50,6 +50,12 @@ artifact exercised end to end; the extensions are the ones §C.1 names.
   leave exactly that value on the stack; a ``br`` to a loop targets the loop
   *header*, whose branch arity is the loop's parameter types (none), so it
   requires the stack emptied down to the frame's base.
+* ``br_if_break`` -- `while`'s conditional exit (§B.3.2). It shares
+  ``_br_target``'s scan with ``br_break``/``br_continue`` (one place turns
+  "which frame" into "how many levels up") but pops an i32 condition and,
+  unlike ``br``, leaves the function REACHABLE: a conditional branch has a
+  fall-through, and marking the rest of the loop body dead would switch off
+  every height check inside it.
 * A **local index range check** covering params, the declared locals, and
   the hidden temps ``new_local()`` hands out (review M11).
 * ``expr_scope(is_void)`` -- the cheap structural form of S2's "asserts at
@@ -518,39 +524,75 @@ class Fn:
         """``br`` to the nearest enclosing ``loop`` -- what `continue` lowers to."""
         self._br(FrameKind.LOOP, "br_continue")
 
-    def _br(self, kind: FrameKind, where: str) -> None:
-        target: Frame | None = None
-        depth = 0
-        for i, frame in enumerate(reversed(self.ctrl)):
-            # A BLOCK is only a `break` label if it was marked as one; every
-            # other block between here and the loop is jumped over.
-            if frame.kind is kind and (kind is not FrameKind.BLOCK or frame.breakable):
-                target, depth = frame, i
-                break
-        if target is None:
-            what = "breakable block" if kind is FrameKind.BLOCK else kind.name.lower()
-            raise EmitError(f"{self.name}: {where} with no enclosing {what} frame")
+    def br_if_break(self) -> None:
+        """``br_if`` to the nearest breakable block -- `while`'s exit test.
 
+        The conditional twin of ``br_break``, and the only conditional branch
+        this emitter emits: ``While`` lowers to ``block { loop { <not cond>;
+        br_if $exit; ... } }`` (§B.3.2), so the target is always the loop's own
+        exit block and the name says so rather than leaving it implied.
+
+        Two differences from ``_br``, both load-bearing:
+
+        * it **pops one i32** (the condition) before the branch-arity check, so
+          the arity question is asked about what the target frame would
+          actually receive;
+        * it does **not** set the unreachable state. A conditional branch has a
+          fall-through, and marking the code after it dead would switch off
+          every height check over the rest of the loop body -- silently, and
+          only inside loops.
+
+        The depth comes from ``_br_target``, the same frame scan ``br_break``
+        and ``br_continue`` use: there is exactly one place that turns "which
+        frame" into "how many levels up", because an off-by-one here is a
+        silently wrong branch (§C.1).
+        """
+        target, depth = self._br_target(FrameKind.BLOCK, "br_if_break")
+        self.pop("i32")
+        self._check_br_arity(target, depth, target.result, "br_if_break")
+        self.op(opcodes.BR_IF, encode.uleb(depth))
+
+    def _br(self, kind: FrameKind, where: str) -> None:
+        target, depth = self._br_target(kind, where)
         # Branch arity. A `br` to a BLOCK targets that block's `end`, so it
         # must supply the block's result type. A `br` to a LOOP targets the
         # loop HEADER, whose arity is the loop's PARAMETER types -- none, for
         # every loop this emitter builds -- so `continue` must instead leave
         # the stack emptied down to the frame's base.
         arity = target.result if kind is FrameKind.BLOCK else None
-        if not self.unreachable:
-            want = target.base + (1 if arity else 0)
-            if len(self.stack) != want or (arity is not None and self.stack[-1] != arity):
-                raise EmitError(
-                    f"{self.name}: operand stack is {self.stack} at {where}; "
-                    f"expected {want} value(s) with branch arity "
-                    f"{arity or 'none'} (target frame base {target.base}, "
-                    f"relative depth {depth})"
-                )
-
+        self._check_br_arity(target, depth, arity, where)
         self.op(opcodes.BR, encode.uleb(depth))
         # Everything after an unconditional branch is dead code; the frame's
         # `end` (or `else`) restores the enclosing reachability.
         self.unreachable = True
+
+    def _br_target(self, kind: FrameKind, where: str) -> tuple[Frame, int]:
+        """The nearest enclosing frame of ``kind`` and its RELATIVE depth.
+
+        THE frame scan: every branch this module emits resolves its label here,
+        so a `break` and a `br_if` to the same exit block cannot disagree about
+        how many levels up it is.
+        """
+        for i, frame in enumerate(reversed(self.ctrl)):
+            # A BLOCK is only a `break` label if it was marked as one; every
+            # other block between here and the loop is jumped over.
+            if frame.kind is kind and (kind is not FrameKind.BLOCK or frame.breakable):
+                return frame, i
+        what = "breakable block" if kind is FrameKind.BLOCK else kind.name.lower()
+        raise EmitError(f"{self.name}: {where} with no enclosing {what} frame")
+
+    def _check_br_arity(self, target: Frame, depth: int, arity: str | None, where: str) -> None:
+        """A branch must leave exactly what its target's label expects."""
+        if self.unreachable:
+            return
+        want = target.base + (1 if arity else 0)
+        if len(self.stack) != want or (arity is not None and self.stack[-1] != arity):
+            raise EmitError(
+                f"{self.name}: operand stack is {self.stack} at {where}; "
+                f"expected {want} value(s) with branch arity "
+                f"{arity or 'none'} (target frame base {target.base}, "
+                f"relative depth {depth})"
+            )
 
     def unreachable_(self) -> None:
         """Emit ``unreachable`` (0x00) -- C1's diverging tail -- and go polymorphic."""

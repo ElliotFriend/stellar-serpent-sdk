@@ -113,27 +113,40 @@ from serpent.compiler.ir import (
     Binary,
     BoolOp,
     BoolOpKind,
+    Break,
     Compare,
     CompareOp,
     Const,
     ConstRef,
+    Continue,
     Convert,
     ErrorVal,
+    Eval,
     FieldGet,
+    FuncIR,
+    FuncKind,
     HostCall,
+    If,
     IfExp,
     InternalCall,
     IRExpr,
+    IRStmt,
     IsZero,
+    LetLocal,
     LocalRef,
     MakeMap,
     MakeStruct,
     MakeTopics,
     MakeVec,
+    Nop,
     ParamRef,
+    Raise,
     RawScalar,
+    Return,
+    SetLocal,
     Unary,
     UnaryOp,
+    While,
 )
 from serpent.compiler.recognize import RECOGNIZED
 from serpent.compiler.types_ import Ty, TyTag
@@ -142,7 +155,17 @@ from serpent.emitter.arith import EmitCtx
 from serpent.emitter.frame import EmitError, Fn
 from serpent.emitter.layout import Memory
 
-__all__ = ["LowerCtx", "lower_condition", "lower_expr", "lower_expr_raw", "narrow_to"]
+__all__ = [
+    "LowerCtx",
+    "abi_check",
+    "compile_function",
+    "lower_body",
+    "lower_condition",
+    "lower_expr",
+    "lower_expr_raw",
+    "lower_stmt",
+    "narrow_to",
+]
 
 
 # --- the lowering context ------------------------------------------------------
@@ -346,7 +369,7 @@ def lower_expr_raw(fn: Fn, ctx: LowerCtx, e: IRExpr) -> None:
         _unbox(fn, ctx, e.ty)
 
 
-def lower_condition(fn: Fn, ctx: LowerCtx, cond: IRExpr) -> None:
+def lower_condition(fn: Fn, ctx: LowerCtx, cond: IRExpr, *, negate: bool = False) -> None:
     """Lower ``cond`` to the i32 an ``if``/``br_if`` wants (review m2).
 
     THE one condition helper: ``If``, ``While``, ``IfExp`` and ``BoolOp`` all
@@ -355,6 +378,14 @@ def lower_condition(fn: Fn, ctx: LowerCtx, cond: IRExpr) -> None:
     Bools are built by ``i64.extend_i32_u`` of a relop, and the ABI prologues
     guarantee it for parameters -- so the whole conversion is one
     ``i32.wrap_i64``.
+
+    ``negate=True`` is ``While``'s exit test, which wants "the condition is
+    FALSE" as an i32 (§B.3.2's ``i32.eqz; br_if $exit``). From the same premise
+    that is one ``i64.eqz`` rather than a wrap followed by a second negation:
+    the word is 0 or 1, so testing it against zero at 64 bits answers exactly
+    the same question and yields exactly the same i32. It lives here rather
+    than in the ``While`` lowering so that the "a Bool Val IS 0 or 1" fact
+    still has one home.
     """
     if cond.ty.tag is not TyTag.BOOL:
         raise EmitError(
@@ -363,7 +394,10 @@ def lower_condition(fn: Fn, ctx: LowerCtx, cond: IRExpr) -> None:
             "re-derives it"
         )
     lower_expr(fn, ctx, cond)
-    _wrap(fn)
+    if negate:
+        _eqz(fn)
+    else:
+        _wrap(fn)
 
 
 # --- the dispatch (F.1.15: exhaustive, with a LOUD default) ------------------------
@@ -861,26 +895,232 @@ def _lower_if_exp(fn: Fn, ctx: LowerCtx, e: IfExp) -> None:
     fn.end_if()
 
 
-# --- the narrowing hook (Task 9 fills this in) ------------------------------------
+# --- the ABI check bodies: ONE table, two positions (E14 + S3, review M9) ---------
+#
+# The prologue checks an incoming ARGUMENT (S3's first sentence) and `narrow_to`
+# checks a host RESULT (its second). They are the same question -- "is this Val
+# really the type the program says it is?" -- so they are the same code:
+# `abi_check` reads its operand from a LOCAL, and the two callers differ only in
+# which local that is. Review M9 killed the per-type `tagcheck_*`/`narrow_*`
+# parts for the same reason it would have killed two copies of this table: an
+# "exact object-tag compare" is ~8 instructions, which loses against 74
+# instructions of call overhead (S25), and two implementations of one rule
+# diverge with nothing to say which half is the weaker check.
+
+#: The tag byte of a `Val` (spec SS 10) and, one field wider, the tag PLUS the
+#: minor field -- which is what a U32/I32 immediate check compares (m8, below).
+_TAG_MASK = 0xFF
+_MINOR_AND_TAG_MASK = 0xFFFF_FFFF
+
+#: `U32`/`I32`: the whole low 32 bits of a well-formed immediate, tag included.
+_IMMEDIATE_ABI_WORD: dict[TyTag, int] = {TyTag.U32: val.TAG_U32, TyTag.I32: val.TAG_I32}
+
+#: Every EITHER-repr type's two legal tags -- the small form and the object
+#: form (A3). Which one a VALUE takes depends on its magnitude (or, for
+#: `Symbol`, its length), so a check that accepted only one of them would
+#: reject perfectly valid arguments above the bound.
+_EITHER_ABI_TAGS: dict[TyTag, tuple[int, int]] = {
+    TyTag.U64: (val.TAG_U64_SMALL, val.TAG_U64_OBJECT),
+    TyTag.I64: (val.TAG_I64_SMALL, val.TAG_I64_OBJECT),
+    TyTag.TIMEPOINT: (val.TAG_TIMEPOINT_SMALL, val.TAG_TIMEPOINT_OBJECT),
+    TyTag.DURATION: (val.TAG_DURATION_SMALL, val.TAG_DURATION_OBJECT),
+    TyTag.U128: (val.TAG_U128_SMALL, val.TAG_U128_OBJECT),
+    TyTag.I128: (val.TAG_I128_SMALL, val.TAG_I128_OBJECT),
+    TyTag.SYMBOL: (val.TAG_SYMBOL_SMALL, val.TAG_SYMBOL_OBJECT),
+}
+
+#: The types that are ALWAYS an object handle: one exact tag compare each.
+#: `Struct` shares `Map`'s tag because a struct IS a `Map<Symbol, V>` on chain
+#: (S9) -- the same ScVal case, not a lookalike.
+_OBJECT_ABI_TAG: dict[TyTag, int] = {
+    TyTag.STRING: val.TAG_STRING_OBJECT,
+    TyTag.BYTES: val.TAG_BYTES_OBJECT,
+    TyTag.ADDRESS: val.TAG_ADDRESS_OBJECT,
+    TyTag.VEC: val.TAG_VEC_OBJECT,
+    TyTag.MAP: val.TAG_MAP_OBJECT,
+    TyTag.STRUCT: val.TAG_MAP_OBJECT,
+}
+
+#: The one type whose check needs a HOST call, and therefore the one that is a
+#: runtime part rather than an inline sequence (review M9).
+_TAGCHECK_BYTES_N = "tagcheck_bytes_n"
+
+
+def _fail_abi(fn: Fn, ctx: LowerCtx) -> None:
+    """``fail_with_error(CODE_ABI_CHECK_FAILED)`` -- ONE code, every position (C19).
+
+    Which argument failed is a message/trap-context concern, not a code
+    concern, so there is nothing per-position to encode here. No ``unreachable``
+    follows (P14): the host does not return from ``fail_with_error``, and an
+    ``unreachable`` would replace the contract error a client needs to see with
+    a generic VM trap.
+    """
+    fn.i64_const(val.error_val(errors.CODE_ABI_CHECK_FAILED))
+    fn.call_import(ctx.host_import_name(_FAIL_WITH_ERROR_FN), 1, has_result=True)
+    fn.drop()
+
+
+def _fail_abi_if(fn: Fn, ctx: LowerCtx) -> None:
+    """Consume the i32 flag on the stack; abort when it says the check failed."""
+    fn.begin_if(None)
+    _fail_abi(fn, ctx)
+    fn.end_if()
+
+
+def _ne_flag(fn: Fn, slot: int, value: int) -> None:
+    """``local[slot] != value`` as an i64 0/1 flag, so flags compose with ``and``."""
+    fn.local_get(slot)
+    fn.i64_const(value)
+    fn.relop_i64(opcodes.I64_NE)
+    _bool_from_flag(fn)
+
+
+def _truthy(fn: Fn) -> None:
+    """An i64 0/1 flag on the stack -> the i32 boolean an ``if`` wants."""
+    fn.i64_const(0)
+    fn.relop_i64(opcodes.I64_NE)
+
+
+def abi_check(fn: Fn, ctx: LowerCtx, slot: int, ty: Ty) -> None:
+    """Emit ``ty``'s tag AND range check over the ``Val`` in local ``slot``.
+
+    Stack-neutral, and THE per-type table ruling E14 asks for -- option (b),
+    "tag and range check per param", inline everywhere except the one row whose
+    check contains a host call. Failure is always ``CODE_ABI_CHECK_FAILED``.
+
+    The rows, and what "range" means in each:
+
+    * ``Bool`` -- the word is *literally* 0 or 1 (``val.pack_bool``), so one
+      unsigned compare is both the tag check and the range check.
+    * ``U32``/``I32`` -- ``(w & 0xFFFF_FFFF) == TAG``, which tests the tag byte
+      **and** a zero minor field in one compare. Deliberately STRICTER than a
+      tag test (review m8): a nonzero minor is not a valid ``U32Val``/``I32Val``
+      encoding -- ``val.pack_u32val``/``pack_i32val`` always set minor 0, and so
+      does the host's own ``U32Val::from(u32)`` -- so nothing the host can
+      produce is rejected by the extra strictness, while a hand-rolled word
+      carrying junk in the minor field is.
+    * every EITHER-repr type -- the tag is one of TWO legal values (A3), so it
+      takes two compares. Accepting only the small form would reject every
+      value above its 56-bit bound; accepting only the object form would reject
+      every value below it.
+    * ``String``/``Bytes``/``Address``/``Vec``/``Map``/``Struct`` -- one exact
+      object-tag compare, INLINE (review M9).
+    * ``BytesN(n)`` -- the one part, because only a ``bytes_len`` call can tell
+      a 31-byte payload from a 32-byte one.
+    * ``Option[T]`` -- ``VOID_VAL`` or ``T``'s own check, COMPOSED rather than
+      tabulated, so an ``Option`` can never drift from the type it wraps.
+    """
+    tag = ty.tag
+    if tag is TyTag.BOOL:
+        fn.local_get(slot)
+        fn.i64_const(val.TRUE_VAL)
+        fn.relop_i64(opcodes.I64_GT_U)
+        _fail_abi_if(fn, ctx)
+        return
+
+    immediate = _IMMEDIATE_ABI_WORD.get(tag)
+    if immediate is not None:
+        fn.local_get(slot)
+        fn.i64_const(_MINOR_AND_TAG_MASK)
+        fn.binop_i64(opcodes.I64_AND)
+        fn.i64_const(immediate)
+        fn.relop_i64(opcodes.I64_NE)
+        _fail_abi_if(fn, ctx)
+        return
+
+    either = _EITHER_ABI_TAGS.get(tag)
+    if either is not None:
+        small, obj = either
+        tag_slot = fn.new_local()
+        fn.local_get(slot)
+        fn.i64_const(_TAG_MASK)
+        fn.binop_i64(opcodes.I64_AND)
+        fn.local_set(tag_slot)
+        # Fail iff the tag is NEITHER -- one `and` of two "not this one" flags,
+        # never two separate `if`s (which would fail on the legal tag too).
+        _ne_flag(fn, tag_slot, small)
+        _ne_flag(fn, tag_slot, obj)
+        fn.binop_i64(opcodes.I64_AND)
+        _truthy(fn)
+        _fail_abi_if(fn, ctx)
+        return
+
+    object_tag = _OBJECT_ABI_TAG.get(tag)
+    if object_tag is not None:
+        fn.local_get(slot)
+        fn.i64_const(_TAG_MASK)
+        fn.binop_i64(opcodes.I64_AND)
+        fn.i64_const(object_tag)
+        fn.relop_i64(opcodes.I64_NE)
+        _fail_abi_if(fn, ctx)
+        return
+
+    if tag is TyTag.BYTES_N:
+        if ty.n is None:  # pragma: no cover - `Ty.BytesN` always sets it
+            raise EmitError("a BytesN Ty carries no length")
+        fn.local_get(slot)
+        # A RAW u32, not a `U32Val`: the part compares it against the unboxed
+        # `bytes_len` result, and boxing it would be wrong by 2**32 (C13).
+        fn.i64_const(ty.n)
+        fn.call_defined(ctx.ensure_part(_TAGCHECK_BYTES_N), 2, ("i64",))
+        # The part returns the value it checked so it is usable from a stack
+        # position too; here the value is already in `slot`, so the result is
+        # dropped rather than re-stored.
+        fn.drop()
+        return
+
+    if tag is TyTag.OPTION:
+        if ty.elem is None:  # pragma: no cover - `Ty.Option` always sets it
+            raise EmitError("an Option Ty carries no element type")
+        fn.local_get(slot)
+        fn.i64_const(val.VOID_VAL)
+        fn.relop_i64(opcodes.I64_NE)
+        fn.begin_if(None)
+        abi_check(fn, ctx, slot, ty.elem)
+        fn.end_if()
+        return
+
+    raise EmitError(
+        f"no ABI check for {ty.render()}; ruling E14's per-type table is exhaustive "
+        "over the types that can cross the ABI boundary, and a type with no check "
+        "must never pass one unchecked (F.1.15)"
+    )
+
+
+#: The one result type `narrow_to` does not check -- see its docstring.
+_UNNARROWED_TAGS: frozenset[TyTag] = frozenset({TyTag.VOID})
 
 
 def narrow_to(fn: Fn, ctx: LowerCtx, ty: Ty) -> None:
-    """The narrowing check on a host result whose ``ty`` is narrower than ``Val``.
+    """Check the ``Val`` on the stack top against ``ty``, leaving it in place.
 
-    **A deliberate no-op stub: Task 9 implements it.** A host function that
+    S3's second sentence: "every host-call return typed narrower than ``Val``
+    is checked the same way" as an incoming argument. A host function that
     returns a `Val` returns an ANY-typed one -- `map_get` on a struct hands
     back whatever was stored, `get_contract_data` whatever the ledger holds --
-    and the checker's `ty` for that expression is a claim about the value, not
-    a proof. The check Task 9 wires in here turns a violated claim into a
-    contract error rather than into a `Val` of the wrong tag flowing on as if
-    it were fine.
+    and the checker's `ty` for that expression is a CLAIM about the value, not
+    a proof. Without this, a corrupted ledger entry becomes a mis-typed read
+    that flows on as if it were fine: an `I32Val` where the program says `U32`
+    unboxes to a different number with no error anywhere.
 
-    It is called from every position that produces such a result -- the
-    generic `HostCall`, both storage-get arms, and `FieldGet` -- so Task 9
-    changes this function and nothing else. Its arguments are already
-    everything the check needs: the body under construction, the module
-    context (for the import and any runtime part), and the claimed type.
+    It is called from every position that produces such a result -- the generic
+    `HostCall`, both storage-get arms, and `FieldGet`.
+
+    The check body is literally the prologue's (`abi_check`, which reads its
+    operand from a local), applied to a hidden local the value is `local.tee`d
+    into. The value stays on the stack, so this is net +1 i64 like every other
+    step of the expression it belongs to (review M1).
+
+    **`Void` is the one exemption**, and the reason is narrow: a Void `Val` is
+    dropped by the statement that produced it (`Eval`, P14), so a wrong tag
+    there has nowhere to flow -- while checking it would put ~6 instructions
+    after every storage write in the module.
     """
+    if ty.tag in _UNNARROWED_TAGS:
+        return
+    slot = fn.new_local()
+    fn.local_tee(slot)
+    abi_check(fn, ctx, slot, ty)
 
 
 def _host_fn(name: str) -> HostFn:
@@ -1363,3 +1603,261 @@ def _unbox(fn: Fn, ctx: LowerCtx, ty: Ty) -> None:
     if ty.tag in _RAW_IDENTITY_TAGS:
         return
     arith.unbox(fn, ctx, ty)
+
+
+# --- statements (SS B.3.2) ---------------------------------------------------------
+
+
+def lower_stmt(fn: Fn, ctx: LowerCtx, s: IRStmt) -> None:
+    """Lower one statement. Every row of SS B.3.2, and a LOUD default (F.1.15)."""
+    if isinstance(s, LetLocal):
+        # SS C.3: params occupy `[0, nparams)`, so declared slot `s` is local
+        # `nparams + s`. There are no uninitialized locals in serpent -- the
+        # first binding IS the declaration -- so `LetLocal` and `SetLocal` are
+        # the same two instructions and differ only in the checker's eyes.
+        lower_expr(fn, ctx, s.init)
+        fn.local_set(fn.nparams + s.slot)
+    elif isinstance(s, SetLocal):
+        lower_expr(fn, ctx, s.value)
+        fn.local_set(fn.nparams + s.slot)
+    elif isinstance(s, Eval):
+        _lower_eval(fn, ctx, s)
+    elif isinstance(s, If):
+        _lower_if(fn, ctx, s)
+    elif isinstance(s, While):
+        _lower_while(fn, ctx, s)
+    elif isinstance(s, Break):
+        fn.br_break()
+    elif isinstance(s, Continue):
+        fn.br_continue()
+    elif isinstance(s, Raise):
+        _lower_raise(fn, ctx, s)
+    elif isinstance(s, Return):
+        _lower_return(fn, ctx, s)
+    elif isinstance(s, Nop):
+        return
+    else:
+        raise EmitError(
+            f"no lowering for IR statement {type(s).__name__} ({s!r}); the statement "
+            "dispatch is exhaustive over serpent.compiler.ir by design (F.1.15) -- a "
+            "new statement kind must be added here, never silently skipped"
+        )
+
+
+def lower_body(fn: Fn, ctx: LowerCtx, body: tuple[IRStmt, ...]) -> None:
+    """Lower a statement sequence in source order."""
+    for s in body:
+        lower_stmt(fn, ctx, s)
+
+
+def _lower_eval(fn: Fn, ctx: LowerCtx, s: Eval) -> None:
+    """A void expression evaluated for its EFFECT, and the ``drop`` question.
+
+    A host function that "returns nothing" still returns a Void `Val` on the
+    operand stack, and the `drop` is what keeps the frame balanced for the
+    validator (P14) -- P2's named bug is exactly the missing one after
+    `put_contract_data`.
+
+    An INTERNAL call is the exception, and the only one: a `-> None` helper is
+    compiled with ZERO results (E11ii, review M2), so there is nothing on the
+    stack to discard and a `drop` here would pop an operand that was never
+    pushed. That is also why this opens a VOID expression scope for it --
+    `lower_expr`'s scope asserts net +1, which is the wrong assertion for a
+    call that pushes nothing.
+    """
+    if isinstance(s.value, InternalCall) and s.value.ty.tag is TyTag.VOID:
+        with fn.expr_scope(is_void=True):
+            _lower_val(fn, ctx, s.value)
+        return
+    lower_expr(fn, ctx, s.value)
+    fn.drop()
+
+
+def _lower_if(fn: Fn, ctx: LowerCtx, s: If) -> None:
+    """``if (void) ... else ... end`` -- frame discipline per P13.
+
+    The `else` arm is emitted only when there is one: a VOID `if` is legal
+    one-armed (unlike the result-bearing `if` an `IfExp` builds), and an empty
+    `else` would be two bytes of nothing. `elif` needs no special case at all
+    -- the checker already nested it as an `If` inside `orelse`.
+    """
+    lower_condition(fn, ctx, s.cond)
+    fn.begin_if(None)
+    lower_body(fn, ctx, s.body)
+    if s.orelse:
+        fn.else_()
+        lower_body(fn, ctx, s.orelse)
+    fn.end_if()
+
+
+def _lower_while(fn: Fn, ctx: LowerCtx, s: While) -> None:
+    """``block $exit { loop $head { !cond -> br_if $exit; body; br $head } }``.
+
+    Both frames are VOID: multi-value is off (S23), so neither can carry a
+    result, and the loop's own branch arity is then trivially empty.
+
+    **The exit block MUST be opened ``breakable=True``** (Task 2's contract).
+    `br_break` scans for the nearest block so marked and skips every other one,
+    so a plain block opened inside the body for some unrelated reason cannot
+    steal a `break` -- and a `While` that forgot the flag fails loudly at
+    lowering time rather than emitting a branch to a plausible wrong label.
+
+    The condition is lowered NEGATED (`lower_condition(negate=True)`), which is
+    what makes the exit test one `br_if` rather than a branch around a branch.
+    """
+    fn.begin_block(None, breakable=True)
+    fn.begin_loop()
+    lower_condition(fn, ctx, s.cond, negate=True)
+    fn.br_if_break()
+    lower_body(fn, ctx, s.body)
+    fn.br_continue()
+    fn.end()
+    fn.end()
+
+
+def _lower_raise(fn: Fn, ctx: LowerCtx, s: Raise) -> None:
+    """``fail_with_error(error_val(code))`` then ``drop``, and NOTHING after (P14).
+
+    On-chain-verified: an `unreachable` after `fail_with_error` would replace
+    the contract error the client needs to see with a generic VM trap, which is
+    R3's "error codes are never lost to `unreachable`" broken in the one place
+    it matters. The `drop` is not optional either -- the host does not return,
+    but wasm does not know that, and the Void `Val` the call nominally leaves
+    has to be accounted for.
+    """
+    fn.i64_const(val.error_val(s.code))
+    fn.call_import(ctx.host_import_name(_FAIL_WITH_ERROR_FN), 1, has_result=True)
+    fn.drop()
+
+
+def _lower_return(fn: Fn, ctx: LowerCtx, s: Return) -> None:
+    """``return <value>``, with the balance check at the ``return`` (P2).
+
+    `value is None` is a bare `return` (or a `-> None` method's), and what it
+    pushes depends on the function's RESULT ARITY, not on its source form
+    (review M2): an EXPORT is `("i64",)` whatever it returns (S23), so it hands
+    back the Void `Val`; a void INTERNAL helper is `()`, and pushing a value
+    into one is invalid wasm.
+    """
+    if s.value is None:
+        if fn.results:
+            fn.i64_const(val.VOID_VAL)
+    else:
+        lower_expr(fn, ctx, s.value)
+    fn.ret()
+
+
+# --- one whole function (SS B.3.3's FuncIR row) -----------------------------------
+
+#: The kinds that cross the ABI boundary and therefore carry a prologue (E14).
+#: An INTERNAL helper is called only by code this emitter produced, whose
+#: arguments it already typed -- checking them again would be paying S3's cost
+#: at a boundary that does not exist.
+_ABI_KINDS: frozenset[FuncKind] = frozenset({FuncKind.EXPORT, FuncKind.CONSTRUCTOR})
+
+
+def compile_function(func: FuncIR, ctx: LowerCtx) -> Fn:
+    """One ``FuncIR`` -> a finished ``Fn``: prologue, body, tail.
+
+    **Result arity** (S23, E11ii, review M2). An EXPORT or CONSTRUCTOR is
+    `("i64",)` whatever it returns: multi-value is off and every Soroban `Val`
+    is an i64, so a `-> None` method returns the Void `Val` rather than
+    nothing. An INTERNAL helper is `()` when it returns `Void` and `("i64",)`
+    otherwise -- a helper is not an ABI surface, so nothing forces a Void `Val`
+    through it.
+
+    **The tail** (ruling E4, review M2), reached only when the body did not
+    already leave the function in the unreachable state:
+
+    * `("i64",)` + a Void return -- the method fell off its end, so it hands
+      back `VOID_VAL` (the spike's shape);
+    * `()` -- nothing at all; `finish()` accepts the empty stack;
+    * `("i64",)` + a NON-void return -- only a DIVERGING body can be here (C1's
+      `while True:` with no `break`, or a body ending in `raise`), because C
+      proved definite return on every other path (C16). Emit
+      `fail_with_error(CODE_UNREACHABLE_GUARD)`, `drop`, then `unreachable`,
+      **in that order**: the `unreachable` satisfies the validator, and the
+      call before it is what keeps R3's promise that an error code is never
+      lost to a bare trap. Reversed, the module still validates and still
+      aborts -- with no code for a client to read.
+    """
+    if func.kind is FuncKind.CONSTRUCTOR and func.ret.tag is not TyTag.VOID:
+        raise EmitError(
+            f"constructor {func.export_name} returns {func.ret.render()}; S26 makes "
+            "`__constructor` void (the host launders its errors to "
+            "Context(InvalidAction)), and the frontend proves it -- so a "
+            "value-returning one is a compiler bug"
+        )
+    if func.ret.tag is not TyTag.VOID and not func.returns_on_every_path:
+        raise EmitError(
+            f"{func.export_name} returns {func.ret.render()} with "
+            "returns_on_every_path=False; C's definite-return proof (C16/P6/S17) is "
+            "what makes the tail rule sound, and a function that fails it never "
+            "reaches the emitter"
+        )
+
+    results: tuple[str, ...] = ("i64",)
+    if func.kind is FuncKind.INTERNAL and func.ret.tag is TyTag.VOID:
+        results = ()
+
+    fn = Fn(
+        name=func.export_name,
+        nparams=len(func.params),
+        nlocals_declared=_nlocals_declared(func),
+        results=results,
+    )
+    if func.kind in _ABI_KINDS:
+        _abi_prologue(fn, ctx, func)
+    lower_body(fn, ctx, func.body)
+    _lower_tail(fn, ctx, func)
+    return fn
+
+
+def _nlocals_declared(func: FuncIR) -> int:
+    """How many declared local slots the body can name -- and a contiguity check.
+
+    `SlotTable` numbers slots in first-binding order (SS C.3), so they are
+    `0..n-1` by construction. A GAP would mean the two disagree, and the
+    consequence is not an error: `local_set(nparams + slot)` would still be in
+    range and would write a HIDDEN TEMP instead of the local the body meant.
+    """
+    slots = sorted(slot for slot, _name, _ty in func.locals)
+    if slots != list(range(len(slots))):
+        raise EmitError(
+            f"{func.export_name} declares local slots {slots}; SS C.3 numbers them in "
+            "first-binding order, so they must be contiguous from 0 -- a gap would "
+            "silently redirect a local.set at a hidden temp"
+        )
+    return len(slots)
+
+
+def _abi_prologue(fn: Fn, ctx: LowerCtx, func: FuncIR) -> None:
+    """Ruling E14: per-parameter tag AND range checks, before anything else.
+
+    S3 calls this non-negotiable and prices it (`add(Symbol('hello')) -> 45`).
+    The reason is that a wasm export's signature is `(i64...) -> i64` and says
+    nothing at all about what those words MEAN -- a caller can hand a
+    `SymbolObject` to a method whose parameter is a `U32`, and without this the
+    unbox would read the handle index as a number and answer confidently.
+
+    Every parameter, in order, and every one of them through the same
+    `abi_check` the narrowing hook uses. Position `i` is local `i` (SS C.3).
+    """
+    for i, (_name, ty, _loc) in enumerate(func.params):
+        abi_check(fn, ctx, i, ty)
+
+
+def _lower_tail(fn: Fn, ctx: LowerCtx, func: FuncIR) -> None:
+    """The per-result-arity tail rule -- see `compile_function`'s docstring."""
+    if fn.unreachable:
+        return
+    if not fn.results:
+        return
+    if func.ret.tag is TyTag.VOID:
+        fn.i64_const(val.VOID_VAL)
+        fn.ret()
+        return
+    fn.i64_const(val.error_val(errors.CODE_UNREACHABLE_GUARD))
+    fn.call_import(ctx.host_import_name(_FAIL_WITH_ERROR_FN), 1, has_result=True)
+    fn.drop()
+    fn.unreachable_()

@@ -129,6 +129,10 @@ class _ObjectStore:
             "obj_to_i64": self.raw,
             "timepoint_obj_to_u64": self.raw,
             "duration_obj_to_u64": self.raw,
+            # Task 9's `tagcheck_bytes_n` is the one part that calls a host
+            # function; bound (rather than modelled) so the whole ratified
+            # inventory still instantiates in one module below.
+            "bytes_len": lambda handle: val.pack_u32val(0),
         }
 
 

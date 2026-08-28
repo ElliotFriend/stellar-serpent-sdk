@@ -703,7 +703,10 @@ def test_a_short_field_name_is_a_SymbolSmall_immediate() -> None:
         field="limit",
         struct_name="S",
     )
-    assert import_calls(items(node, nparams=1)) == ["map_get"]
+    # `fail_with_error` follows because a `FieldGet` result is narrowed to the
+    # field's type (Task 9, S3's second sentence): `map_get` answers with
+    # whatever was stored, and `U32` is a claim about it, not a proof.
+    assert import_calls(items(node, nparams=1)) == ["map_get", "fail_with_error"]
 
 
 def test_a_long_field_name_is_pooled_and_built_from_linear_memory() -> None:
@@ -716,7 +719,11 @@ def test_a_long_field_name_is_pooled_and_built_from_linear_memory() -> None:
     )
     memory = Memory()
     body = items(node, nparams=1, memory=memory)
-    assert import_calls(body) == ["symbol_new_from_linear_memory", "map_get"]
+    assert import_calls(body) == [
+        "symbol_new_from_linear_memory",
+        "map_get",
+        "fail_with_error",
+    ]
     assert b"counter_limit" in memory.pool_bytes()
 
 
@@ -924,13 +931,16 @@ def test_topics_with_a_pooled_literal_take_the_chain() -> None:
 # ===========================================================================
 
 
-def test_narrow_to_is_a_declared_no_op_stub_for_task_9() -> None:
-    """The hook exists and is called; Task 9 fills it in. Pinned so the
-    handoff is a change to ONE function rather than a hunt for the call
-    sites."""
-    assert lower.narrow_to.__doc__ is not None
-    assert "Task 9" in lower.narrow_to.__doc__
+def test_narrow_to_checks_the_value_and_leaves_it_on_the_stack() -> None:
+    """Task 9 replaced the stub. What survives from the handoff is the
+    STRUCTURAL contract every call site in this module depends on: the check is
+    net 0 on the operand stack, so `lower_expr`'s own `expr_scope` still sees
+    net +1 (review M1). Its behaviour is pinned in
+    `test_emitter_lower_stmts.py`."""
     fn = Fn("probe", 0, 0, ("i64",))
+    fn.i64_const(val.pack_u32val(1))
     before = list(fn.stack)
     lower.narrow_to(fn, LowerCtx(1, Memory()), Ty.U32)
-    assert fn.stack == before and fn.code == []
+    assert fn.stack == before
+    # And it is not the old no-op: the check really is in the body.
+    assert CallImport("fail_with_error") in fn.finish()

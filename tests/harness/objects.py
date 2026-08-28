@@ -102,6 +102,7 @@ class ObjectStore:
             "symbol_new_from_linear_memory": self.symbol_new_from_linear_memory,
             "string_new_from_linear_memory": self.string_new_from_linear_memory,
             "bytes_new_from_linear_memory": self.bytes_new_from_linear_memory,
+            "bytes_len": self.bytes_len,
             "get_contract_data": self.get_contract_data,
             "put_contract_data": self.put_contract_data,
             "has_contract_data": self.has_contract_data,
@@ -280,6 +281,19 @@ class ObjectStore:
     def bytes_new_from_linear_memory(self, pos: int, length: int) -> int:
         self._log("bytes_new_from_linear_memory", pos, length)
         return self._new(val.TAG_BYTES_OBJECT, Bytes(self._blob(pos, length)))
+
+    def bytes_len(self, b: int) -> int:
+        """`b.8`: the payload length as a `U32Val`.
+
+        The one host call an ABI check contains (E14's `BytesN(n)` row): a tag
+        byte says `Bytes`, and nothing but this can say whether the payload is
+        the declared length. `_object`'s tag assertion is deliberately left in
+        place -- an emitter that called this BEFORE its tag check would fail
+        here, loudly, rather than producing the host's own error where a
+        contract error was owed.
+        """
+        self._log("bytes_len", b)
+        return val.pack_u32val(len(self.bytes_of(b)))
 
     def text_of(self, word: int) -> str:
         """The characters behind a `Symbol`/`String` `Val`, however it arrived.

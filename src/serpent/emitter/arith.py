@@ -107,7 +107,7 @@ from serpent.compiler.types_ import Ty, TyTag
 from serpent.emitter import encode, opcodes
 from serpent.emitter.frame import CodeItem, EmitError, Fn
 from serpent.emitter.layout import Memory
-from serpent.errors import CODE_ARITHMETIC_OVERFLOW
+from serpent.errors import CODE_ABI_CHECK_FAILED, CODE_ARITHMETIC_OVERFLOW
 
 __all__ = [
     "PARTS_NEEDING_MEMORY",
@@ -1872,6 +1872,67 @@ def _build_box_i128(ctx: EmitCtx) -> Fn:
     return fn
 
 
+# --- the one ABI tag-check part (E14, review M9) --------------------------------
+
+
+def _fail_abi_check(fn: Fn, ctx: EmitCtx) -> None:
+    """Abort with ``CODE_ABI_CHECK_FAILED`` -- ONE code for every position (C19).
+
+    Shaped exactly like ``_fail_overflow``, and for the same reason: no
+    ``unreachable`` follows, because the host traps inside ``fail_with_error``
+    and an ``unreachable`` here would replace the contract error a client needs
+    to see with a generic VM trap (P14).
+    """
+    fn.i64_const(val.error_val(CODE_ABI_CHECK_FAILED))
+    fn.call_import(ctx.host_import_name("fail_with_error"), 1, has_result=True)
+    fn.drop()
+
+
+def _build_tagcheck_bytes_n(ctx: EmitCtx) -> Fn:
+    """``tagcheck_bytes_n(v: Val, n: raw u32) -> Val`` -- returns ``v``, or fails.
+
+    **The only tag-check that is a part** (review M9). Every other type's ABI
+    check is an inline tag compare of about eight instructions, which loses
+    against 74 instructions of call overhead (S25); this one contains a HOST
+    CALL -- the tag alone cannot tell a 31-byte payload from a 32-byte one --
+    so it clears the break-even and is worth linking once per module.
+
+    **Order is load-bearing.** The tag is checked FIRST: ``bytes_len`` on a
+    non-``Bytes`` ``Val`` is the host's own error, which a client cannot tell
+    apart from a real one, and ``CODE_ABI_CHECK_FAILED`` is precisely the
+    answer this check exists to give.
+
+    ``bytes_len`` returns a ``U32Val`` (``val_typed_ret`` is ``True`` in the
+    pin), so its result is unboxed with the same ``shr_u 32`` every other
+    ``U32Val`` takes before being compared against the raw ``n`` the caller
+    supplied. Returning ``v`` is what makes the signature usable from a stack
+    position as well as from a local one.
+    """
+    fn = _part_fn("tagcheck_bytes_n", 2)
+    fn.local_get(0)
+    fn.i64_const(_TAG_MASK)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.i64_const(val.TAG_BYTES_OBJECT)
+    fn.relop_i64(opcodes.I64_NE)
+    fn.begin_if(None)
+    _fail_abi_check(fn, ctx)
+    fn.end_if()
+
+    fn.local_get(0)
+    fn.call_import(ctx.host_import_name("bytes_len"), 1, has_result=True)
+    fn.i64_const(_IMMEDIATE_SHIFT)
+    fn.binop_i64(opcodes.I64_SHR_U)
+    fn.local_get(1)
+    fn.relop_i64(opcodes.I64_NE)
+    fn.begin_if(None)
+    _fail_abi_check(fn, ctx)
+    fn.end_if()
+
+    fn.local_get(0)
+    fn.ret()
+    return fn
+
+
 #: Every part that returns TWO results and therefore reserves a scratch slot.
 #: Review B8's marker in static form: Task 10 must emit linear memory for a
 #: module linking any of these, whatever `compiled.needs_memory` says.
@@ -1928,6 +1989,7 @@ PART_BUILDERS: dict[str, Callable[[EmitCtx], Fn]] = {
     "box_u128": _build_box_u128,
     "unbox_i128": _build_unbox_i128,
     "box_i128": _build_box_i128,
+    "tagcheck_bytes_n": _build_tagcheck_bytes_n,
 }
 
 
