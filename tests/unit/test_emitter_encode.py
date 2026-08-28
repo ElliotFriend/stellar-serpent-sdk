@@ -9,6 +9,7 @@ embedded as literals rather than read from the file at test time because
 ``spike.wasm`` may be absent from a fresh checkout (task instructions).
 """
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -16,6 +17,15 @@ from serpent import val
 from serpent.emitter import encode
 
 # --- uleb/sleb golden vectors (canonical LEB128 examples) ------------------
+
+
+def test_uleb_rejects_a_negative_input() -> None:
+    # A negative n never clears its sign bit under `n >>= 7`, so the encoder
+    # would spin forever rather than raise -- a CI hang, worse than a crash.
+    # `ValueError` (not `frame.EmitError`): `frame` imports `encode`, so the
+    # reverse import would be a cycle.
+    with pytest.raises(ValueError, match="uleb requires n >= 0, got -1"):
+        encode.uleb(-1)
 
 
 def test_uleb_golden_vectors() -> None:

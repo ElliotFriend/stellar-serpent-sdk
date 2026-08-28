@@ -722,6 +722,38 @@ def test_division_by_zero_aborts_through_the_host(part: str) -> None:
     assert caught.value.val == i256.DIV_ERROR_VAL
 
 
+class _BogusQuotientHost(i256.Wide256Host):
+    """An ``i256_div`` that answers an out-of-i128-range value on purpose.
+
+    ``_check_extension`` (arith.py) is disclosed defence-in-depth: A4 makes
+    the real ``i256_div`` unable to return a quotient whose high two limbs
+    are not a pure sign-extension of bit 127 for in-range i128 operands (the
+    one case that could, ``MIN // -1``, is pre-answered before the host is
+    ever asked -- see `test_min_over_minus_one_is_answered_before_the_host_is_asked`
+    above). This subclass is the only way to exercise the guard at all: it
+    hands back ``2**127`` regardless of its arguments, whose top limbs
+    (``hi_hi=0``, ``hi_lo=0``) do NOT match the sign-extension of bit 127 of
+    ``lo_hi`` (which is set, so a genuine i128 result would need ``-1, -1``).
+    """
+
+    def i256_div(self, lhs: int, rhs: int) -> int:
+        return self.i256_val(2**127)
+
+
+def test_check_extension_refuses_a_quotient_a_real_division_could_never_produce() -> None:
+    # A normal, in-range division (not MIN // -1, which never reaches the
+    # host) run through a host whose i256_div is rigged to answer 2**127 --
+    # an i256 value outside i128's range whose high limbs are not a pure sign
+    # extension of the low half's top bit. `_check_extension` must catch this
+    # itself; nothing about a3/A4 division would ever produce it for real.
+    wide = _BogusQuotientHost()
+    wasm, _imports, _slots = _wide_module()
+    host = engine.MiniHost(wasm, imports=wide.bindings())
+    with pytest.raises(engine.HostError) as caught:
+        host.invoke("i128_floordiv", *limbs(-7), *limbs(2))
+    assert caught.value.val == OVERFLOW_VAL
+
+
 # ===========================================================================
 # Boxing and unboxing at 128 bits (S14, review m7, B10)
 # ===========================================================================

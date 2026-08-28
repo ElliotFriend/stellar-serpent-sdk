@@ -14,8 +14,17 @@ def uleb(n: int) -> bytes:
     """Unsigned LEB128.
 
     Callers must pass n >= 0 -- the WASM binary format has no signed use for
-    uleb (section ids, counts, indices, string lengths).
+    uleb (section ids, counts, indices, string lengths). A negative ``n``
+    never clears its sign bit under ``n >>= 7``, so the loop below would spin
+    forever instead of raising; that failure mode (a CI hang) is worse than a
+    crash, so it is refused up front.
+
+    Raises ``ValueError`` rather than ``frame.EmitError``: ``frame`` imports
+    this module (``from serpent.emitter import encode, opcodes``), so
+    importing ``EmitError`` from ``frame`` here would be a cycle.
     """
+    if n < 0:
+        raise ValueError(f"uleb requires n >= 0, got {n}")
     out = bytearray()
     while True:
         b = n & 0x7F
