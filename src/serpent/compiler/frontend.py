@@ -179,13 +179,24 @@ _LINEAR_MEMORY_HOST_FNS: frozenset[str] = frozenset(
     }
 )
 
-#: The guest-runtime part every checked arithmetic operation needs (A4/S20):
-#: an out-of-range result must reach `fail_with_error` with the
-#: `ArithmeticOverflow` code, never wrap.
-_OVERFLOW_PART = "overflow_check"
+#: `TyTag` -> the guest-runtime prefix for the widths whose checked `Binary`
+#: is a CALL rather than an inline sequence (ruling E3). 64-bit is here because
+#: the unbox branch alone is 6+ instructions and appears at every use; 128-bit
+#: because there is no native wasm instruction at all (spec SS 6). U32/I32 are
+#: deliberately absent: their checked ops are a shift, an op, and a range
+#: compare -- cheaper inline than the call overhead (S25's break-even).
+_ARITH_PREFIX: dict[TyTag, str] = {
+    TyTag.U64: "u64",
+    TyTag.I64: "i64",
+    TyTag.U128: "u128",
+    TyTag.I128: "i128",
+}
 
-#: `TyTag` -> the guest-runtime prefix for 128-bit arithmetic (spec SS 6): the
-#: only widths with no native wasm instruction.
+#: `TyTag` -> the guest-runtime prefix for the widths whose `NEG` and whose
+#: direct (non-`obj_cmp`) `Compare` are also calls: 128-bit only. At 32 and 64
+#: bits `NEG` is inline (review M6 -- unsigned is "nonzero is overflow, else
+#: 0", signed is "MIN is overflow, else 0 - value") and a compare is one wasm
+#: relop; at 128 bits both are limb code.
 _WIDE_ARITH_PREFIX: dict[TyTag, str] = {TyTag.U128: "u128", TyTag.I128: "i128"}
 
 
@@ -685,35 +696,53 @@ def _bulk_construction_can_use_memory(node: object) -> bool:
 
 
 def _collect_runtime_parts(ir: ModuleIR) -> frozenset[str]:
-    """Which guest-runtime pieces D must link.
+    """Which guest-runtime pieces D must link -- **a hint, not a manifest**.
 
-    Two families, and nothing invented beyond them:
+    Ratified by sub-plan D (ruling E3) under the licence C2 wrote into this
+    function's previous docstring. What the names mean now:
 
-    * `overflow_check` -- every checked arithmetic operation needs the
-      out-of-range branch that routes to `fail_with_error` with the
-      `ArithmeticOverflow` code (A4/S20). `not` is excluded: it is a Bool
-      operation with nothing to overflow.
-    * `u128_<op>` / `i128_<op>` -- 128-bit arithmetic has no native wasm
-      instruction, so each operator it uses is a distinct guest-runtime
-      routine (spec SS 6). The names follow the dossier's own examples
-      (`i128_add`, `i128_mul`).
+    * `{u,i}64_<op>` / `{u,i}128_<op>` for `op` in add/sub/mul/floordiv/mod --
+      one part per (width, operator), each taking and returning RAW unboxed
+      words and routing its own out-of-range result to `fail_with_error` with
+      the `ArithmeticOverflow` code (A4/S20).
+    * `{u,i}128_neg` and `{u,i}128_cmp` -- 128-bit negation and 128-bit direct
+      comparison are limb code, so they too are calls.
 
-    These part names are C-coined and await sub-plan D's ratification: D may
-    rename them when it authors the guest-runtime routines, updating this
-    function and its pinning test together. They are not frozen API.
+    What is deliberately NOT here, and why:
+
+    * **`overflow_check` is gone.** There was never one shared helper: the
+      out-of-range branch is three instructions specialized to the width, the
+      operator, and the sign, and it lives inside whichever part (or inline
+      sequence) computes the result.
+    * **32-bit `Binary` names nothing.** U32/I32 checked ops lower to an
+      inline shift/op/range-compare -- below S25's call-overhead break-even.
+    * **`NEG` at 32 and 64 bits names nothing.** Review M6: on an unsigned
+      type it is "nonzero is overflow, else 0"; on a signed type it is "MIN is
+      overflow, else 0 - value". Both are inline.
+    * **`Compare(via_obj_cmp=True)` names nothing** -- that is a host call, not
+      a guest-runtime part -- and a comparison's part is chosen from its
+      OPERAND type (`lhs.ty`), never from its own `ty`, which is always Bool.
+
+    **A hint, not a manifest.** D links parts from its own lowering, not from
+    this set; what is pinned between the two is only that D links at least
+    everything named here (`runtime_parts_needed <= runtime_parts_linked`).
+    A part D reaches on its own -- `box_u64`, `unbox_i64`, `tagcheck_bytes_n`
+    -- is a lowering detail C cannot see and must not try to predict.
     """
     parts: set[str] = set()
     for node in walk(ir):
         if isinstance(node, BinaryNode):
-            parts.add(_OVERFLOW_PART)
-            prefix = _WIDE_ARITH_PREFIX.get(node.ty.tag)
+            prefix = _ARITH_PREFIX.get(node.ty.tag)
             if prefix is not None:
                 parts.add(f"{prefix}_{node.op.name.lower()}")
         elif isinstance(node, Unary) and node.op is UnaryOp.NEG:
-            parts.add(_OVERFLOW_PART)
             prefix = _WIDE_ARITH_PREFIX.get(node.ty.tag)
             if prefix is not None:
                 parts.add(f"{prefix}_neg")
+        elif isinstance(node, Compare) and not node.via_obj_cmp:
+            prefix = _WIDE_ARITH_PREFIX.get(node.lhs.ty.tag)
+            if prefix is not None:
+                parts.add(f"{prefix}_cmp")
     return frozenset(parts)
 
 
