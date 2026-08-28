@@ -176,6 +176,7 @@ from serpent.compiler.ir import (
     Unary,
     UnaryOp,
     While,
+    walk,
 )
 from serpent.compiler.recognize import RECOGNIZED
 from serpent.compiler.types_ import Ty, TyTag
@@ -185,6 +186,7 @@ from serpent.emitter.frame import EmitError, Fn
 from serpent.emitter.layout import Memory
 
 __all__ = [
+    "ABI_CHECKED_TAGS",
     "LowerCtx",
     "abi_check",
     "compile_function",
@@ -969,6 +971,20 @@ _OBJECT_ABI_TAG: dict[TyTag, int] = {
     TyTag.MAP: val.TAG_MAP_OBJECT,
     TyTag.STRUCT: val.TAG_MAP_OBJECT,
 }
+
+#: Every ``TyTag`` ``abi_check`` has a check body for, DERIVED from the three
+#: tables above plus the four rows whose check is hand-written (``Bool``'s single
+#: unsigned compare, ``BytesN``'s part, ``Option``'s composition). Exported so
+#: the per-type accept/reject matrix in ``test_emitter_lower_stmts.py`` can
+#: police itself: a row added to a table here joins this set automatically and
+#: fails that matrix until it is exercised. A test also pins the set HONEST in
+#: both directions -- every tag in it emits a check, every tag outside it raises.
+ABI_CHECKED_TAGS: frozenset[TyTag] = frozenset(
+    {TyTag.BOOL, TyTag.BYTES_N, TyTag.OPTION}
+    | _IMMEDIATE_ABI_WORD.keys()
+    | _EITHER_ABI_TAGS.keys()
+    | _OBJECT_ABI_TAG.keys()
+)
 
 #: The one type whose check needs a HOST call, and therefore the one that is a
 #: runtime part rather than an inline sequence (review M9).
@@ -1767,6 +1783,11 @@ def _lower_return(fn: Fn, ctx: LowerCtx, s: Return) -> None:
     (review M2): an EXPORT is `("i64",)` whatever it returns (S23), so it hands
     back the Void `Val`; a void INTERNAL helper is `()`, and pushing a value
     into one is invalid wasm.
+
+    That substitution is only ever right for a function whose DECLARED return
+    is `Void`. `compile_function` refuses a bare `return` in any other function
+    up front (`_refuse_valueless_returns`) rather than letting this line hand a
+    caller a Void `Val` wearing the declared type.
     """
     if s.value is None:
         if fn.results:
@@ -1817,13 +1838,15 @@ def compile_function(func: FuncIR, ctx: LowerCtx) -> Fn:
             "Context(InvalidAction)), and the frontend proves it -- so a "
             "value-returning one is a compiler bug"
         )
-    if func.ret.tag is not TyTag.VOID and not func.returns_on_every_path:
-        raise EmitError(
-            f"{func.export_name} returns {func.ret.render()} with "
-            "returns_on_every_path=False; C's definite-return proof (C16/P6/S17) is "
-            "what makes the tail rule sound, and a function that fails it never "
-            "reaches the emitter"
-        )
+    if func.ret.tag is not TyTag.VOID:
+        if not func.returns_on_every_path:
+            raise EmitError(
+                f"{func.export_name} returns {func.ret.render()} with "
+                "returns_on_every_path=False; C's definite-return proof (C16/P6/S17) is "
+                "what makes the tail rule sound, and a function that fails it never "
+                "reaches the emitter"
+            )
+        _refuse_valueless_returns(func)
 
     results: tuple[str, ...] = ("i64",)
     if func.kind is FuncKind.INTERNAL and func.ret.tag is TyTag.VOID:
@@ -1840,6 +1863,36 @@ def compile_function(func: FuncIR, ctx: LowerCtx) -> Fn:
     lower_body(fn, ctx, func.body)
     _lower_tail(fn, ctx, func)
     return fn
+
+
+def _refuse_valueless_returns(func: FuncIR) -> None:
+    """A bare ``return`` inside a NON-void function is refused, never patched.
+
+    `_lower_return` pushes `VOID_VAL` for `Return(value=None)` whenever the
+    function has an i64 result, which is exactly right for a `-> None` EXPORT
+    (S23 makes it `("i64",)` anyway) and exactly WRONG here: the caller would
+    receive the Void `Val` typed as `U32`, `Address`, whatever the signature
+    promised -- a plausible wrong answer with no error anywhere, which is the
+    class F.1 exists to prevent.
+
+    C's checker excludes the shape (a bare `return` cannot satisfy definite
+    return for a value-returning function, P6/S17), so this is the same kind of
+    assertion as C16's above: a compiler bug, refused loudly at the boundary
+    rather than silently substituted deep inside the lowering.
+
+    Whole-body, via `ir.walk`, because the offending `return` can be nested
+    inside an `if` arm or a loop -- and because doing it here keeps
+    `lower_stmt`'s signature the one the interface promises.
+    """
+    for node in walk(func):
+        if isinstance(node, Return) and node.value is None:
+            raise EmitError(
+                f"{func.export_name} returns {func.ret.render()} but its body contains "
+                f"a bare `return` at {node.loc.path}:{node.loc.line}; substituting "
+                "VOID_VAL would "
+                "hand the caller a Void Val typed as the declared return type, and C's "
+                "definite-return analysis (P6/S17) already excludes the shape"
+            )
 
 
 def _nlocals_declared(func: FuncIR) -> int:

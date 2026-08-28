@@ -66,7 +66,7 @@ from serpent.compiler.ir import (
     SetLocal,
     While,
 )
-from serpent.compiler.types_ import Ty
+from serpent.compiler.types_ import Ty, TyTag
 from serpent.emitter import arith, encode, lower, opcodes
 from serpent.emitter.frame import CallDefined, CallImport, CodeItem, EmitError, Fn
 from serpent.emitter.layout import Memory
@@ -397,6 +397,7 @@ def every_shape() -> list[FuncIR]:
         func("void_export", [put("v", 1)], ret=Ty.Void, rope=False),
         void_helper(),
         func("prologued", [Return(loc=LOC, value=const(Ty.U32, 1))], params=[("a", Ty.U32)]),
+        nested_break(),
     ]
 
 
@@ -454,6 +455,33 @@ def test_a_user_raise_emits_no_unreachable_of_its_own() -> None:
     first_call = decoded.index(CallImport("fail_with_error"))
     assert decoded[first_call + 1] == opcodes.DROP
     assert decoded[first_call + 2] != opcodes.UNREACHABLE
+
+
+def test_a_raise_mid_body_aborts_with_the_users_code_and_lowering_continues() -> None:
+    """P14's other half, unpinned until now. `fail_with_error` does not return
+    at RUN time, but the emitter must keep lowering as if it does: the tracker
+    stays live (no `unreachable` is set), so the statements after it are
+    emitted AND still stack-checked. Both halves are asserted -- the runner
+    sees the user's code, and the dead `return` is really in the body."""
+    node = func(
+        "guarded",
+        [
+            Raise(loc=LOC, enum="E", case="Nope", code=11),
+            Return(loc=LOC, value=const(Ty.U32, 5)),
+        ],
+    )
+    decoded = [op for op, _imm in instructions(body_of(node))]
+    call = decoded.index(CallImport("fail_with_error"))
+    assert decoded[call + 1] == opcodes.DROP
+    # The `return` after the raise was lowered, not discarded as dead code.
+    assert decoded[call + 2] == opcodes.I64_CONST
+    assert opcodes.RETURN in decoded[call:]
+    # And it is unreachable at run time: the user's code is what aborts.
+    store, host_ = start([node])
+    with pytest.raises(engine.HostError) as info:
+        host_.invoke("guarded")
+    assert info.value.val == val.error_val(11)
+    assert store.errors == [val.error_val(11)]
 
 
 def test_a_user_raise_is_what_a_runner_observes() -> None:
@@ -591,6 +619,37 @@ def test_a_bare_return_in_a_void_export_returns_VOID_VAL() -> None:
     assert run([node]) == val.VOID_VAL
 
 
+def test_a_bare_return_in_a_NON_void_function_is_refused() -> None:
+    """Review m1. `_lower_return` substitutes `VOID_VAL` for a valueless
+    `return` whenever the function has an i64 result -- right for a `-> None`
+    EXPORT (S23 gives it one anyway), and a plausible wrong answer for anything
+    else: the caller would receive the Void `Val` wearing the declared type.
+    C's definite-return analysis already excludes the shape (P6/S17), so the
+    emitter refuses it the way it refuses a C16 violation."""
+    for kind in (FuncKind.EXPORT, FuncKind.INTERNAL):
+        node = func("f", [Return(loc=LOC, value=None)], kind=kind, ret=Ty.U32)
+        with pytest.raises(EmitError, match="bare `return`"):
+            lower.compile_function(node, ctx_only())
+
+
+def test_a_bare_return_nested_inside_an_if_is_refused_too() -> None:
+    """Whole-body, not just the last statement: the offending `return` can be
+    in an `if` arm or a loop, which is where it would be hardest to spot."""
+    node = func(
+        "f",
+        [
+            If(
+                loc=LOC,
+                cond=cmp_(CompareOp.EQ, const(Ty.U32, 1), const(Ty.U32, 1)),
+                body=(Return(loc=LOC, value=None),),
+                orelse=(Return(loc=LOC, value=const(Ty.U32, 1)),),
+            )
+        ],
+    )
+    with pytest.raises(EmitError, match="bare `return`"):
+        lower.compile_function(node, ctx_only())
+
+
 def test_a_bare_return_in_a_void_internal_helper_pushes_nothing() -> None:
     node = func("h", [Return(loc=LOC, value=None)], kind=FuncKind.INTERNAL, ret=Ty.Void)
     fns, _ctx, _memory = compile_all([node])
@@ -679,6 +738,68 @@ def test_a_while_loop_with_a_continue_skips_the_rest_of_the_body() -> None:
     """1 + 3 + 5. A `continue` that reached the exit block instead would
     return 1; one that skipped nothing would return 21."""
     assert run([summing_with_continue()]) == val.pack_u32val(9)
+
+
+def nested_break() -> FuncIR:
+    """Two loops, `break` in the INNER one -- the depth question that a single
+    loop cannot ask.
+
+        total = 0; i = 0
+        while i < 3:
+            i += 1
+            j = 0
+            while j < 10:
+                j += 1
+                if j == 2: break
+                total += 100
+            total += 2
+        return total          # 3 * (100 + 2) == 306
+
+    The three wrong answers are all distinct, which is the point: a `break`
+    that reached the OUTER exit block returns 100; one that branched to the
+    inner loop HEADER returns 2706; one that skipped nothing returns 3006.
+    """
+    inner = While(
+        loc=LOC,
+        cond=cmp_(CompareOp.LT, local(2), const(Ty.U32, 10)),
+        body=(
+            SetLocal(loc=LOC, slot=2, value=add(local(2), const(Ty.U32, 1))),
+            If(
+                loc=LOC,
+                cond=cmp_(CompareOp.EQ, local(2), const(Ty.U32, 2)),
+                body=(Break(loc=LOC),),
+                orelse=(),
+            ),
+            SetLocal(loc=LOC, slot=0, value=add(local(0), const(Ty.U32, 100))),
+        ),
+    )
+    return func(
+        "nested",
+        [
+            LetLocal(loc=LOC, slot=0, ty=Ty.U32, init=const(Ty.U32, 0)),
+            LetLocal(loc=LOC, slot=1, ty=Ty.U32, init=const(Ty.U32, 0)),
+            LetLocal(loc=LOC, slot=2, ty=Ty.U32, init=const(Ty.U32, 0)),
+            While(
+                loc=LOC,
+                cond=cmp_(CompareOp.LT, local(1), const(Ty.U32, 3)),
+                body=(
+                    SetLocal(loc=LOC, slot=1, value=add(local(1), const(Ty.U32, 1))),
+                    SetLocal(loc=LOC, slot=2, value=const(Ty.U32, 0)),
+                    inner,
+                    SetLocal(loc=LOC, slot=0, value=add(local(0), const(Ty.U32, 2))),
+                ),
+            ),
+            Return(loc=LOC, value=local(0)),
+        ],
+        locals_=[(0, "total", Ty.U32), (1, "i", Ty.U32), (2, "j", Ty.U32)],
+    )
+
+
+def test_a_break_in_a_nested_loop_leaves_only_the_INNER_loop() -> None:
+    """306. `br_break` scans for the NEAREST breakable block, so the inner
+    loop's exit wins over the outer's -- and the outer loop keeps running,
+    which a single-loop test can never distinguish."""
+    assert run([nested_break()]) == val.pack_u32val(306)
 
 
 def test_a_while_whose_condition_is_false_runs_its_body_zero_times() -> None:
@@ -778,7 +899,22 @@ def either_pair(small_tag: int, object_tag: int) -> list[int]:
 #: `(label, Ty, accepted words, rejected words)`. Every row carries at least one
 #: wrong-TAG rejection; the rows with a range component carry that too.
 PROLOGUE_MATRIX: list[tuple[str, Ty, list[int], list[int]]] = [
-    ("Bool", Ty.Bool, [val.FALSE_VAL, val.TRUE_VAL], [val.VOID_VAL, val.pack_u32val(1)]),
+    (
+        "Bool",
+        Ty.Bool,
+        [val.FALSE_VAL, val.TRUE_VAL],
+        [
+            val.VOID_VAL,
+            val.pack_u32val(1),
+            # The SIGNEDNESS of the compare, falsified. A `Val` with bit 63 set
+            # is a perfectly ordinary `U64Small` -- and as a SIGNED i64 it is
+            # negative, so `w >s 1` calls it a Bool. Only `>u` rejects it, and
+            # without this row `I64_GT_U -> I64_GT_S` survives the whole suite
+            # (P4's trap one level up: every high-bit Val reads as a small
+            # negative number to anything that forgets the unsigned world).
+            val.from_body_tag(0xFF_FFFF_FFFF_FFFF, val.TAG_U64_SMALL),
+        ],
+    ),
     (
         "U32",
         Ty.U32,
@@ -907,6 +1043,47 @@ def test_the_prologue_rejects_with_CODE_ABI_CHECK_FAILED_exactly(
             host_.invoke("checked", word)
         assert info.value.val == ABI_FAILED, f"{label} accepted {word:#018x}"
         assert store.errors == [ABI_FAILED]
+
+
+def test_the_matrix_covers_every_row_of_the_check_table() -> None:
+    """Self-policing (review m3): a type added to `abi_check` must be exercised
+    here, or it crosses the ABI boundary with a check nobody has ever run.
+
+    `ABI_CHECKED_TAGS` is DERIVED from the check tables, so a new row joins it
+    automatically and fails this until the matrix grows one too. `BytesN` is
+    the one deliberate exclusion: its check needs a seeded host object, so it
+    has its own four tests just below rather than a matrix row.
+    """
+    covered = {ty.tag for _label, ty, _accepted, _rejected in PROLOGUE_MATRIX}
+    assert lower.ABI_CHECKED_TAGS - covered == {TyTag.BYTES_N}
+
+
+def test_ABI_CHECKED_TAGS_is_honest_in_both_directions() -> None:
+    """And the derived set is only useful if it matches what `abi_check` DOES:
+    every tag in it emits a check, every tag outside it is refused (F.1.15)."""
+    for tag in TyTag:
+        ty = _sample_ty(tag)
+        fn = Fn("probe", 1, 0, ("i64",))
+        if tag in lower.ABI_CHECKED_TAGS:
+            lower.abi_check(fn, ctx_only(), 0, ty)
+            fn.i64_const(0)
+            assert [op for op, _imm in instructions(fn.finish())], tag
+        else:
+            with pytest.raises(EmitError, match="no ABI check"):
+                lower.abi_check(fn, ctx_only(), 0, ty)
+
+
+def _sample_ty(tag: TyTag) -> Ty:
+    """One inhabitant of every `TyTag`, parametrized tags included."""
+    parametrized = {
+        TyTag.BYTES_N: Ty.BytesN(4),
+        TyTag.VEC: Ty.Vec(Ty.U32),
+        TyTag.MAP: Ty.Map(Ty.Symbol, Ty.U32),
+        TyTag.STRUCT: Ty.Struct("S"),
+        TyTag.OPTION: Ty.Option(Ty.U32),
+        TyTag.ERROR_ENUM: Ty.ErrorEnum("E"),
+    }
+    return parametrized.get(tag, Ty(tag))
 
 
 def bytes_object(store: ObjectStore, payload: bytes) -> int:
