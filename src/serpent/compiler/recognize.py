@@ -277,10 +277,11 @@ class SurfaceKind(Enum):
     `<bucket>.get(key, T, default=d)`.
     `REJECT`: never reaches a host function at all. **No row uses it today**:
     the one that did (`Event.publish(env)`, `SPT1032`, dossier E12) became a
-    lowering row in M1-E Task 6. The shape is kept because it is the honest one
-    for a surface serpent recognizes and deliberately refuses, and a future row
-    should not have to reinvent it -- `test_recognize_env.py` asserts the
-    REJECT-row invariants either way.
+    lowering row in M1-E Task 6. The branch is kept for future rows -- it is the
+    honest shape for a surface serpent recognizes and deliberately refuses, and
+    reinventing it later would be pointless -- but with no row to exercise it,
+    `test_recognize_env.py`'s REJECT-row invariants are now VACUOUSLY true
+    rather than checked against anything.
 
     The container rows add four shapes (Task 7b). `MUTATOR`: a functional host
     op plus the E11 rebind, i.e. `SetLocal(slot, HostCall(...))` -- a
@@ -1398,8 +1399,8 @@ def _event_data(
     assert data_fields, f"@contractevent {name} declares no data field for {data_format!r}"
 
     if data_format == "single-value":
-        (only_name, _annotation) = data_fields[0]
         assert len(data_fields) == 1, f"@contractevent {name} is not single-valued"
+        (only_name, _annotation) = data_fields[0]
         return values[only_name]
 
     if data_format == "vec":
@@ -2355,22 +2356,26 @@ def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx, reason: str | None = No
     one direction is "the container holds my object", the other is "I hold the
     container's object", and both have to be refused.
 
-    Three recognized container-argument positions deliberately do NOT count as
-    escapes: `<bucket>.set(k, v)`, `events().publish(topics, data)`, and
-    `addr.require_auth_for_args(args)`. All three serialize their argument out
+    Four recognized container-argument positions deliberately do NOT count as
+    escapes: `<bucket>.set(k, v)`, `events().publish(topics, data)`,
+    `<Event instance>.publish(env)` (M1-E's desugar, which builds the same
+    topics and data from the construction's own arguments -- `_event_publish`
+    says so at the one place it could have called this hook), and
+    `addr.require_auth_for_args(args)`. All four serialize their argument out
     to the host rather than storing a handle, and the tier-1 model
     deep-copies at the boundaries it has bodies for (ruling E5: `set` stores a
-    deep copy, `publish` snapshots its topics and data), so tier 1 still has no
-    shared-object model to diverge from -- not because those surfaces cannot
-    run, but because what they keep is a copy.
+    deep copy, and BOTH publish spellings snapshot their topics and data
+    through one `Events._record`), so tier 1 still has no shared-object model to
+    diverge from -- not because those surfaces cannot run, but because what they
+    keep is a copy.
     `tests/unit/test_env_model.py`'s isolation property is what holds that
     justification up. `require_auth_for_args` is a CARRIED obligation: its body
     is still `NotImplementedError`, and whoever lands it must snapshot the args
     it records and pin that here-shaped property alongside it. If any of the
-    three ever stores a reference instead, that position becomes an escape and
+    four ever stores a reference instead, that position becomes an escape and
     belongs in this hook.
 
-    The exemption applies to KEYWORD arguments of those three calls as well as
+    The exemption applies to KEYWORD arguments of those calls as well as
     positional ones (`collect_never_owned`'s escape-facts note): the spelling of
     the call cannot change what the host does with the value.
 

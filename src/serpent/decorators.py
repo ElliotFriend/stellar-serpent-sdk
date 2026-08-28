@@ -62,7 +62,7 @@ from typing import Any, Final, NoReturn, TypeVar, cast, dataclass_transform, ove
 from serpent import val
 from serpent.env import Event
 from serpent.errors import RESERVED_CODE_MIN, ContractError
-from serpent.types import Map, Vec
+from serpent.types import Map, Symbol, Vec
 from serpent.types._base import _ChainValue
 
 __all__ = [
@@ -368,7 +368,7 @@ def _build_record(
         metadata["locations"] = locations
         metadata["prefix_topics"] = _prefix_topics(cls, topics)
         metadata["data_format"] = _check_data_format(cls, data_format, fields, locations)
-        _check_topic_list(cls, metadata["prefix_topics"], locations)
+        _check_topic_list(cls, metadata["prefix_topics"], fields, locations)
 
     decorated = dataclasses.dataclass(frozen=True, eq=True)(cls)
     setattr(decorated, _METADATA_ATTR, metadata)
@@ -535,26 +535,50 @@ def _check_data_format(
 
 
 def _check_topic_list(
-    cls: type[Any], prefix_topics: tuple[str, ...], locations: Mapping[str, str]
+    cls: type[Any],
+    prefix_topics: tuple[str, ...],
+    fields: Sequence[tuple[str, object]],
+    locations: Mapping[str, str],
 ) -> None:
-    """Refuse an event whose published topic list would be EMPTY.
+    """Refuse a published topic list that breaks the `topics[0]` convention.
 
-    `topics=()` is deliberately legal (review M3) because the marked fields
-    carry the topic list; with neither a prefix topic nor an
-    `Annotated[T, topic]` field there is no topic at all, which the tier-1
-    model refuses on the way in ("an event needs at least one topic, naming
-    it") and which no indexer can filter on. Refused at the declaration site,
-    where the fix is, rather than at every publish site.
+    Two rules, and both only bite when `topics=()` -- which is deliberately
+    legal (review M3) BECAUSE the marked fields carry the topic list:
+
+    * there must be at least one topic. With neither a prefix topic nor an
+      `Annotated[T, topic]` field there is none at all, which the tier-1 model
+      refuses on the way in ("an event needs at least one topic, naming it")
+      and which no indexer can filter on.
+    * `topics[0]` must be a `Symbol` (S11/S10's convention: the first topic
+      NAMES the event, and indexers and RPC filtering assume it). With no
+      prefix topic, `topics[0]` is the first marked FIELD, so its declared type
+      is what decides -- an `Annotated[Address, topic]` first field would put an
+      Address there. The canonical spelling refuses exactly that at compile time
+      (`SPT3019`), so refusing it here is what keeps the two spellings, and the
+      spec entry, telling one story.
+
+    Both are refused at the declaration site, where the fix is, rather than at
+    every publish site.
     """
     if prefix_topics:
         return
-    if any(location == TOPIC_LOCATION for location in locations.values()):
-        return
-    raise ValueError(
-        f"{cls.__name__}: an event publishes at least one topic, and this one has "
-        "no prefix topic and no `Annotated[T, topic]` field -- drop `topics=()` to "
-        "get the class-name topic back, or mark a field as a topic"
-    )
+    topic_fields = [
+        (name, annotation) for name, annotation in fields if locations.get(name) == TOPIC_LOCATION
+    ]
+    if not topic_fields:
+        raise ValueError(
+            f"{cls.__name__}: an event publishes at least one topic, and this one has "
+            "no prefix topic and no `Annotated[T, topic]` field -- drop `topics=()` to "
+            "get the class-name topic back, or mark a field as a topic"
+        )
+    first_name, first_annotation = topic_fields[0]
+    if first_annotation is not Symbol:
+        raise ValueError(
+            f"{cls.__name__}.{first_name}: with `topics=()` this field is the event's "
+            f"topics[0], which names the event and must therefore be a Symbol (got "
+            f"{_render(first_annotation)}) -- declare a prefix topic instead, e.g. "
+            f"`@contractevent(topics=({_snake_case(cls.__name__)!r},))`"
+        )
 
 
 def _snake_case(name: str) -> str:

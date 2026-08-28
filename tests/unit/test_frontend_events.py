@@ -245,26 +245,31 @@ def test_two_prefix_topics_are_published_in_order() -> None:
 
 def test_an_empty_prefix_publishes_only_the_marked_fields() -> None:
     """`topics=()` is deliberately legal (Task 5, review M3): the topic list is
-    then exactly the marked fields."""
+    then exactly the marked fields -- whose FIRST one carries `topics[0]`'s job
+    and is therefore a `Symbol` (review I1, enforced at the declaration)."""
     compiled = _compile(
         """
-        from serpent import Address, Annotated, Env, Event, U32, contract, contractevent, topic
+        from serpent import Address, Annotated, Env, Event, Symbol, U32, contract
+        from serpent import contractevent, topic
 
 
         @contractevent(topics=())
         class Ping(Event):
+            kind: Annotated[Symbol, topic]
             who: Annotated[Address, topic]
             n: U32
 
 
         @contract
         class C:
-            def go(self, env: Env, who: Address, n: U32) -> None:
-                Ping(who=who, n=n).publish(env)
+            def go(self, env: Env, kind: Symbol, who: Address, n: U32) -> None:
+                Ping(kind=kind, who=who, n=n).publish(env)
         """
     )
-    (only,) = _topics(_published(compiled))
-    assert isinstance(only, ParamRef) and only.name == "who"
+    first, second = _topics(_published(compiled))
+    assert isinstance(first, ParamRef) and first.name == "kind"
+    assert first.ty == Ty.Symbol
+    assert isinstance(second, ParamRef) and second.name == "who"
 
 
 def test_a_long_prefix_topic_pools_through_linear_memory() -> None:

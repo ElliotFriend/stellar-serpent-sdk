@@ -57,8 +57,10 @@ from serpent.compiler.types_ import Ty
 from serpent.emitter import BuildResult, build_file, build_wasm
 from serpent.spec import build_env_meta
 from serpent.types import U32, Address, Bool, String, Symbol
+from tests.fixtures.token_style import Transfer
 from tests.harness import engine
 from tests.harness.hostfns import FullHost
+from tests.unit.conftest import deployed_env
 from tests.unit.test_emitter_semantics import decode_val
 
 # The eight Phase 0 host functions, imported from the file that pins them.
@@ -321,6 +323,36 @@ def test_token_style_runs_a_full_mint_and_transfer_sequence() -> None:
         Address(ACCOUNT),
     ]
     assert host.chain_value(data) == U32(40)
+
+
+def test_the_wasm_event_equals_the_tier_1_record_for_the_same_publish() -> None:
+    """The S13 differential for `Event.publish`, stated DIRECTLY (review m8).
+
+    Two absolute pins ("the WASM leg records these words", "the tier-1 leg
+    records these values") can BOTH be updated to agree with a drifting
+    convention. This compares the two legs to each other instead: the same
+    `Transfer` publish, once compiled and run under `FullHost`, once executed by
+    the tier-1 model through the ordinary authoring surface, decoded to the same
+    chain values.
+
+    Same fixture class on both sides (`tests.fixtures.token_style.Transfer`), so
+    the convention is read from ONE declaration -- which is the whole point of
+    the five-layer design: the decorator metadata is what both tiers consume.
+    """
+    _built, host, mini = start(TOKEN_STYLE)
+    admin = host.val_word(Address(ACCOUNT))
+    other = host.val_word(Address(CONTRACT))
+    mini.invoke("__constructor", admin, host.val_word(String("Serpent")))
+    mini.invoke("mint", admin, other, val.pack_u32val(100))
+    mini.invoke("transfer", other, admin, val.pack_u32val(40))
+    ((topics, data),) = host.events
+    from_wasm = (tuple(host.chain_value(t) for t in topics), host.chain_value(data))
+
+    env = deployed_env()
+    Transfer(from_=Address(CONTRACT), to=Address(ACCOUNT), amount=U32(40)).publish(env)
+    (from_tier_1,) = env.published_events
+
+    assert from_wasm == from_tier_1
 
 
 def test_both_publish_spellings_record_the_same_event() -> None:

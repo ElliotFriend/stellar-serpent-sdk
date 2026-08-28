@@ -454,14 +454,43 @@ def test_a_prefix_topic_longer_than_nine_characters_is_legal() -> None:
 
 def test_no_prefix_topics_at_all_is_legal() -> None:
     """Deliberate (review M3): an event whose topic list is exactly its
-    `Annotated[T, topic]` fields is an accurate spec, not a lie."""
+    `Annotated[T, topic]` fields is an accurate spec, not a lie.
+
+    The first marked field carries `topics[0]`'s job, so it is a `Symbol` --
+    see `test_a_prefixless_event_needs_a_symbol_first_topic_field`.
+    """
 
     @contractevent(topics=())
     class Prefixless(Event):
+        kind: Annotated[Symbol, topic]
         who: Annotated[Address, topic]
         amount: U32
 
     assert _meta(Prefixless)["prefix_topics"] == ()
+    assert _meta(Prefixless)["locations"] == {"kind": "topic", "who": "topic", "amount": "data"}
+
+
+def test_a_prefixless_event_needs_a_symbol_first_topic_field() -> None:
+    """Task 6 review I1: the `topics[0]`-names-the-event convention (S10/S11),
+    held at the declaration.
+
+    With `topics=()` the first MARKED FIELD is `topics[0]`, so an
+    `Annotated[Address, topic]` first field would publish an Address where every
+    indexer and RPC filter expects a Symbol naming the event. The canonical
+    spelling refuses exactly that at compile time (`SPT3019`), so refusing the
+    declaration keeps both spellings -- and the spec entry -- telling one story.
+    """
+    with pytest.raises(ValueError, match="must therefore be a Symbol") as exc_info:
+
+        @contractevent(topics=())
+        class AddressFirst(Event):
+            who: Annotated[Address, topic]
+            amount: U32
+
+    message = str(exc_info.value)
+    assert "AddressFirst.who" in message
+    # The remedy is named, spelled the way the author would write it.
+    assert "topics=('address_first',)" in message
 
 
 def test_a_bare_string_of_topics_is_refused_not_exploded() -> None:
