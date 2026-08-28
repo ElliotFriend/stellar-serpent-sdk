@@ -45,6 +45,14 @@ its own, and higher layers depend only on the ones below them:
   decorator metadata via `stellar_sdk`'s XDR classes; the only layer allowed
   a runtime dependency outside the standard library, and only as an install
   extra (`pip install serpent[spec]`), not a base dependency.
+- **Emitter** (`serpent/emitter/`) -- lowers a compiled contract to a
+  validated, deployable wasm32 module; `build_file`/`build_wasm` are its only
+  public entry points, and every module they hand back has already passed an
+  internal, dependency-free structural validator plus (when `wasm-tools` is
+  on `PATH`) an external one, so an invalid module never reaches a caller.
+  `serpent.emitter.printer.disassemble` renders any such module back to a
+  reviewable, WAT-style text -- section headers, host calls by name -- for
+  when a change to a lowering needs to be read rather than trusted.
 
 Design rationale, the full milestone plan, and load-bearing facts (interface
 counts, byte layouts, on-chain-verified constants) live in

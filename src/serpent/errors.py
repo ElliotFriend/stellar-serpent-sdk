@@ -22,6 +22,30 @@ instead.
 | `CODE_UNREACHABLE_GUARD`     | `0xFFFF_FFFC` | a defensive `fail_with_error` the emitter inserts after an exhaustive dispatch or a definite-return-proven function tail, so a compiler bug can never fall through to a bare `unreachable` (S17/P6) -- structurally should never fire at runtime. |
 | `CODE_ABI_CHECK_FAILED`      | `0xFFFF_FFFB` | the ABI prologue's incoming-argument tag/range check (spec Sec.4) -- ONE code for every argument position; which argument failed is a message/trap-context concern, not a code concern. |
 | `CODE_UNSUPPORTED_AT_RUNTIME`| `0xFFFF_FFFA` | an explicit fail-safe the emitter uses for any construct the frontend proved compiles but the (still-under-construction) emitter does not yet lower -- fails loudly with a distinct code instead of silently miscompiling. |
+
+## A runtime trap that is NOT one of the codes above: 128-bit division by zero
+
+Every code in the table is a `ContractError` the emitted wasm raises through
+`fail_with_error` -- a deliberate, in-band signal. `//`/`%` by zero is
+different, and its two widths behave differently on purpose (a ruling
+carried in M1-D's Task 6 report and ledgered for this docstring):
+
+* **32/64-bit** `//0`/`%0` lowers straight to wasm's own `i64.div_s`/
+  `i64.rem_s` (etc.), so a zero divisor is a native WASM TRAP -- the guest
+  instance aborts, the same class the host reports for any other trapping
+  instruction. No code from this module is involved because none is raised.
+* **128-bit** `//0`/`%0` has no wasm division instruction to trap: A4 routes
+  it through the `{i,u}256_div` HOST function, so a zero divisor comes back
+  as the HOST's own `ScError` (a trap-class host error) rather than a wasm
+  trap. Conformant under A10's trap-class mapping, and implemented with no
+  guest-side zero check (`serpent.emitter.arith`'s wide-division helper
+  documents the same divergence at its own definition). Tier 2b (sub-plan F)
+  is where this gets re-confirmed against a real host rather than the mini
+  host, which is not an oracle for it (ruling E1).
+
+Concretely: `U32(1) // U32(0)` and `I128(1) // I128(0)` both abort the guest
+call, but through two different mechanisms -- neither surfaces as one of the
+`CODE_*` values above, and a trace-reader should not expect one.
 """
 
 from typing import Any, ClassVar

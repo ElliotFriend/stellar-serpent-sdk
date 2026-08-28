@@ -1,0 +1,195 @@
+;; SELF-SNAPSHOT (tests/goldens/README.md's third class, the `wasm/` rows):
+;; this is what `serpent.emitter.printer.disassemble` currently renders for
+;; `serpent.emitter.build_file("tests/fixtures/spike1_reauthored.py")`.
+;; It must NEVER be cited as evidence the wasm bytes -- or this rendering of
+;; them -- are CORRECT (B12). Regenerate with
+;;     SERPENT_REGEN_GOLDENS=1 uv run pytest tests/unit/test_emitter_printer.py
+;; and READ THE DIFF: a change here is a behavioral change to what sub-plan D
+;; emits, not noise.
+;; wasm module: 1051 byte(s), 10 section(s)
+;; type section: 4 entry(ies)
+;; import section: 8 entry(ies)
+(import "x" "5" (func $fail_with_error (param i64) (result i64)))
+(import "b" "i" (func $string_new_from_linear_memory (param i64 i64) (result i64)))
+(import "m" "9" (func $map_new_from_linear_memory (param i64 i64 i64) (result i64)))
+(import "l" "_" (func $put_contract_data (param i64 i64 i64) (result i64)))
+(import "l" "0" (func $has_contract_data (param i64 i64) (result i64)))
+(import "l" "1" (func $get_contract_data (param i64 i64) (result i64)))
+(import "b" "j" (func $symbol_new_from_linear_memory (param i64 i64) (result i64)))
+(import "m" "1" (func $map_get (param i64 i64) (result i64)))
+;; memory section
+(memory (export "memory") 1)
+;; export section: 3 entry(ies)
+(export "setup" (func $setup))
+(export "bump" (func $bump))
+(export "memory" (memory 0))
+;; code section: 2 defined function(s)
+
+;; func[0] (combined index 8)
+(func $setup (param i64) (result i64)
+  (local i64)
+  local.get 0
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  i32.const 4096
+  local.get 0
+  i64.store offset=0 align=3
+  i32.const 4104
+  i64.const 4
+  i64.const 77309411332
+  call $string_new_from_linear_memory
+  i64.store offset=0 align=3
+  i64.const 206158430212
+  i64.const 17592186044420
+  i64.const 8589934596
+  call $map_new_from_linear_memory
+  local.set 1
+  i64.const 34067127909785102
+  local.get 1
+  i64.const 2
+  call $put_contract_data
+  drop
+  i64.const 2
+  return
+end
+)
+
+;; func[1] (combined index 9)
+(func $bump (result i64)
+  (local i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64)
+  i64.const 34067127909785102
+  local.set 2
+  i64.const 2
+  local.set 3
+  local.get 2
+  local.get 3
+  call $has_contract_data
+  i64.eqz
+  if
+    i64.const -12884901885
+    call $fail_with_error
+    drop
+  end
+  local.get 2
+  local.get 3
+  call $get_contract_data
+  local.tee 4
+  local.get 4
+  i64.const 255
+  i64.and
+  i64.const 76
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.set 0
+  i64.const 61908344590
+  local.set 5
+  i64.const 1
+  local.set 6
+  local.get 5
+  local.get 6
+  call $has_contract_data
+  i32.wrap_i64
+  if (result i64)
+    local.get 5
+    local.get 6
+    call $get_contract_data
+    local.tee 7
+    local.get 7
+    i64.const 4294967295
+    i64.and
+    i64.const 4
+    i64.ne
+    if
+      i64.const -21474836477
+      call $fail_with_error
+      drop
+    end
+  else
+    i64.const 4
+  end
+  local.set 1
+  local.get 1
+  i64.const 32
+  i64.shr_u
+  i64.const 1
+  i64.add
+  local.tee 8
+  i64.const 4294967295
+  i64.gt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 8
+  local.tee 9
+  i64.const 4294967295
+  i64.gt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 9
+  i64.const 32
+  i64.shl
+  i64.const 4
+  i64.or
+  local.set 1
+  local.get 1
+  i64.const 32
+  i64.shr_u
+  local.get 0
+  i64.const 77309411332
+  i64.const 55834574852
+  call $symbol_new_from_linear_memory
+  call $map_get
+  local.tee 10
+  local.get 10
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  i64.const 32
+  i64.shr_u
+  i64.gt_u
+  i64.extend_i32_u
+  i32.wrap_i64
+  if
+    i64.const 30064771075
+    call $fail_with_error
+    drop
+  end
+  i64.const 61908344590
+  local.get 1
+  i64.const 1
+  call $put_contract_data
+  drop
+  local.get 1
+  return
+end
+)
+
+;; data section: 1 segment(s)
+(data (memory 0) (i32.const 0) b'serpent phase zerocounter_limitdisplay_name\x00\x00\x00\x00\x00\x12\x00\x00\x00\r\x00\x00\x00\x1f\x00\x00\x00\x0c\x00\x00\x00')
+
+;; custom sections: 3
+(custom "contractenvmetav0" 12 payload byte(s))
+(custom "contractspecv0" 348 payload byte(s))
+(custom "contractmetav0" 56 payload byte(s))
