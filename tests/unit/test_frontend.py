@@ -264,6 +264,54 @@ def test_a_memoryless_contract_compiles_memoryless() -> None:
     assert compiled.runtime_parts_needed == frozenset()
 
 
+# --- E13: the no-`default` storage `get` costs THREE host functions ------------
+
+_NO_DEFAULT_GET = """
+from serpent import Env, Symbol, U32, contract
+
+
+@contract
+class C:
+    def go(self, env: Env) -> U32:
+        return env.storage().instance().get(Symbol("k"), U32)
+"""
+
+_WITH_DEFAULT_GET = """
+from serpent import Env, Symbol, U32, contract
+
+
+@contract
+class C:
+    def go(self, env: Env) -> U32:
+        return env.storage().instance().get(Symbol("k"), U32, default=U32(0))
+"""
+
+
+def test_a_no_default_storage_get_names_its_guard_host_fns() -> None:
+    """Ruling E13 (D13's licence): the guard D wraps a bare `get_contract_data`
+    in is not free -- it calls `has_contract_data` and, on a miss,
+    `fail_with_error` (`CODE_MISSING_VALUE`, E14). Both are therefore
+    DEFINITELY used, and a `host_fns_used` that omitted them would under-report
+    the import set and the protocol floor.
+    """
+    compiled = _compile(_NO_DEFAULT_GET)
+    assert compiled.host_fns_used == frozenset(
+        {"get_contract_data", "has_contract_data", "fail_with_error"}
+    )
+
+
+def test_a_with_default_storage_get_does_not_name_fail_with_error() -> None:
+    """The other half of E13, and the reason it is not "every get_contract_data".
+
+    A `get(..., default=...)` is an `IfExp` whose `has` already proved presence
+    (`recognize.py`'s shared-key shape), so D emits no guard and nothing can
+    fail -- claiming `fail_with_error` here would be a false positive in a set
+    whose whole contract is that its members are CERTAIN.
+    """
+    compiled = _compile(_WITH_DEFAULT_GET)
+    assert compiled.host_fns_used == frozenset({"get_contract_data", "has_contract_data"})
+
+
 def test_literal_inventory_collects_every_linear_memory_literal() -> None:
     compiled = _compile(
         """

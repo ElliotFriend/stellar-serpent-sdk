@@ -100,6 +100,7 @@ from serpent.compiler.ir import (
     FieldGet,
     FuncIR,
     HostCall,
+    IfExp,
     IRNode,
     MakeMap,
     MakeStruct,
@@ -107,6 +108,8 @@ from serpent.compiler.ir import (
     MakeVec,
     ModuleIR,
     Raise,
+    RawScalar,
+    RawScalarKind,
     Unary,
     UnaryOp,
     walk,
@@ -127,6 +130,7 @@ __all__ = [
     "LiteralInventory",
     "SpecInputs",
     "compile_module",
+    "guarded_storage_get",
 ]
 
 _INTENT: dict[str, str] = {entry.code: entry.message_intent for entry in codes.REGISTRY}
@@ -159,6 +163,12 @@ _BYTES_LM_FN = "bytes_new_from_linear_memory"
 #: are CERTAIN uses of an `Address` `Const` -- neither is a route D may choose
 #: against.
 _ADDRESS_FROM_STRKEY_FN = "strkey_to_address"
+
+#: The three names ruling E13's storage-get accounting turns on, sourced from
+#: the recognition table's own rows (MJ-5) rather than restated as literals.
+_STORAGE_HAS_FN, _STORAGE_GET_FN = RECOGNIZED["storage.get_default"].host_fns
+#: The guard's failure call -- the same `fail_with_error` a `raise` reaches.
+_STORAGE_MISSING_FN = _RAISE_HOST_FN
 
 #: Names sourced from the recognition table's own rows rather than restated
 #: (MJ-5): the struct constructor, and the struct field read's two functions.
@@ -483,6 +493,55 @@ def _flat_functions(ir: ModuleIR) -> tuple[FuncIR, ...]:
 # --- the host-function sets (SS C.2 output 1) ---------------------------------
 
 
+def guarded_storage_get(node: IRNode) -> HostCall | None:
+    """The `get_contract_data` an `IfExp`'s own `has` already proved present.
+
+    Returns that `HostCall` when `node` is EXACTLY the shape
+    `recognize.py`'s `get(key, T, default=d)` builds -- and `None` otherwise,
+    which is the answer that means "this `get` still needs the E13 guard".
+
+    **The test is node IDENTITY, not structural equality** (review M12). The
+    frontend SHARES one key expression between the `has` and the `get`
+    (`recognize.py`'s `_storage_get`: `key` and `imm` are passed to both
+    `HostCall`s), so `cond.args[0] is then.args[0]` holds for the recognized
+    shape and for nothing else. A hand-written
+    `a.get(k, T) if a.has(k2) else d` parses to two DISTINCT key subtrees --
+    even when they are spelled identically and therefore compare `==`, since
+    every IR node is a frozen dataclass with structural equality -- so it fails
+    this test and its `get` is guarded. Keying on the condition alone would
+    silently suppress the guard on exactly that program, and keying on `==`
+    would suppress it whenever the two spellings happened to match while the
+    two evaluations did not have to.
+
+    Public, and the ONE place the shape is recognized: `emitter.lower` calls it
+    to choose the arm-lowering, and `_collect_host_fns` calls it so
+    `host_fns_used` accounts for the guard D will emit (ruling E13, D13's
+    licence). Two copies of this predicate could disagree, and the direction
+    that disagreement breaks is a missing import for a function the emitted
+    body calls.
+    """
+    if not isinstance(node, IfExp):
+        return None
+    cond, then = node.cond, node.then
+    if not (isinstance(cond, HostCall) and cond.fn_name == _STORAGE_HAS_FN):
+        return None
+    if not (isinstance(then, HostCall) and then.fn_name == _STORAGE_GET_FN):
+        return None
+    if len(cond.args) != 2 or len(then.args) != 2:  # pragma: no cover - the pin fixes arity
+        return None
+    if cond.args[0] is not then.args[0]:
+        return None
+    # The storage BUCKET has to match too: `has` in the instance bucket proves
+    # nothing about the persistent one, and the two immediates are the same
+    # shared `RawScalar` node in the recognized shape.
+    has_imm, get_imm = cond.args[1], then.args[1]
+    if not (isinstance(has_imm, RawScalar) and isinstance(get_imm, RawScalar)):
+        return None
+    if has_imm.kind is not RawScalarKind.STORAGE_TYPE or has_imm.value != get_imm.value:
+        return None
+    return then
+
+
 def _collect_host_fns(
     ir: ModuleIR,
 ) -> tuple[frozenset[str], frozenset[str], dict[str, Loc]]:
@@ -502,9 +561,24 @@ def _collect_host_fns(
                 used.add(name)
             locs.setdefault(name, loc)
 
+    # Ruling E13: a `get_contract_data` that no `has` already covered is
+    # wrapped by D in a guard that calls `has_contract_data` and, on a miss,
+    # `fail_with_error` (`CODE_MISSING_VALUE`, E14). Those two are CERTAIN
+    # uses -- the guard is not a form D chooses between -- so they belong in
+    # `host_fns_used`, and omitting them would under-report both the import
+    # set and the protocol floor. The exemption is the `get` whose own `IfExp`
+    # already proved presence; `guarded_storage_get` is the single place that
+    # shape is recognized, shared with `emitter.lower` so the two cannot drift.
+    # Identity is stable here because `ir` holds every node alive for the walk.
+    gets_covered_by_a_has = {
+        id(get) for get in map(guarded_storage_get, walk(ir)) if get is not None
+    }
+
     for node in walk(ir):
         if isinstance(node, HostCall):
             note((node.fn_name,), node.loc, certain=True)
+            if node.fn_name == _STORAGE_GET_FN and id(node) not in gets_covered_by_a_has:
+                note((_STORAGE_HAS_FN, _STORAGE_MISSING_FN), node.loc, certain=True)
         elif isinstance(node, Raise):
             note((_RAISE_HOST_FN,), node.loc, certain=True)
         elif isinstance(node, Compare) and node.via_obj_cmp:
