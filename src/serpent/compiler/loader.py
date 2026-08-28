@@ -677,14 +677,29 @@ def _check_import_from(
     plan.executable.append(stmt)
 
 
+def _decorator_serpent_name(deco: ast.expr, plan: _ShapePlan) -> str | None:
+    """The `serpent.__all__` name one class decorator applies, or `None`.
+
+    Both spellings, because `@contractevent` has a FACTORY form
+    (`@contractevent(topics=..., data_format=...)`, M1-E Task 5) and an
+    authored contract has to be able to use it: a bare `ast.Name`, and an
+    `ast.Call` on one. Only `contractevent` takes arguments; calling any other
+    serpent decorator is a misuse this shape check deliberately lets through, so
+    that the decorator's own `TypeError` (reported as an execution failure with
+    its real message) is what the author reads, rather than "carries no serpent
+    decorator", which would be false.
+    """
+    if isinstance(deco, ast.Call):
+        deco = deco.func
+    if not isinstance(deco, ast.Name):
+        return None
+    return plan.alias_map.get(deco.id)
+
+
 def _check_class_def(stmt: ast.ClassDef, path: str, plan: _ShapePlan, sink: Diagnostics) -> None:
     kinds = [
         _DECORATOR_KINDS[serpent_name]
-        for serpent_name in (
-            plan.alias_map.get(deco.id)
-            for deco in stmt.decorator_list
-            if isinstance(deco, ast.Name)
-        )
+        for serpent_name in (_decorator_serpent_name(deco, plan) for deco in stmt.decorator_list)
         if serpent_name in _DECORATOR_KINDS
     ]
     if not kinds:
