@@ -28,6 +28,11 @@ import wasmtime
 from serpent import val
 from serpent._host import functions_by_name
 
+#: The name a Soroban module exports its one memory under; `testmod` writes it.
+#: Spelled here too rather than imported, so `engine` stays independent of the
+#: module builder (a test may hand `MiniHost` bytes from anywhere).
+MEMORY_EXPORT_NAME = "memory"
+
 
 def make_config() -> wasmtime.Config:
     """The chain's accepted feature set, as wasmtime flags.
@@ -172,6 +177,18 @@ class MiniHost:
         """The default recording `fail_with_error`: remember it, then abort."""
         self.errors.append(error)
         raise HostError(error)
+
+    def read_memory(self, ptr: int, length: int) -> bytes:
+        """Read `length` bytes of the guest's exported linear memory at `ptr`.
+
+        The linear-memory host functions (`*_new_from_linear_memory`) are the
+        only callbacks that need this, and they cannot be bound until the
+        module is instantiated -- so an `ObjectStore` is `attach`ed to a
+        finished `MiniHost` rather than constructed with one (`objects.py`).
+        """
+        export = self._instance.exports(self._store)[MEMORY_EXPORT_NAME]
+        assert isinstance(export, wasmtime.Memory), "the module exports no linear memory"
+        return bytes(export.read(self._store, ptr, ptr + length))
 
     def invoke(self, name: str, *vals: int) -> int | None:
         """Call an exported function with u64 `Val` words; return its raw u64 word.

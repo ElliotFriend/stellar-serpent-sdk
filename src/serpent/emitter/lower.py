@@ -1,4 +1,4 @@
-"""IR expression -> wasm, part 1: the scalar half of dossier SS B.3.1.
+"""IR expression -> wasm: all of dossier SS B.3.1, scalars and objects alike.
 
 Two entry points, and the difference between them is the whole value model:
 
@@ -57,12 +57,58 @@ boxing it and immediately unboxing it again. That is a same-semantics
 shortcut on ONE node, not folding: ``I32(2**31 - 1) + I32(1)`` still reaches
 ``lower_binary`` as two constants and still fails at runtime with
 ``ArithmeticOverflow``, which is what F.1.10 requires.
+
+## Host objects are IMMUTABLE, so every mutator result is rebound (F.1.9)
+
+``vec_push_back`` does not lengthen a vector; it returns a handle to a new,
+longer one. So does ``map_put``. A build-up chain that dropped those results
+and kept pushing onto the original handle would produce a one-element
+container, report success, and be wrong in a way no wasm check can see -- which
+is why every chain below threads its handle through a hidden local that each
+step reads and rewrites, and why Task 9's statement path rebinds a mutator's
+result with ``SetLocal`` rather than discarding it.
+
+## Two lowerings per container, and the gate is NOT ``all_static`` (C4/E12)
+
+``MakeVec``/``MakeMap`` carry ``all_static``, and it is necessary but not
+sufficient. It records that every item is a literal C validated; it says
+nothing about whether that literal HAS an inline ``Val`` word to lay in the
+data section. A ``String`` item is entirely static and its ``Val`` is an object
+handle that does not exist until ``string_new_from_linear_memory`` has run
+(A3). ``_static_word`` is the actual test, and it answers ``None`` -- meaning
+"take the build-up chain" -- for every EITHER-repr literal above its 56-bit
+bound too.
+
+``MakeMap`` has a second, sharper gate (ruling E12): the descriptor form's keys
+are byte strings "convertible to ``Symbol`` type" (P1), so a fully static
+``Map[U32, U32]`` literal takes the chain regardless. Reading ``all_static`` as
+a licence there produces a module that validates and then panics on chain.
+
+## The storage-get guard, and the one shape exempt from it (E13/B7/M12)
+
+``get_contract_data`` on an absent key is undefined at the host, so serpent
+gives it a defined answer: ``has_contract_data`` first, ``fail_with_error``
+with ``CODE_MISSING_VALUE`` on a miss. The exception is
+``get(k, T, default=d)``, whose ``IfExp`` already asked ``has`` -- guarding
+that one would ask twice for a single read.
+
+Recognizing it is ``frontend.guarded_storage_get``, on node IDENTITY, and both
+halves of that matter. Sharing the key node is what lets this module evaluate
+the key ONCE into a hidden local (review B7): a key can be a call, and lowering
+the two arms independently would run its effects twice. And identity rather
+than equality is what keeps a hand-written ``a.get(k, T) if a.has(k2) else d``
+guarded (review M12) -- its two key subtrees are distinct nodes even when they
+compare ``==``, because there is no promise the two evaluations agree.
 """
 
+import struct as _struct
 from collections.abc import Mapping
 from weakref import WeakKeyDictionary
 
-from serpent import val
+from serpent import errors, val
+from serpent._host import functions_by_name
+from serpent._host._model import HostFn
+from serpent.compiler.frontend import guarded_storage_get
 from serpent.compiler.ir import (
     Binary,
     BoolOp,
@@ -89,26 +135,31 @@ from serpent.compiler.ir import (
     Unary,
     UnaryOp,
 )
+from serpent.compiler.recognize import RECOGNIZED
 from serpent.compiler.types_ import Ty, TyTag
-from serpent.emitter import arith, opcodes
+from serpent.emitter import arith, encode, opcodes
 from serpent.emitter.arith import EmitCtx
 from serpent.emitter.frame import EmitError, Fn
 from serpent.emitter.layout import Memory
 
-__all__ = ["LowerCtx", "lower_condition", "lower_expr", "lower_expr_raw"]
+__all__ = ["LowerCtx", "lower_condition", "lower_expr", "lower_expr_raw", "narrow_to"]
 
 
 # --- the lowering context ------------------------------------------------------
 
 
 class LowerCtx(EmitCtx):
-    """``EmitCtx`` plus the two things expression lowering needs on top of it.
+    """``EmitCtx`` plus the three things expression lowering needs on top of it.
 
     * ``consts`` -- the module's chain-constant table (P5). Ruling E11 inlines
       a ``ConstRef`` at every use rather than emitting a wasm global, so the
       lowering has to be able to reach the ``ConstDecl.value`` expression the
       name stands for. A ``Mapping`` rather than the ``ConstDecl``s themselves
       because that is all this module reads.
+    * ``functions`` -- ``FuncIR.py_name -> defidx`` for the module's OWN
+      functions, in ``CompiledModule.functions`` order, so an ``InternalCall``
+      resolves to a ``CallDefined`` (review B1: a defined-space index, never a
+      combined-space one, and never baked into a body before pass 2).
     * a per-function memo of already-materialized POOLED constants -- see
       ``_memoise``.
 
@@ -122,9 +173,11 @@ class LowerCtx(EmitCtx):
         n_module_functions: int,
         memory: Memory,
         consts: Mapping[str, IRExpr] | None = None,
+        functions: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__(n_module_functions, memory)
         self.consts: Mapping[str, IRExpr] = {} if consts is None else consts
+        self.functions: Mapping[str, int] = {} if functions is None else functions
         # Keyed on the `Fn` itself, WEAKLY: a hidden local belongs to exactly
         # one function body, and keying on `id(fn)` would let a recycled
         # address hand one function's slot number to another -- which would
@@ -238,10 +291,25 @@ _POOL_CONSTRUCTOR: dict[TyTag, str] = {
 #: The second call an `Address` literal needs, after its strkey string exists.
 _STRKEY_TO_ADDRESS = "strkey_to_address"
 
-#: Every node kind this module deliberately does not lower: containers,
-#: structs, and calls are Task 8's half of SS B.3.1. Named so the refusal says
-#: which task owns them instead of reading as "unknown node".
-_TASK_8_KINDS = (MakeStruct, FieldGet, MakeVec, MakeMap, MakeTopics, HostCall, InternalCall)
+#: The two names ruling E13's guard is built from, read out of the SAME
+#: recognition-table row the frontend's own accounting reads (MJ-5) rather than
+#: restated as literals here. `guarded_storage_get` matches on that row too, so
+#: the predicate, the accounting and this lowering cannot drift apart.
+_STORAGE_HAS_FN, _STORAGE_GET_FN = RECOGNIZED["storage.get_default"].host_fns
+
+#: What a missing key becomes (E14): a CONTRACT error, never an `unreachable`
+#: (R3), carrying `CODE_MISSING_VALUE` so a client sees which rule was broken.
+_FAIL_WITH_ERROR_FN = "fail_with_error"
+
+#: The container build-up chains (F.1.9/F.1.10) and their linear-memory
+#: alternatives (C4/E12).
+_VEC_NEW_FN = "vec_new"
+_VEC_PUSH_FN = "vec_push_back"
+_VEC_LM_FN = "vec_new_from_linear_memory"
+_MAP_NEW_FN = "map_new"
+_MAP_PUT_FN = "map_put"
+_MAP_GET_FN = "map_get"
+_MAP_LM_FN = "map_new_from_linear_memory"
 
 
 # --- the entry points -------------------------------------------------------------
@@ -338,8 +406,23 @@ def _lower_val(fn: Fn, ctx: LowerCtx, e: IRExpr) -> None:
             "nothing in the frontend builds this node today (C11), and treating it "
             "as a no-op would silently skip a representation bridge"
         )
-    elif isinstance(e, _TASK_8_KINDS):
-        raise EmitError(f"{type(e).__name__} is lowered in Task 8, not here")
+    elif isinstance(e, HostCall):
+        _lower_host_call(fn, ctx, e)
+    elif isinstance(e, InternalCall):
+        _lower_internal_call(fn, ctx, e)
+    elif isinstance(e, MakeStruct):
+        _lower_make_struct(fn, ctx, e)
+    elif isinstance(e, FieldGet):
+        _lower_field_get(fn, ctx, e)
+    elif isinstance(e, MakeVec):
+        _lower_make_vec(fn, ctx, e.items, e.all_static)
+    elif isinstance(e, MakeTopics):
+        # D8: topics are a heterogeneous tuple with no `all_static` flag, so
+        # the gate is `_bulk_construction_can_use_memory`'s own test
+        # (`frontend.py`) -- every topic a `Const` -- applied by `_static_words`.
+        _lower_make_vec(fn, ctx, e.topics, True)
+    elif isinstance(e, MakeMap):
+        _lower_make_map(fn, ctx, e)
     else:
         raise EmitError(
             f"no lowering for IR node {type(e).__name__} ({e!r}); the expression "
@@ -761,13 +844,498 @@ def _lower_if_exp(fn: Fn, ctx: LowerCtx, e: IfExp) -> None:
     An `if (result i64)`, never `select`: `select` evaluates both arms (SS
     B.2's ban), and an unevaluated arm here may be a division, a host call, or
     anything else with an effect.
+
+    The storage `get(k, T, default=d)` shape is intercepted FIRST -- see
+    `_lower_storage_get_with_default`, which is the same node this `IfExp`
+    describes, lowered with its key evaluated once (review B7).
     """
+    covered_get = guarded_storage_get(e)
+    if covered_get is not None:
+        _lower_storage_get_with_default(fn, ctx, e, covered_get)
+        return
     lower_condition(fn, ctx, e.cond)
     fn.begin_if("i64")
     lower_expr(fn, ctx, e.then)
     fn.else_()
     lower_expr(fn, ctx, e.orelse)
     fn.end_if()
+
+
+# --- the narrowing hook (Task 9 fills this in) ------------------------------------
+
+
+def narrow_to(fn: Fn, ctx: LowerCtx, ty: Ty) -> None:
+    """The narrowing check on a host result whose ``ty`` is narrower than ``Val``.
+
+    **A deliberate no-op stub: Task 9 implements it.** A host function that
+    returns a `Val` returns an ANY-typed one -- `map_get` on a struct hands
+    back whatever was stored, `get_contract_data` whatever the ledger holds --
+    and the checker's `ty` for that expression is a claim about the value, not
+    a proof. The check Task 9 wires in here turns a violated claim into a
+    contract error rather than into a `Val` of the wrong tag flowing on as if
+    it were fine.
+
+    It is called from every position that produces such a result -- the
+    generic `HostCall`, both storage-get arms, and `FieldGet` -- so Task 9
+    changes this function and nothing else. Its arguments are already
+    everything the check needs: the body under construction, the module
+    context (for the import and any runtime part), and the claimed type.
+    """
+
+
+def _host_fn(name: str) -> HostFn:
+    """The pinned binding for ``name`` -- B2: looked up, never re-derived."""
+    spec = functions_by_name.get(name)
+    if spec is None:
+        raise EmitError(
+            f"{name!r} is not a host function in the pin "
+            "(serpent._host.functions_by_name); the IR names host functions BY NAME (B2)"
+        )
+    return spec
+
+
+# --- HostCall ---------------------------------------------------------------------
+
+
+def _lower_host_call(fn: Fn, ctx: LowerCtx, e: HostCall) -> None:
+    """One host call, arguments positionally, each Val or RAW per the PIN (B2).
+
+    `HostFn.val_typed_args` is read, never re-derived: it is the pin's own
+    per-position answer, and the two positions where it says `False` today are
+    the storage `StorageType` immediate and the TTL thresholds (C13). Lowering
+    one of those as a `Val` would pass a `U32Val` where the host reads a plain
+    number -- an argument that is wrong by a factor of 2^32 and still
+    validates.
+
+    A `get_contract_data` reaching HERE is by definition one no `has` covered
+    (`_lower_if_exp` intercepts the other shape), so it takes the guard.
+    """
+    if e.fn_name == _STORAGE_GET_FN:
+        _lower_guarded_storage_get(fn, ctx, e)
+        return
+    _lower_host_call_raw(fn, ctx, e.fn_name, e.args)
+    narrow_to(fn, ctx, e.ty)
+
+
+def _lower_host_call_raw(fn: Fn, ctx: LowerCtx, name: str, args: tuple[IRExpr, ...]) -> None:
+    """The call itself, with no guard and no narrowing check around it."""
+    val_typed = _host_fn(name).val_typed_args
+    if len(args) != len(val_typed):
+        raise EmitError(
+            f"{name} takes {len(val_typed)} argument(s), got {len(args)}; the IR's "
+            "arity comes from the recognition table and the pin agrees or one of "
+            "them is wrong"
+        )
+    for arg, is_val in zip(args, val_typed, strict=True):
+        if is_val:
+            lower_expr(fn, ctx, arg)
+        else:
+            # C13: a raw scalar position. `lower_expr_raw` of a `RawScalar` is
+            # the number itself; of anything else it is the unboxed word.
+            lower_expr_raw(fn, ctx, arg)
+    fn.call_import(ctx.host_import_name(name), len(args), has_result=True)
+
+
+# --- the storage guard (ruling E13, review B7/M12) --------------------------------
+
+
+def _hoist_storage_args(fn: Fn, ctx: LowerCtx, args: tuple[IRExpr, ...]) -> tuple[int, int]:
+    """Evaluate a storage call's ``(key, storage_type)`` ONCE, into two locals.
+
+    Review B7 is the whole point. Both the guarded form and the with-default
+    form name the key TWICE in the emitted code -- once for `has`, once for
+    `get` -- and lowering the key expression at each of those sites would
+    evaluate it twice. A key is an ordinary expression: it can be a call, so a
+    second evaluation is a second set of effects and a second charge against
+    the budget. Tier 1 evaluates it once, so the emitted code must too.
+
+    The storage-type immediate is hoisted the same way rather than re-emitted.
+    It is a `RawScalar` in everything the frontend builds (C13) and re-emitting
+    a constant would be harmless -- but "harmless because of what the frontend
+    happens to build" is the assumption that stops being true quietly, and one
+    extra `local.get` is not a price worth paying to find out.
+    """
+    if len(args) != 2:
+        raise EmitError(f"a storage call takes (key, storage_type), got {len(args)} argument(s)")
+    key, storage_type = args
+    key_slot = fn.new_local()
+    lower_expr(fn, ctx, key)
+    fn.local_set(key_slot)
+    type_slot = fn.new_local()
+    lower_expr_raw(fn, ctx, storage_type)
+    fn.local_set(type_slot)
+    return key_slot, type_slot
+
+
+def _call_storage(fn: Fn, ctx: LowerCtx, name: str, key_slot: int, type_slot: int) -> None:
+    """``name(key, storage_type)`` from the two hoisted locals."""
+    fn.local_get(key_slot)
+    fn.local_get(type_slot)
+    fn.call_import(ctx.host_import_name(name), 2, has_result=True)
+
+
+def _lower_guarded_storage_get(fn: Fn, ctx: LowerCtx, e: HostCall) -> None:
+    """A bare ``get_contract_data``, wrapped in its presence guard (E13/E14).
+
+    `get_contract_data` on a key the ledger does not hold is UNDEFINED at the
+    host: env.json promises nothing, so a contract that reads a missing key
+    has no defined behaviour to preserve. Serpent gives it one -- a contract
+    error carrying `CODE_MISSING_VALUE` -- by asking `has_contract_data` first
+    and calling `fail_with_error` when the answer is no.
+
+    The shape is `if not has: fail`, with no `else` arm, so the `get` itself is
+    emitted once on the straight line afterwards. `fail_with_error` "does not
+    actually return" (env.json), but wasm does not know that: its result is a
+    `Val` on the operand stack, and the `drop` is what keeps the frame
+    balanced for the validator.
+    """
+    key_slot, type_slot = _hoist_storage_args(fn, ctx, e.args)
+
+    _call_storage(fn, ctx, _STORAGE_HAS_FN, key_slot, type_slot)
+    # `has` answers with a Bool Val, which IS the word 0 or 1 -- so `eqz` is
+    # exactly "it was absent", with no comparison against a tag.
+    _eqz(fn)
+    fn.begin_if(None)
+    fn.i64_const(val.error_val(errors.CODE_MISSING_VALUE))
+    fn.call_import(ctx.host_import_name(_FAIL_WITH_ERROR_FN), 1, has_result=True)
+    fn.drop()
+    fn.end_if()
+
+    _call_storage(fn, ctx, _STORAGE_GET_FN, key_slot, type_slot)
+    narrow_to(fn, ctx, e.ty)
+
+
+def _lower_storage_get_with_default(fn: Fn, ctx: LowerCtx, e: IfExp, get: HostCall) -> None:
+    """``get(k, T, default=d)``: ``has`` decides, and NOTHING is guarded (E13).
+
+    C's own `has` is the guard. Emitting the generic one inside the `then` arm
+    would call `has_contract_data` twice for one read -- a second ledger access
+    and a second charge, for a question already answered on the line above.
+
+    The key is evaluated ONCE (review B7) into a hidden local shared by both
+    calls, which is also why this cannot be assembled out of the generic
+    `IfExp` lowering plus the generic `HostCall` one: those two would lower the
+    `cond`'s key and the `then`'s key independently, and the fact that they are
+    the SAME node (`guarded_storage_get`'s identity test) would buy nothing.
+    """
+    cond = e.cond
+    if not isinstance(cond, HostCall):  # pragma: no cover - the predicate proved it
+        raise EmitError("a with-default storage get must have a HostCall condition")
+    key_slot, type_slot = _hoist_storage_args(fn, ctx, cond.args)
+
+    _call_storage(fn, ctx, _STORAGE_HAS_FN, key_slot, type_slot)
+    _wrap(fn)
+    fn.begin_if("i64")
+    _call_storage(fn, ctx, _STORAGE_GET_FN, key_slot, type_slot)
+    narrow_to(fn, ctx, get.ty)
+    fn.else_()
+    lower_expr(fn, ctx, e.orelse)
+    fn.end_if()
+
+
+# --- InternalCall (E8, E11ii) -----------------------------------------------------
+
+
+def _lower_internal_call(fn: Fn, ctx: LowerCtx, e: InternalCall) -> None:
+    """A call to one of the module's own functions, by DEFINED-space index.
+
+    `results` is read off the node's own `ty`: a `-> None` helper is compiled
+    with zero results (E11ii, review M2), not with a `Void` `Val` nobody drops.
+    An `Eval` of one therefore needs no `drop` -- which is Task 9's statement
+    path, and is why that path must open a VOID expression scope for this node.
+    """
+    defidx = ctx.functions.get(e.fn_name)
+    if defidx is None:
+        raise EmitError(
+            f"InternalCall({e.fn_name!r}) has no entry in LowerCtx.functions; the "
+            "module's own functions are indexed in CompiledModule order, and a "
+            "helper the frontend accepted must be in that table"
+        )
+    for arg in e.args:
+        lower_expr(fn, ctx, arg)
+    results: tuple[str, ...] = () if e.ty.tag is TyTag.VOID else ("i64",)
+    fn.call_defined(defidx, len(e.args), results)
+
+
+# --- MakeStruct (P1's asymmetric pair, C9's order) --------------------------------
+
+
+def _lower_make_struct(fn: Fn, ctx: LowerCtx, e: MakeStruct) -> None:
+    """A struct literal: a COMPILE-TIME keys blob + a RUNTIME values array (P1).
+
+    The asymmetry is the thing to get right, and it is not symmetric-looking:
+    `map_new_from_linear_memory`'s keys array holds 8-byte
+    `(u32 pointer, u32 length)` descriptors of the field-name BYTES -- not
+    `Symbol` `Val`s -- so it is entirely compile-time data and lives in the
+    data segment. The values array holds 8-byte `Val` WORDS and is written at
+    run time into scratch. "The wrong layout validates and then panics
+    on-chain."
+
+    **The field order is C's (C9/P7) and is never re-sorted here.** The host
+    requires the key descriptors ascending as byte strings and panics
+    otherwise; `MakeStruct.fields` already is, and re-sorting would be a second
+    opinion that can only ever disagree. `tests/harness/objects.py` enforces the
+    ascending invariant, so a lowering that reordered them fails locally rather
+    than on chain (F.1.5).
+
+    The blob is `intern`ed rather than appended: Task 10 has already SEEDED the
+    identical bytes from `struct_key_descriptor_sets` (E7), so this call is a
+    hit and returns the seeded offset. Interning it again with the same recipe
+    is what makes that a fact rather than a hope -- a drift between the two
+    would show up as a second copy in the pool, not as silent corruption.
+    """
+    n = len(e.fields)
+    if n == 0:
+        raise EmitError(
+            f"struct {e.struct_name} has no fields; `map_new_from_linear_memory` "
+            "over an empty key array has nothing to describe"
+        )
+    descriptor = bytearray()
+    for name, _value in e.fields:
+        name_bytes = name.encode("utf-8")
+        descriptor += _struct.pack("<II", ctx.memory.intern(name_bytes), len(name_bytes))
+    keys_off = ctx.memory.intern(bytes(descriptor), align=8)
+
+    vals_off = ctx.memory.scratch(8 * n)
+    for i, (_name, value) in enumerate(e.fields):
+        _store_val(fn, ctx, vals_off + 8 * i, value)
+
+    fn.i64_const(val.pack_u32val(keys_off))
+    fn.i64_const(val.pack_u32val(vals_off))
+    fn.i64_const(val.pack_u32val(n))
+    fn.call_import(ctx.host_import_name(_MAP_LM_FN), 3, has_result=True)
+
+
+def _store_val(fn: Fn, ctx: LowerCtx, address: int, e: IRExpr) -> None:
+    """``i64.store`` one lowered ``Val`` word at a fixed scratch address.
+
+    The address is an `i32.const` because it is known at compile time: scratch
+    is a compile-time bump allocator over a fixed pool/scratch split (P12), so
+    nothing later moves it. Alignment 3 is `2**3 == 8` bytes, which every
+    scratch reservation is aligned to.
+    """
+    fn.i32_const(address)
+    lower_expr(fn, ctx, e)
+    fn.pop("i64")
+    fn.pop("i32")
+    fn.op(opcodes.I64_STORE, encode.uleb(3), encode.uleb(0))
+
+
+# --- FieldGet ---------------------------------------------------------------------
+
+
+def _lower_field_get(fn: Fn, ctx: LowerCtx, e: FieldGet) -> None:
+    """``map_get(obj, Symbol(field))`` -- a struct IS a map on chain (S9).
+
+    The key's form has to match C's own accounting exactly
+    (`frontend.py`'s `_collect_host_fns`): 9 characters or fewer is a
+    `SymbolSmall` immediate and reaches no host function, anything longer is a
+    pooled literal and reaches `symbol_new_from_linear_memory` (S22). C already
+    decided which, and put the constructor in `host_fns_used` accordingly -- so
+    disagreeing here means either an import the module never calls or, worse, a
+    call to an import that was never declared.
+    """
+    lower_expr(fn, ctx, e.obj)
+    if val.fits_symbol_small(e.field):
+        fn.i64_const(val.symbol_small(e.field))
+    else:
+        _lower_pooled(fn, ctx, TyTag.SYMBOL, e.field.encode("utf-8"))
+    fn.call_import(ctx.host_import_name(_MAP_GET_FN), 2, has_result=True)
+    narrow_to(fn, ctx, e.ty)
+
+
+# --- the compile-time Val word (C4/E12's shared gate) -----------------------------
+
+
+def _static_word(e: IRExpr) -> int | None:
+    """``e``'s ``Val`` word if it is knowable at COMPILE time, else ``None``.
+
+    This is C4's actual test, and it is narrower than `all_static`.
+    `MakeVec.all_static` says "every item is a literal C validated"; it does
+    NOT say those literals have an inline `Val` form. A `String` item is a
+    perfectly static literal whose `Val` is an object handle that does not
+    exist until `string_new_from_linear_memory` has run, so there is no word to
+    lay in the data section for it -- and an EITHER-repr item is a word only
+    below its 56-bit bound (A3). `None` here means the build-up chain, which is
+    always available and always correct.
+    """
+    if not isinstance(e, Const):
+        return None
+    ty = e.ty
+    if e.py_value is None:
+        return val.VOID_VAL
+    if ty.tag is TyTag.OPTION:
+        assert ty.elem is not None
+        return _static_word(Const(loc=e.loc, ty=ty.elem, py_value=e.py_value))
+    if ty.tag is TyTag.BOOL:
+        return val.pack_bool(_as_bool(e))
+    if ty.tag is TyTag.U32:
+        return val.pack_u32val(_as_int(e))
+    if ty.tag is TyTag.I32:
+        return val.pack_i32val(_as_int(e))
+    if ty.tag is TyTag.SYMBOL:
+        text = _as_str(e)
+        return val.symbol_small(text) if val.fits_symbol_small(text) else None
+    spec = _SMALL64.get(ty.tag) or _SMALL128.get(ty.tag)
+    if spec is not None:
+        tag, _constructor, signed = spec
+        value = _as_int(e)
+        if signed:
+            return val.pack_small_i64(value, tag) if val.fits_small_i(value) else None
+        return val.pack_small_u64(value, tag) if val.fits_small_u(value) else None
+    return None
+
+
+def _static_words(items: tuple[IRExpr, ...]) -> list[int] | None:
+    """Every item's compile-time ``Val`` word, or ``None`` if any has none."""
+    if not items:
+        return None
+    words: list[int] = []
+    for item in items:
+        word = _static_word(item)
+        if word is None:
+            return None
+        words.append(word)
+    return words
+
+
+def _pack_words(words: list[int]) -> bytes:
+    """The 8-byte little-endian ``Val`` array the host reads out of memory."""
+    return b"".join(_struct.pack("<Q", val.as_u64(word)) for word in words)
+
+
+# --- MakeVec / MakeTopics (ruling C4) ---------------------------------------------
+
+
+def _lower_make_vec(fn: Fn, ctx: LowerCtx, items: tuple[IRExpr, ...], all_static: bool) -> None:
+    """A vector, by whichever of the two forms is available (C4).
+
+    The linear-memory form needs BOTH of C's flag and D's own layout question
+    answered yes -- see `_static_word`. When it is available the whole vector
+    is data-section bytes and one host call; when it is not, `vec_new` plus a
+    `vec_push_back` per item.
+
+    **Every mutator result is REBOUND** (F.1.9). Host objects are immutable:
+    `vec_push_back` does not modify the vector, it returns a NEW handle to a
+    longer one. Dropping that result and pushing onto the old handle again
+    builds a one-element vector n times over and reports success -- the exact
+    silent-wrong-answer shape F.1.9 names -- so the handle lives in a hidden
+    local that every push reads and rewrites.
+    """
+    words = _static_words(items) if all_static else None
+    if words is not None:
+        offset = ctx.memory.intern(_pack_words(words), align=8)
+        fn.i64_const(val.pack_u32val(offset))
+        fn.i64_const(val.pack_u32val(len(words)))
+        fn.call_import(ctx.host_import_name(_VEC_LM_FN), 2, has_result=True)
+        return
+
+    fn.call_import(ctx.host_import_name(_VEC_NEW_FN), 0, has_result=True)
+    slot = fn.new_local()
+    fn.local_set(slot)
+    for item in items:
+        fn.local_get(slot)
+        lower_expr(fn, ctx, item)
+        fn.call_import(ctx.host_import_name(_VEC_PUSH_FN), 2, has_result=True)
+        fn.local_set(slot)
+    fn.local_get(slot)
+
+
+# --- MakeMap (ruling E12) ---------------------------------------------------------
+
+
+def _lower_make_map(fn: Fn, ctx: LowerCtx, e: MakeMap) -> None:
+    """A map literal: the descriptor form only where the CONTRACT allows it (E12).
+
+    `map_new_from_linear_memory`'s keys are `(ptr, len)` descriptors of byte
+    strings "convertible to `Symbol` type" (P1) -- so the form exists for
+    `Symbol` keys and for nothing else. A `Map[U32, U32]` literal is fully
+    static and still takes the chain: `all_static` says D *may* lay the
+    values out, not that the KEYS have a descriptor form at all. That is
+    ruling E12, and it is the one place where reading `all_static` as a licence
+    would produce a module that validates and panics.
+
+    The keys must also be strictly ascending as byte strings. C ordered them
+    (A8/A14 through the tier-1 oracle), so this checks rather than sorts: a
+    disagreement is a compiler bug in one of the two, and the loud version of
+    it is an `EmitError` here instead of a host panic on chain.
+
+    Values are stored to scratch at run time in the node's pair order -- they
+    are arbitrary `Val`s, including object handles that do not exist until
+    their own expression has run.
+
+    The fallback is `map_new` + a `map_put` per pair in pair order (F.1.10),
+    with the handle rebound each time for the same reason `vec_push_back` is
+    (F.1.9): the host returns a new map, it does not mutate the old one.
+    """
+    keys = [key for key, _value in e.pairs]
+    names = _symbol_key_names(keys) if e.key_ty.tag is TyTag.SYMBOL else None
+
+    if e.all_static and names is not None:
+        _check_ascending(names, e.pairs)
+        descriptor = bytearray()
+        for name_bytes in names:
+            descriptor += _struct.pack("<II", ctx.memory.intern(name_bytes), len(name_bytes))
+        keys_off = ctx.memory.intern(bytes(descriptor), align=8)
+        vals_off = ctx.memory.scratch(8 * len(e.pairs))
+        for i, (_key, value) in enumerate(e.pairs):
+            _store_val(fn, ctx, vals_off + 8 * i, value)
+        fn.i64_const(val.pack_u32val(keys_off))
+        fn.i64_const(val.pack_u32val(vals_off))
+        fn.i64_const(val.pack_u32val(len(e.pairs)))
+        fn.call_import(ctx.host_import_name(_MAP_LM_FN), 3, has_result=True)
+        return
+
+    fn.call_import(ctx.host_import_name(_MAP_NEW_FN), 0, has_result=True)
+    slot = fn.new_local()
+    fn.local_set(slot)
+    for key, value in e.pairs:
+        fn.local_get(slot)
+        lower_expr(fn, ctx, key)
+        lower_expr(fn, ctx, value)
+        fn.call_import(ctx.host_import_name(_MAP_PUT_FN), 3, has_result=True)
+        fn.local_set(slot)
+    fn.local_get(slot)
+
+
+def _symbol_key_names(keys: list[IRExpr]) -> list[bytes] | None:
+    """The key-name bytes when every key is a ``Symbol`` literal, else ``None``.
+
+    A `Symbol` key that is not a `Const` -- a parameter, a local, a `ConstRef`
+    -- has no name at compile time, so there is no descriptor to write and the
+    chain is the only form (the m.9 descriptor contract, P1).
+
+    The per-key `SYMBOL` test duplicates the caller's check on `MakeMap.key_ty`
+    on purpose: `key_ty` is the map's DECLARED key type and each key node
+    carries its own, and the descriptor form is unsafe unless both say Symbol.
+    """
+    names: list[bytes] = []
+    for key in keys:
+        if not isinstance(key, Const) or key.ty.tag is not TyTag.SYMBOL:
+            return None
+        names.append(_as_str(key).encode("utf-8"))
+    return names
+
+
+def _check_ascending(names: list[bytes], pairs: tuple[tuple[IRExpr, IRExpr], ...]) -> None:
+    """Refuse a descriptor blob the host would panic on (P1/F.1.5).
+
+    C sorts map-literal keys through the tier-1 oracle (A8/A14/MJ-15) and
+    proves them unique, so this never fires on a frontend-built node. It exists
+    because the failure it prevents is invisible: a descending pair of
+    descriptors validates as wasm, passes every structural check, and panics
+    inside the host. Loud here beats undiagnosable there.
+    """
+    previous = b""
+    for name in names:
+        if name <= previous:
+            raise EmitError(
+                f"map literal keys are not strictly ascending as byte strings: "
+                f"{name!r} follows {previous!r} in a {len(pairs)}-entry literal. "
+                "`map_new_from_linear_memory` PANICS on this (P1); C orders and "
+                "de-duplicates static keys (A8/A14), so the two disagree"
+            )
+        previous = name
 
 
 # --- unboxing ---------------------------------------------------------------------

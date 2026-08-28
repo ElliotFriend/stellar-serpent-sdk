@@ -1030,17 +1030,42 @@ def test_convert_is_loud() -> None:
 
 
 @pytest.mark.parametrize(
-    "node",
+    ("node", "message"),
     [
-        MakeStruct(loc=LOC, ty=Ty.Struct("S"), struct_name="S", fields=()),
-        MakeVec(loc=LOC, ty=Ty.Vec(Ty.U32), elem_ty=Ty.U32, items=(), all_static=True),
-        HostCall(loc=LOC, ty=Ty.U32, fn_name="vec_len", args=()),
-        InternalCall(loc=LOC, ty=Ty.U32, fn_name="helper", args=()),
+        # An empty struct has no key descriptors to lay out at all.
+        (
+            MakeStruct(loc=LOC, ty=Ty.Struct("S"), struct_name="S", fields=()),
+            "has no fields",
+        ),
+        # `vec_len` takes one argument in the pin; the IR handed it none (B2).
+        (
+            HostCall(loc=LOC, ty=Ty.U32, fn_name="vec_len", args=()),
+            "takes 1 argument",
+        ),
+        # A helper the context has no defidx for (review B1).
+        (
+            InternalCall(loc=LOC, ty=Ty.U32, fn_name="helper", args=()),
+            "has no entry in LowerCtx.functions",
+        ),
     ],
 )
-def test_container_and_call_kinds_name_task_8(node: IRExpr) -> None:
-    with pytest.raises(EmitError, match="lowered in Task 8"):
+def test_the_object_kinds_refuse_a_malformed_node_loudly(node: IRExpr, message: str) -> None:
+    """These four used to be Task 8's "not lowered here" placeholder.
+
+    They are lowered now (`test_emitter_lower_objects.py`), so what is pinned
+    here is the other half: each still refuses LOUDLY when the node it is
+    handed cannot be lowered, rather than emitting something that validates.
+    """
+    with pytest.raises(EmitError, match=message):
         items(node)
+
+
+def test_an_empty_static_vec_falls_back_to_the_chain() -> None:
+    """C4's gate answers "no" for an empty vector -- there is nothing to lay
+    out, and `vec_new` with no pushes is the honest lowering (it is also what
+    `recognize._all_static` already decided, MJ-15)."""
+    node = MakeVec(loc=LOC, ty=Ty.Vec(Ty.U32), elem_ty=Ty.U32, items=(), all_static=True)
+    assert import_calls(items(node)) == ["vec_new"]
 
 
 def test_an_unknown_node_kind_is_loud() -> None:

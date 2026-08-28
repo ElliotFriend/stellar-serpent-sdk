@@ -22,6 +22,13 @@ layout facts (dossier P12):
   not a compiler bug (frame.py's exception taxonomy, review m10); Task 10
   re-reports ``limit="pool"``/``limit="scratch"`` as SPT8002/SPT8003.
 
+Two blob families are deliberately NOT seeded and are interned lazily as
+lowering reaches them -- a map literal's `Symbol` key-descriptor blob and a
+static `Vec`/topic tuple's packed `Val` array (E12/C4) -- because the frontend's
+`LiteralInventory` does not inventory either; determinism is preserved because
+lowering order is source order, so those blobs are appended in a fixed order
+after every seeded one.
+
 ``seed`` (added for D, not in the spike) pre-interns an entire
 ``LiteralInventory`` (SS C.2 output 2) in inventory order, so pool offsets are
 a pure function of the inventory rather than of emission order (§C.1, E7):
