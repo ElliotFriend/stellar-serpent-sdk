@@ -335,6 +335,50 @@ Format:
   re-reading is reversible by checking in WAT + a drift test later; E9's
   floor-vs-target is a one-line change with artifact-hash consequences.
 
+## 2026-08-27 M1-D plan-review rulings (all findings adopted)
+- Context: adversarial review of the M1-D plan — 11 blockers, 15 majors, 9
+  minors, all probe-evidenced (triage record:
+  .superpowers/sdd/2026-08-27-m1d-emitter/plan-review.md). Zero disputes;
+  three adoptions diverge from the reviewer's offered fix or amend earlier
+  rulings:
+- Ruling (B1): call sites are serialized SYMBOLICALLY (Fn.code holds
+  bytes | CallImport(name) | CallDefined(defidx); pass 2 resolves indices
+  after the import list is frozen, imports in first-use order). Chosen over
+  the reviewer's discovery-pre-pass: no double lowering, and the
+  wrong-target-that-validates class becomes structurally impossible rather
+  than convention-guarded.
+- Ruling (B3/B11, sanctioned-edit scope): the SPT8xxx band lands with its
+  FULL blast radius edited in one commit (codes.validate band range 1-8,
+  _CODE_RE, registry count 96 -> 100, NO_FIXTURE_ALLOWLIST + reasons,
+  _BAND_TITLES, docs/subset.md regen) — sanctioned as enumerated in the
+  plan, nothing else. build_meta gains `version: str | None` (None omits the
+  entry); serpentver stays serpent.__version__ with a new drift test against
+  importlib.metadata (amends ruling E8's mechanism, keeps its intent).
+- Ruling (M9/M13, amends E3's part inventory): NO tagcheck_struct/vec/map or
+  narrow_* parts (exact-tag compares are ~5 instructions, inline);
+  tagcheck_bytes_n is the one tag-check part (needs a host call); NO 32/64-bit
+  neg parts (inline, with the unsigned-neg nonzero->overflow rule per M6).
+  Final ratified runtime-part namespace: {u,i}64_{add,sub,mul,floordiv,mod},
+  {u,i}128_{add,sub,mul,neg,cmp,floordiv,mod}, box/unbox per EITHER family,
+  tagcheck_bytes_n.
+- Ruling (B6, third licensed frontend edit): Address literals are lowered
+  (pool strkey -> string_new_from_linear_memory -> the pinned strkey-to-
+  address fn, name verified from the pin at implementation time);
+  LiteralInventory gains address_strkeys and the host-fn sets learn both
+  names — chosen over excluding the semantics case, which would have holed
+  the S18 differential.
+- Also structural: reserved --meta keys are a plain ValueError (honest-code
+  discipline — SPT8004 stays emitter-coverage only); the E10 consistency
+  assertion is restricted to the literal/LM component (128-bit two-result
+  parts force scratch memory C cannot foresee, B8); the semantics
+  differential uses a two-step wrapper (wrap_case never returns the value,
+  B5) with the in-scope predicate stated in-test (35 cases today, M15).
+- Why: every finding verified against the shipped code or the reviewer's
+  live probes; the three top findings (B1, B4+B9+B10, B5+B6) were all of the
+  validates-deploys-wrong class the process exists to catch.
+- Reversal cost: per-item low pre-execution; the SPT8xxx band widening is
+  append-only public API once released.
+
 ## 2026-08-27 M1-C final-review minors folded into parked passes
 - Minors 2 and 3 from the final whole-branch review (registry intent strings
   hardcode limit numbers; frontend.py imports _host._protocol via the private
