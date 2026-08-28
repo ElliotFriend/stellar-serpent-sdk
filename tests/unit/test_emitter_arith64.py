@@ -300,6 +300,80 @@ def test_ensure_part_refuses_an_unknown_part() -> None:
         ctx.ensure_part("u64_pow")
 
 
+# --- re-entrancy: a part whose own body links another part -------------------
+# Task 6's 128-bit parts are the first nesters (`u128_mul` links `mul64_wide`,
+# `u128_mod` links `u128_floordiv`), so the three states a nested build can be
+# in are pinned here with synthetic builders rather than only through them.
+
+
+def _outer_calling(inner: str) -> Callable[[EmitCtx], frame.Fn]:
+    """A builder whose body links `inner` and calls it -- the nesting shape."""
+
+    def build(ctx: EmitCtx) -> frame.Fn:
+        fn = frame.Fn("outer", 2, 0, ("i64",))
+        fn.local_get(0)
+        fn.local_get(1)
+        fn.call_defined(ctx.ensure_part(inner), 2, ("i64",))
+        fn.ret()
+        return fn
+
+    return build
+
+
+def test_a_part_may_link_another_part_mid_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(arith.PART_BUILDERS, "outer", _outer_calling("u64_add"))
+    ctx = EmitCtx(n_module_functions=1, memory=Memory())
+    assert ctx.ensure_part("outer") == 1
+    # The OUTER part reserved its index first, so the inner one lands after it
+    # even though the inner body was finished first.
+    assert [(p.name, p.defidx) for p in ctx.parts] == [("outer", 1), ("u64_add", 2)]
+
+
+def test_a_part_that_links_itself_is_a_compiler_bug(monkeypatch: pytest.MonkeyPatch) -> None:
+    # C12 rejects recursion at tier 1; a part that reached itself would not
+    # terminate, so the reserved-but-not-yet-built state is the detection.
+    monkeypatch.setitem(arith.PART_BUILDERS, "outer", _outer_calling("outer"))
+    ctx = EmitCtx(n_module_functions=0, memory=Memory())
+    with pytest.raises(frame.EmitError, match="links itself"):
+        ctx.ensure_part("outer")
+
+
+def test_two_parts_that_link_each_other_are_a_compiler_bug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(arith.PART_BUILDERS, "outer", _outer_calling("other"))
+    monkeypatch.setitem(arith.PART_BUILDERS, "other", _outer_calling("outer"))
+    ctx = EmitCtx(n_module_functions=0, memory=Memory())
+    with pytest.raises(frame.EmitError, match="links itself"):
+        ctx.ensure_part("outer")
+
+
+def test_parts_read_mid_build_says_so_instead_of_raising_keyerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `_part_order` gains a name before its builder runs, so `parts` has to
+    # answer for a half-built list. A `KeyError` naming a part is a baffling
+    # way to learn that; an `EmitError` naming the state is not.
+    seen: list[str] = []
+
+    def build(ctx: EmitCtx) -> frame.Fn:
+        with pytest.raises(frame.EmitError, match="still being built") as caught:
+            _ = ctx.parts
+        seen.append(str(caught.value))
+        fn = frame.Fn("outer", 0, 0, ("i64",))
+        fn.i64_const(0)
+        fn.ret()
+        return fn
+
+    monkeypatch.setitem(arith.PART_BUILDERS, "outer", build)
+    ctx = EmitCtx(n_module_functions=0, memory=Memory())
+    ctx.ensure_part("outer")
+    assert len(seen) == 1
+    assert "outer" in seen[0]
+    # And once the builder has returned, the same read succeeds.
+    assert [p.name for p in ctx.parts] == ["outer"]
+
+
 def test_every_ratified_part_builds_and_validates() -> None:
     # Building the whole inventory into one module also proves the parts do not
     # collide in the index space and that every import they name is bindable.
@@ -538,6 +612,20 @@ def test_u32_inline_golden_vectors(op: BinaryOp, a: int, b: int, want: object) -
 @pytest.mark.parametrize(("op", "a", "b", "want"), I32_VECTORS)
 def test_i32_inline_golden_vectors(op: BinaryOp, a: int, b: int, want: object) -> None:
     _check_inline(_EMIT_BINARY[Ty.I32, op], (a, b), want)
+
+
+@pytest.mark.parametrize("ty", [Ty.U32, Ty.I32])
+@pytest.mark.parametrize("op", [BinaryOp.FLOORDIV, BinaryOp.MOD])
+def test_thirty_two_bit_division_by_zero_is_left_to_the_wasm_trap(ty: Ty, op: BinaryOp) -> None:
+    # The 32-bit twin of `test_division_by_zero_is_left_to_the_wasm_trap`: the
+    # inline path has no zero test either, so `//0` and `%0` are the host's own
+    # trap and A10's trap-class mapping covers them. Pinned per width and
+    # operator because "helpfully" routing one of the four to
+    # `fail_with_error` would diverge from tier 1's `ZeroDivisionError` in
+    # exactly one cell of the matrix.
+    host, _store = _inline_host(_EMIT_BINARY[ty, op], 2)
+    with pytest.raises(wasmtime.Trap):
+        host.invoke("probe", 1, 0)
 
 
 def test_thirty_two_bit_binary_links_no_part() -> None:

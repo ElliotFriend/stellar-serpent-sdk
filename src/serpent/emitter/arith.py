@@ -150,6 +150,8 @@ class EmitCtx:
         self._part_order: list[str] = []
         self._defidx: dict[str, int] = {}
         self._built: dict[str, Part] = {}
+        self._building: list[str] = []
+        self._lo_slot: dict[str, int] = {}
 
     # -- host imports ---------------------------------------------------------
 
@@ -181,9 +183,30 @@ class EmitCtx:
         """Build the named part if it is not linked yet; return its ``defidx``.
 
         The index is reserved BEFORE the body is built, so a part whose own
-        body links another part still gets the index it was promised.
+        body links another part still gets the index it was promised -- and
+        parts DO nest: ``u128_mul`` links ``mul64_wide``, ``u128_mod`` links
+        ``u128_floordiv``.
+
+        Registration order and the build map are therefore kept consistent by
+        construction: ``_part_order`` gains the name at reservation,
+        ``_built`` gains its ``Part`` only when the builder returns, and
+        ``parts`` refuses to answer in between rather than raising ``KeyError``
+        at whichever name happened to be half-finished.
+
+        **A part that reaches itself is a compiler bug**, directly or through
+        another part: it would not terminate, and C12 rejects recursion at
+        tier 1 precisely so that nothing downstream has to model it. That
+        state is exactly "reserved but not built", which is what the second
+        test below detects.
         """
         if name in self._defidx:
+            if name not in self._built:
+                chain = " -> ".join([*self._building, name])
+                raise EmitError(
+                    f"runtime part {name!r} links itself ({chain}); a part's body "
+                    "must terminate, and C12 rejects recursion -- this is a "
+                    "compiler bug in the part builders, not a contract error"
+                )
             return self._defidx[name]
         builder = PART_BUILDERS.get(name)
         if builder is None:
@@ -193,7 +216,11 @@ class EmitCtx:
         defidx = self.n_module_functions + len(self._part_order)
         self._part_order.append(name)
         self._defidx[name] = defidx
-        fn = builder(self)
+        self._building.append(name)
+        try:
+            fn = builder(self)
+        finally:
+            self._building.pop()
         self._built[name] = Part(
             name=name,
             defidx=defidx,
@@ -204,6 +231,32 @@ class EmitCtx:
         )
         return defidx
 
+    def lo_slot(self, name: str) -> int:
+        """The scratch address part ``name`` writes its ``lo`` limb to (P12, m4).
+
+        One slot PER PART, not per call site, and allocated on first mention so
+        the address is a pure function of lowering order. Safe against
+        re-entrancy under the two invariants this module's docstring states:
+        no part reaches itself (``ensure_part`` proves it), and the caller
+        loads ``lo`` immediately after the call -- which ``call_wide_part`` is
+        the only sanctioned way to do.
+        """
+        if name not in self._lo_slot:
+            self._lo_slot[name] = self.memory.scratch(8)
+        return self._lo_slot[name]
+
+    @property
+    def needs_memory(self) -> bool:
+        """True iff a linked part reserved scratch -- review B8's marker.
+
+        Task 10 reads this: linking any two-result 128-bit part forces linear
+        memory even for a contract whose own ``compiled.needs_memory`` is
+        ``False`` (a contract that only multiplies ``U128``s has no literals
+        and no linear-memory host call, yet D needs a page for the ``lo``
+        slots).
+        """
+        return bool(self._lo_slot)
+
     @property
     def parts_linked(self) -> frozenset[str]:
         """Every part this module links -- Task 13's superset of C's hint."""
@@ -211,7 +264,18 @@ class EmitCtx:
 
     @property
     def parts(self) -> tuple[Part, ...]:
-        """The linked parts in ``defidx`` order, ready to append to the module."""
+        """The linked parts in ``defidx`` order, ready to append to the module.
+
+        Refuses to answer while a builder is still running: ``_part_order``
+        gains a name at reservation, so a mid-build read would otherwise be a
+        ``KeyError`` naming a part that is merely unfinished.
+        """
+        unfinished = [name for name in self._part_order if name not in self._built]
+        if unfinished:
+            raise EmitError(
+                f"parts read while {unfinished} are still being built; the part "
+                "list is complete only once every builder has returned"
+            )
         return tuple(self._built[name] for name in self._part_order)
 
 
