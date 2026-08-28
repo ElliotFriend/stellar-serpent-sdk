@@ -11,6 +11,14 @@ and sub-plan F's tier 2b is the gate. Two habits keep that honest in this file:
 * the places tier 1 answers a question the host answers differently, or does
   not answer at all, are pinned as such with the divergence named in the test's
   own docstring -- an honest pin beats a silent gap.
+
+Every env here comes from `deployed_env()` (`conftest.py`) rather than `Env()`,
+because the model refuses storage, events and the ledger outside an invocation
+frame and refuses a frame before `deploy` (ruling E7(ii)). The helper deploys a
+do-nothing contract and opens the frame, so these tests stay tests OF THE MODEL;
+the framing itself is `test_env_deploy.py`'s subject. A plain `Env()` is used
+where the test is about a surface that is deliberately NOT gated -- the
+test-facing inspection hooks.
 """
 
 import copy
@@ -51,6 +59,7 @@ from serpent.env import (
 from serpent.errors import AbiCheckFailed, BadArgument, MissingValue
 from serpent.types import bytes_n
 from serpent.types._storage_key import storage_key
+from tests.unit.conftest import deployed_env
 
 ACCOUNT = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
 CONTRACT = "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE"
@@ -84,7 +93,7 @@ def _buckets(env: Env) -> tuple[object, ...]:
 
 
 def test_each_bucket_round_trips_a_scalar() -> None:
-    env = Env()
+    env = deployed_env()
     storage = env.storage()
     for bucket in (storage.instance(), storage.persistent(), storage.temporary()):
         bucket.set(Symbol("k"), U32(7))
@@ -93,7 +102,7 @@ def test_each_bucket_round_trips_a_scalar() -> None:
 
 def test_the_three_buckets_are_separate_namespaces() -> None:
     """One store keyed `(durability, storage_key(key))`, mirroring the harness."""
-    env = Env()
+    env = deployed_env()
     storage = env.storage()
     storage.instance().set(Symbol("k"), U32(1))
     storage.persistent().set(Symbol("k"), U32(2))
@@ -108,7 +117,7 @@ def test_the_durability_ints_come_from_the_pinned_host_table() -> None:
     """ONE definition (S13): never a local literal in `env.py`."""
     from serpent._host._scalars import STORAGE_TYPE
 
-    storage = Env().storage()
+    storage = deployed_env().storage()
     assert storage.temporary()._DURABILITY == STORAGE_TYPE["temporary"]
     assert storage.persistent()._DURABILITY == STORAGE_TYPE["persistent"]
     assert storage.instance()._DURABILITY == STORAGE_TYPE["instance"]
@@ -117,7 +126,7 @@ def test_the_durability_ints_come_from_the_pinned_host_table() -> None:
 def test_a_struct_key_round_trips_and_is_compared_by_value() -> None:
     """A fresh, structurally-equal key finds the entry -- the failure
     `tests/harness/objects.py:36-49` was written to prevent."""
-    env = Env()
+    env = deployed_env()
     bucket = env.storage().temporary()
     owner = Address(ACCOUNT)
     spender = Address(CONTRACT)
@@ -128,7 +137,7 @@ def test_a_struct_key_round_trips_and_is_compared_by_value() -> None:
 
 
 def test_container_keys_round_trip() -> None:
-    env = Env()
+    env = deployed_env()
     bucket = env.storage().persistent()
     bucket.set(Vec(Symbol, [Symbol("a"), Symbol("b")]), U32(1))
     bucket.set(Map(Symbol, U32, [(Symbol("a"), U32(1))]), U32(2))
@@ -139,7 +148,7 @@ def test_container_keys_round_trip() -> None:
 
 
 def test_a_struct_value_round_trips() -> None:
-    env = Env()
+    env = deployed_env()
     bucket = env.storage().instance()
     bucket.set(Symbol("h"), Named(name=Symbol("n"), count=U32(2)))
     got = bucket.get(Symbol("h"), Named)
@@ -152,7 +161,7 @@ def test_a_struct_value_round_trips() -> None:
 
 def test_a_defaultless_get_of_an_absent_key_raises_missing_value() -> None:
     """The SAME class the emitter's E13 guard's code names (ruling E8)."""
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     with pytest.raises(MissingValue) as excinfo:
         bucket.get(Symbol("absent"), U32)
     from serpent.errors import CODE_MISSING_VALUE
@@ -163,7 +172,7 @@ def test_a_defaultless_get_of_an_absent_key_raises_missing_value() -> None:
 def test_a_default_is_returned_for_an_absent_key_and_never_ty_checked() -> None:
     """`get`'s default path mirrors the emitter's GET_DEFAULT `IfExp`: the
     `orelse` IS the default, un-narrowed."""
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     assert bucket.get(Symbol("absent"), U32, U32(9)) == U32(9)
     # A present key ignores the default.
     bucket.set(Symbol("k"), U32(1))
@@ -173,7 +182,7 @@ def test_a_default_is_returned_for_an_absent_key_and_never_ty_checked() -> None:
 def test_del_of_an_absent_key_is_a_silent_no_op() -> None:
     """Mirrors the mini-host (`hostfns.py:365-370`), and is an UNVERIFIED
     assumption about the real host -- see `del_`'s own docstring."""
-    bucket = Env().storage().temporary()
+    bucket = deployed_env().storage().temporary()
     bucket.del_(Symbol("never_written"))
     bucket.set(Symbol("k"), U32(1))
     bucket.del_(Symbol("k"))
@@ -183,7 +192,7 @@ def test_del_of_an_absent_key_is_a_silent_no_op() -> None:
 
 def test_has_returns_a_chain_bool_not_a_python_bool() -> None:
     """Q12, and dossier F.1.2's named silent case."""
-    bucket = Env().storage().instance()
+    bucket = deployed_env().storage().instance()
     absent = bucket.has(Symbol("k"))
     bucket.set(Symbol("k"), U32(1))
     present = bucket.has(Symbol("k"))
@@ -196,7 +205,7 @@ def test_has_returns_a_chain_bool_not_a_python_bool() -> None:
 
 
 def test_a_ty_mismatch_raises_abi_check_failed() -> None:
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     bucket.set(Symbol("k"), U32(1))
     with pytest.raises(AbiCheckFailed) as excinfo:
         bucket.get(Symbol("k"), I32)
@@ -210,7 +219,7 @@ def test_the_bytes_family_shares_one_tag_family() -> None:
     `TAG_BYTES_OBJECT` compare accepts (review B6's first bullet) -- and so is
     a plain `Bytes` of the right length read back as `Bytes32`: on chain there
     is no difference between the two, only a payload of some length."""
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     bucket.set(Symbol("k"), Bytes32(b"x" * 32))
     assert bucket.get(Symbol("k"), Bytes) == Bytes32(b"x" * 32)
     assert bucket.get(Symbol("k"), Bytes32) == Bytes32(b"x" * 32)
@@ -231,7 +240,7 @@ def test_a_fixed_length_bytes_request_also_checks_the_length() -> None:
     way rejects what the chain accepts (a test failure), coarse this way accepts
     what the chain rejects (a green test and a failed invocation).
     """
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     b3 = bytes_n(3)
     bucket.set(Symbol("n"), b3(b"abc"))
     with pytest.raises(AbiCheckFailed, match="3 bytes"):
@@ -251,7 +260,7 @@ def test_a_struct_and_a_map_share_one_tag_family() -> None:
     """A struct IS a `Map<Symbol, V>` on chain (S9): the emitter maps
     `TyTag.STRUCT` to `TAG_MAP_OBJECT`, so tier 1 must accept both directions
     or it rejects what the chain accepts."""
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     bucket.set(Symbol("s"), Named(name=Symbol("n"), count=U32(1)))
     struct_read_as_map: object = bucket.get(Symbol("s"), Map)
     assert type(struct_read_as_map) is Named
@@ -263,7 +272,7 @@ def test_a_struct_and_a_map_share_one_tag_family() -> None:
 def test_vec_and_map_element_types_are_not_checked() -> None:
     """The emitter's check is tag-only; a deeper tier-1 check would reject
     what the chain accepts (S13)."""
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     bucket.set(Symbol("v"), Vec(U32, [U32(1)]))
     assert bucket.get(Symbol("v"), Vec) == Vec(U32, [U32(1)])
     assert bucket.get(Symbol("v"), Vec[I32]) == Vec(U32, [U32(1)])
@@ -284,7 +293,7 @@ def test_an_option_ty_accepts_the_wrapped_family() -> None:
     chain-type or struct name), so this path exists for hand-written tier-1
     calls and for the composition rule to be pinned somewhere.
     """
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     bucket.set(Symbol("k"), U32(1))
     assert bucket.get(Symbol("k"), U32 | None) == U32(1)  # type: ignore[arg-type]
     # Both spellings of the same type: `X | None` reaches the predicate as a
@@ -303,7 +312,7 @@ def test_an_unrecognized_ty_fails_loudly() -> None:
     """A `ty` the whole authoring surface cannot produce (a compiled `get`'s
     type argument must be a bare chain-type or struct name) must not be
     silently accepted."""
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     bucket.set(Symbol("k"), U32(1))
     with pytest.raises(TypeError, match="not a chain type"):
         bucket.get(Symbol("k"), int)
@@ -429,7 +438,7 @@ def test_isolation_a_stored_container_is_not_the_local() -> None:
     If this property could NOT be made to hold, the escape flip in
     `recognize.collect_never_owned` would be mandatory instead.
     """
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     local = Vec(U32, [U32(1)])
     bucket.set(Symbol("v"), local)
     local.push_back(U32(2))
@@ -440,7 +449,7 @@ def test_isolation_a_stored_container_is_not_the_local() -> None:
 
 
 def test_isolation_holds_for_maps_structs_and_nesting() -> None:
-    bucket = Env().storage().temporary()
+    bucket = deployed_env().storage().temporary()
 
     m = Map(Symbol, U32, [(Symbol("a"), U32(1))])
     bucket.set(Symbol("m"), m)
@@ -459,7 +468,7 @@ def test_isolation_holds_for_maps_structs_and_nesting() -> None:
 
 
 def test_isolation_two_reads_never_share_an_object() -> None:
-    bucket = Env().storage().instance()
+    bucket = deployed_env().storage().instance()
     bucket.set(Symbol("v"), Vec(U32, [U32(1)]))
     first = bucket.get(Symbol("v"), Vec)
     second = bucket.get(Symbol("v"), Vec)
@@ -471,7 +480,7 @@ def test_isolation_two_reads_never_share_an_object() -> None:
 def test_isolation_a_key_mutated_after_the_write_still_finds_the_entry() -> None:
     """The key is normalized to a `storage_key` at write time, so mutating the
     key object afterwards cannot move the entry."""
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     key = Vec(Symbol, [Symbol("a")])
     bucket.set(key, U32(1))
     key.push_back(Symbol("b"))
@@ -548,17 +557,22 @@ def test_the_isolation_property_holds_over_generated_chain_values(
     mutation of either side can reach the other.
     """
     snapshot = storage_key(value)
-    bucket = Env().storage().persistent()
-    bucket.set(key, value)
-    got = bucket.get(key, type(value))
-    assert type(got) is type(value)
-    assert storage_key(got) == snapshot
-    assert got is not value
-    # Mutating what came out cannot change the store, and neither can mutating
-    # the original the caller still holds.
-    _grow(got)
-    _grow(value)
-    assert storage_key(bucket.get(key, type(value))) == snapshot
+    # `frame=False` plus an explicit frame, because Hypothesis runs this body
+    # many times: the helper's frame stays open for the whole TEST, and two of
+    # them at once would be two envs framed at once (which the model refuses).
+    env = deployed_env(frame=False)
+    with env.frame():
+        bucket = env.storage().persistent()
+        bucket.set(key, value)
+        got = bucket.get(key, type(value))
+        assert type(got) is type(value)
+        assert storage_key(got) == snapshot
+        assert got is not value
+        # Mutating what came out cannot change the store, and neither can
+        # mutating the original the caller still holds.
+        _grow(got)
+        _grow(value)
+        assert storage_key(bucket.get(key, type(value))) == snapshot
 
 
 @given(value=CHAIN_VALUES)
@@ -586,7 +600,7 @@ def test_deepcopy_preserves_a_bytes_n_factory_class() -> None:
 
 
 def test_publish_records_a_snapshot() -> None:
-    env = Env()
+    env = deployed_env()
     address = Address(ACCOUNT)
     data = Vec(U32, [U32(1)])
     env.events().publish((Symbol("transfer"), address, address), data)
@@ -606,7 +620,7 @@ def test_published_events_is_an_immutable_snapshot_view() -> None:
     it are copies, so a test that pokes at what it just read does not corrupt
     what the next read returns.
     """
-    env = Env()
+    env = deployed_env()
     env.events().publish((Symbol("a"),), Vec(U32, [U32(1)]))
     first = env.published_events
     env.events().publish((Symbol("b"),), U32(2))
@@ -626,7 +640,7 @@ def test_publish_requires_a_short_symbol_first_topic() -> None:
     """S10's convention, enforced at tier 1 and NOT by the host -- a
     deliberate tier-1-only reject, mirroring the frontend's SPT3019 so that
     nothing a compiled contract can express reaches it."""
-    env = Env()
+    env = deployed_env()
     with pytest.raises(BadArgument, match="topic"):
         env.events().publish((), U32(1))
     with pytest.raises(BadArgument, match="Symbol"):
@@ -644,19 +658,25 @@ def test_event_publish_still_awaits_its_own_task() -> None:
         __slots__ = ()
 
     with pytest.raises(NotImplementedError, match="sub-plan E"):
-        E().publish(Env())
+        E().publish(deployed_env())
 
 
 # --- the ledger ------------------------------------------------------------
 
 
 def test_the_ledger_reports_the_configured_values_as_chain_types() -> None:
-    env = Env()
+    env = deployed_env()
     assert env.ledger().timestamp() == U64(DEFAULT_LEDGER_TIMESTAMP)
     assert env.ledger().sequence() == U32(DEFAULT_LEDGER_SEQUENCE)
     assert type(env.ledger().timestamp()) is U64
     assert type(env.ledger().sequence()) is U32
-    other = Env(timestamp=42, sequence=7)
+
+
+def test_the_ledger_reports_a_configured_timestamp_and_sequence() -> None:
+    """Split out from the test above rather than folded into it: a second env
+    needs a frame of its own, and two envs are never framed at once (M1 has no
+    cross-contract call), so one env per test keeps both readable."""
+    other = deployed_env(timestamp=42, sequence=7)
     assert other.ledger().timestamp() == U64(42)
     assert other.ledger().sequence() == U32(7)
 
@@ -677,7 +697,7 @@ def test_the_ledger_defaults_are_not_zero_and_are_shared_with_the_harness() -> N
 def test_env_refuses_an_unknown_attribute() -> None:
     """Dossier F.1.14: every class here is slotted, so an attribute typo must
     fail loudly rather than land in a `__dict__`."""
-    env = Env()
+    env = deployed_env()
     with pytest.raises(AttributeError):
         env.timestamp = 1  # type: ignore[attr-defined]
     assert not hasattr(env, "__dict__")
@@ -686,8 +706,13 @@ def test_env_refuses_an_unknown_attribute() -> None:
 
 
 def test_recorded_auths_starts_empty() -> None:
-    """The auth model itself is its own task; the inspection surface is here
-    so the shape F builds against is frozen now (process risk F.3)."""
+    """An env nobody has authorized against records nothing -- with or without
+    an allow-set. The auth MODEL is `tests/unit/test_env_deploy.py`'s.
+
+    Plain `Env()`s, deliberately: `recorded_auths` is a test-facing inspection
+    surface, not a host call, so it answers with no deploy and no frame (that is
+    what makes it usable from a test that is asserting about a refusal).
+    """
     assert Env().recorded_auths == ()
     assert Env(auths=[Address(ACCOUNT)]).recorded_auths == ()
 

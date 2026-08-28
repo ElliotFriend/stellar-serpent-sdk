@@ -132,11 +132,38 @@ def test_val_forms_await_sub_plan_b() -> None:
         Address.from_val(0)
 
 
-def test_require_auth_awaits_the_env_runtime() -> None:
+def test_require_auth_records_against_the_ambient_env() -> None:
+    """The tier-1 auth model, from `Address`'s side (ruling E7(iii)).
+
+    Rewritten (never deleted) from the assertion that both bodies raised
+    `NotImplementedError("sub-plan E")`. `require_auth()` takes no `Env` -- the
+    shipped signature, and the form spec Sec.2's example uses -- so it resolves
+    the env whose invocation frame is active and records there. The MODEL
+    (allow-set, snapshot, refusal) is pinned in `tests/unit/test_env_deploy.py`;
+    what this test owns is that `Address` reaches it at all.
+    """
+    from serpent.types import Vec
+    from tests.unit.conftest import deployed_env
+
+    env = deployed_env()
+    address = Address(ACCOUNT)
+    address.require_auth()
+    address.require_auth_for_args(Vec(U32, [U32(1)]))
+    assert env.recorded_auths == ((address, None), (address, Vec(U32, [U32(1)])))
+
+
+def test_require_auth_outside_an_invocation_frame_is_loud() -> None:
+    """No ambient env means no invocation asked for this authorization, and
+    mock-all-auths would make a silent pass SUCCEED -- so it raises, naming both
+    `deploy` and `env.frame()` (dossier risk 7)."""
     from serpent.types import Vec
 
     address = Address(ACCOUNT)
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        address.require_auth()
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        address.require_auth_for_args(Vec(U32, [U32(1)]))
+    for call in (
+        address.require_auth,
+        lambda: address.require_auth_for_args(Vec(U32, [U32(1)])),
+    ):
+        with pytest.raises(RuntimeError, match="outside any invocation frame") as excinfo:
+            call()
+        assert "deploy" in str(excinfo.value)
+        assert "env.frame()" in str(excinfo.value)

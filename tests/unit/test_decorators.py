@@ -37,6 +37,7 @@ from serpent.env import (
 )
 from serpent.errors import RESERVED_CODE_MIN, ContractError
 from serpent.types import U32, U64, Address, Bool, Map, String, Symbol, Vec
+from tests.unit.conftest import deployed_env
 
 
 def test_contracterror_members_are_exception_classes() -> None:
@@ -396,7 +397,7 @@ def test_env_surface_is_complete_and_backed_by_the_tier_1_model() -> None:
     this test's job is coverage of the SHAPE -- every accessor, every bucket
     operation, once.
     """
-    env = Env()
+    env = deployed_env()
     storage = env.storage()
     assert isinstance(storage, Storage)
     assert isinstance(env.ledger(), Ledger)
@@ -446,7 +447,7 @@ def test_storage_keys_accept_the_whole_chain_value_surface() -> None:
     `extend_ttl`, which finds the entry a `set` of the same key wrote (a live
     entry, so the dead-entry error does not fire).
     """
-    bucket = Env().storage().persistent()
+    bucket = deployed_env().storage().persistent()
     address = Address("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ")
     keys: list[ChainValue] = [
         Symbol("SYM"),
@@ -515,7 +516,7 @@ def test_event_topics_are_heterogeneous_tuples() -> None:
     """(c) The canonical shape is `(Symbol, Address, Address)`."""
     address = Address("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ")
     topics: tuple[ChainValue, ...] = (Symbol("transfer"), address, address)
-    env = Env()
+    env = deployed_env()
     env.events().publish(topics, U32(1))
     assert env.published_events == ((topics, U32(1)),)
 

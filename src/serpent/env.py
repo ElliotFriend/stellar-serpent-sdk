@@ -27,6 +27,36 @@ What is deliberately NOT modelled, named here rather than approximated:
 * **no TTL clamp and no TTL trap, and no archival** -- see the TTL section
   below, which is deliberately half a model and says which half.
 
+## Deploy, the frame, and S12's laundering (ruling E7)
+
+Two things the host supplies structurally and Python does not, so the model
+supplies them explicitly -- and REFUSES the states it cannot otherwise rule out:
+
+* **`deploy(MyContract, env, *args)`** constructs the instance and runs
+  `__init__` -- which IS `__constructor` on chain -- exactly once, inside a
+  frame of its own. **S12's error laundering is modelled**: an exception out of
+  `__init__` surfaces as `ConstructorFailed`, never as the author's own error
+  class or code, because that is what the deployer sees on chain. S12 says the
+  caveat "must say so, prominently" precisely because Python developers expect
+  `__init__` exception semantics; `ConstructorFailed`'s docstring is where it
+  says so, and the original is chained as `__cause__`;
+* **`with env.frame():`** is one invocation. Every host accessor here, and every
+  operation on the objects they hand out, refuses outside a frame, and a frame
+  refuses to open before `deploy` -- `_require_frame` carries the reasoning.
+  Contract METHODS are ordinary Python (ruling E1): the frame is the only thing
+  a tier-1 test has to say out loud.
+
+What that gate buys is narrow and worth naming: it removes tier-1-only states
+(an export called before the constructor ran; a stray `require_auth` with no
+invocation to attribute it to). It is NOT a model of the host's frame -- there
+is still no rollback, no reentry, no cross-contract call, and no auth tree.
+
+`recorded_auths` is the whole auth model: `require_auth` records and succeeds
+(mock-all-auths, S4), an allow-set refuses a non-member with
+`AuthorizationFailed`, and `require_auth_for_args` records a deep copy of its
+args. Neither exception is a `ContractError`: both stand for host actions that
+carry no contract error code.
+
 ## TTL: a PARTIAL model, and the half it refuses (ruling E4(c))
 
 Spec S8 states five TTL rules: "persistent extension past max **clamps**,
@@ -95,13 +125,16 @@ Two places tier 1 answers a question differently from the host, on purpose:
 
 **Deep copy is law.** The model never stores or returns a reference the caller
 can mutate: `set()` deep-copies in, `get()` deep-copies out, `publish()`
-snapshots its topics and data. `serpent.types` containers mutate in place while
-the host's operations are functional, so a model that stored a reference would
-report a post-write mutation from storage while the chain reported the snapshot
--- the single most likely silent divergence in this file. The frontend's
-escape-analysis exemption for `<bucket>.set(k, v)` (`recognize.note_escapes`)
-depends on exactly this, and
-`tests/unit/test_env_model.py`'s isolation property is what keeps it true.
+snapshots its topics and data, `require_auth_for_args()` snapshots its args, and
+`published_events`/`recorded_auths` copy on the way out. `serpent.types`
+containers mutate in place while the host's operations are functional, so a
+model that stored a reference would report a post-write mutation from storage
+while the chain reported the snapshot -- the single most likely silent
+divergence in this file. The frontend's escape-analysis exemptions for
+`<bucket>.set(k, v)` and `require_auth_for_args(args)`
+(`recognize.note_escapes`) depend on exactly this, and the isolation properties
+in `tests/unit/test_env_model.py` and `tests/unit/test_env_deploy.py` are what
+keep them true.
 
 Storage buckets are three distinct types rather than one parameterized bucket
 because their TTL operations genuinely differ: an instance entry's TTL covers
@@ -112,12 +145,14 @@ wrong call is a type error, not a runtime surprise.
 
 from __future__ import annotations
 
+import contextlib
 import copy
-from collections.abc import Hashable, Iterable
+import inspect
+from collections.abc import Callable, Hashable, Iterable, Iterator
 from types import UnionType
 from typing import Any, ClassVar, TypeAlias, TypeVar, Union, cast, get_args, get_origin
 
-from serpent import val
+from serpent import _frame, val
 from serpent._host._scalars import STORAGE_TYPE
 from serpent.errors import AbiCheckFailed, BadArgument, MissingValue
 from serpent.types import (
@@ -161,6 +196,9 @@ __all__ = [
 ]
 
 _T = TypeVar("_T")
+
+#: The contract class `deploy` is handed, so the instance it returns is typed.
+_C = TypeVar("_C")
 
 
 #: The ledger model's starting values. Arbitrary but deliberately not zero: a
@@ -370,16 +408,94 @@ def _require_ty(value: ChainValue, ty: object) -> None:
             )
 
 
-def _require_frame() -> None:
-    """The seam the deploy/frame gate hangs on. A no-op today.
+class ConstructorFailed(RuntimeError):
+    """A contract's `__init__` raised, and the host LAUNDERS that (S12).
 
-    A tier-1 run can reach a state the chain cannot -- calling an export before
-    the constructor ran, or authorizing outside any invocation frame -- and
-    refusing that is the cheapest structural guard the model has. The refusal
-    itself belongs with the deploy/invoke helpers that know when a frame is
-    open; this hook is where they attach, so the bodies below do not have to
-    move when they land.
+    Spec S12, verbatim: "the host *launders* constructor errors -- any
+    recoverable error raised in the constructor reaches the deployer as
+    `Context(InvalidAction)`, not the user's error code (`lifecycle.rs`). **The
+    docs must say so, prominently**, because Python developers will expect
+    `__init__` exception semantics."
+
+    So this is what `deploy` raises, and the author's exception -- its class, and
+    its contract error code -- is deliberately NOT what surfaces. A tier-1 model
+    that let `Error.LimitExceeded` out of `__init__` would teach exactly the
+    expectation S12 says to warn against, and a test written against it would be
+    asserting something the chain never does.
+
+    The original is chained (`raise ... from exc`), so it is reachable as
+    `__cause__` for a test that wants to prove which failure happened. That is
+    the model of the laundering: the identity is hidden from the caller, not
+    thrown away.
+
+    **Not a `ContractError`, and it carries no code.** It stands for a HOST
+    action, and no reserved runtime code in `serpent.errors` describes it --
+    inventing one would put a number in a tier-1 trace that no on-chain trace
+    can contain. A `RuntimeError` instead: loud, and not catchable by an
+    `except ContractError` that meant to catch the contract's own errors.
     """
+
+
+class AuthorizationFailed(RuntimeError):
+    """`require_auth` was refused by the `Env`'s allow-set.
+
+    `Env(auths=[...])` is a mock-all-auths ALLOW-SET (S4), and an address that
+    is not in it is refused here. On chain the host TRAPS an unauthorized
+    invocation -- it does not return a contract error -- so like
+    `ConstructorFailed` this is a plain loud `RuntimeError` with no reserved
+    code: the auth failure is not part of the contract's error vocabulary, and
+    giving it a code would name a number the chain never reports.
+
+    What this is NOT: the host's authorization machinery. There are no auth
+    trees, no nonces, no signature checks and no sub-invocation authorization
+    anywhere in this repo (see the module docstring). A contract's auth LOGIC is
+    therefore not under test at tier 1; sub-plan F's tier 2b is the gate.
+    """
+
+
+def _require_frame(env: Env, what: str) -> None:
+    """Refuse `what` unless `env`'s own invocation frame is active.
+
+    **Ruling E7(ii), and the cheapest structural guard in the model.** Two
+    things are structural on chain and free at tier 1 unless someone spends the
+    boolean:
+
+    * a host function is only callable from inside an invocation frame;
+    * an invocation only exists after the contract was deployed -- the deploy
+      operation runs `__constructor` first.
+
+    A tier-1 run reaches both states trivially (`Env().storage()` on a fresh
+    env, an export called before the constructor ran, a stray `require_auth`),
+    and every assertion made in one of them is an assertion about a state the
+    chain cannot produce (dossier risk 13). They are refused LOUDLY, with the
+    two names that fix them -- `deploy` and `env.frame()` -- in the message.
+
+    The third case is a frame belonging to a DIFFERENT `Env`. M1 has no
+    cross-contract call, so two envs are two unrelated contracts and there is no
+    ambient-frame semantics for one reaching into the other's storage.
+    """
+    active = _frame.current()
+    if active is env:
+        return
+    if active is None:
+        if env._instance is None:
+            raise RuntimeError(
+                f"{what} before the contract was deployed: on chain the deploy "
+                "operation runs __init__ (the __constructor export) before any "
+                "invocation, so nothing can read or write storage first. At tier 1: "
+                "`instance = serpent.env.deploy(MyContract, env)`, then call inside "
+                "`with env.frame():`."
+            )
+        raise RuntimeError(
+            f"{what} outside any invocation frame: a host function is only callable "
+            "from inside an invocation. Wrap the call: `with env.frame(): ...` "
+            "(`deploy` enters one for the constructor itself)."
+        )
+    raise RuntimeError(
+        f"{what} while another Env's invocation frame is active. M1 has no "
+        "cross-contract call, so two Envs are two unrelated contracts: close the "
+        "outer frame before framing this one."
+    )
 
 
 class _TtlState:
@@ -468,15 +584,23 @@ class _StorageBucket:
 
     The `Env`'s `_TtlState` is threaded in beside the store, so a bucket can
     answer expiry against the live sequence rather than a snapshot of it.
+
+    The `Env` ITSELF is threaded in as well, and every operation below starts
+    with `_require_frame`. The accessor (`env.storage()`) is gated too, but a
+    bucket is a long-lived wrapper over the store: a caller that captured one
+    inside a frame would otherwise keep an ungated back door into the model
+    after the frame closed -- a write with no invocation to attribute it to,
+    which is precisely the tier-1-only state ruling E7(ii) exists to refuse.
     """
 
-    __slots__ = ("_store", "_ttl")
+    __slots__ = ("_env", "_store", "_ttl")
 
     #: Set by each subclass from `STORAGE_TYPE`.
     _DURABILITY: ClassVar[int]
     _DURABILITY_NAME: ClassVar[str]
 
-    def __init__(self, store: _Store, ttl: _TtlState) -> None:
+    def __init__(self, env: Env, store: _Store, ttl: _TtlState) -> None:
+        self._env = env
         self._store = store
         self._ttl = ttl
 
@@ -518,6 +642,7 @@ class _StorageBucket:
         for an entry that is not there -- S8's "extending a dead entry errors",
         for both the never-written and the expired case.
         """
+        _require_frame(self._env, f"a {self._DURABILITY_NAME} storage extend_ttl")
         entry = self._entry_key(key)
         if self._absent(entry):
             raise MissingValue(
@@ -555,6 +680,7 @@ class _StorageBucket:
         both tiers. (The frontend's escape analysis marks a container passed to
         `default=` accordingly.)
         """
+        _require_frame(self._env, f"a {self._DURABILITY_NAME} storage read")
         entry = self._entry_key(key)
         if self._absent(entry):
             if default is not None:
@@ -581,6 +707,7 @@ class _StorageBucket:
         overrides the reset away, because its live-until is bucket-wide and one
         key's write cannot honestly resurrect the whole instance entry.
         """
+        _require_frame(self._env, f"a {self._DURABILITY_NAME} storage write")
         entry = self._entry_key(key)
         self._store[entry] = copy.deepcopy(value)
         self._forget_live_until(entry)
@@ -592,6 +719,7 @@ class _StorageBucket:
         the value stays a chain value all the way through; `Bool` is truthy in
         an `if` statement.
         """
+        _require_frame(self._env, f"a {self._DURABILITY_NAME} storage has")
         return Bool(not self._absent(self._entry_key(key)))
 
     def del_(self, key: ChainValue) -> None:
@@ -611,6 +739,7 @@ class _StorageBucket:
         The live-until goes with the value: a later `set` under the same key is
         a genuinely fresh entry, not one that inherits a dead entry's expiry.
         """
+        _require_frame(self._env, f"a {self._DURABILITY_NAME} storage delete")
         entry = self._entry_key(key)
         self._store.pop(entry, None)
         self._forget_live_until(entry)
@@ -667,6 +796,7 @@ class InstanceStorage(_StorageBucket):
         The algebra is `_extended_live_until`'s: threshold guard, never-reduce,
         and no clamp (see the module docstring's TTL section).
         """
+        _require_frame(self._env, "an instance storage extend_ttl")
         ttl = self._ttl
         live_until = ttl.instance_live_until
         if live_until is not None and ttl.sequence > live_until:
@@ -733,28 +863,36 @@ class TemporaryStorage(_StorageBucket):
 class Storage:
     """`env.storage()`: the three durabilities, each its own bucket type."""
 
-    __slots__ = ("_store", "_ttl")
+    __slots__ = ("_env", "_store", "_ttl")
 
-    def __init__(self, store: _Store, ttl: _TtlState) -> None:
+    def __init__(self, env: Env, store: _Store, ttl: _TtlState) -> None:
+        self._env = env
         self._store = store
         self._ttl = ttl
 
     def instance(self) -> InstanceStorage:
-        return InstanceStorage(self._store, self._ttl)
+        return InstanceStorage(self._env, self._store, self._ttl)
 
     def persistent(self) -> PersistentStorage:
-        return PersistentStorage(self._store, self._ttl)
+        return PersistentStorage(self._env, self._store, self._ttl)
 
     def temporary(self) -> TemporaryStorage:
-        return TemporaryStorage(self._store, self._ttl)
+        return TemporaryStorage(self._env, self._store, self._ttl)
 
 
 class Ledger:
-    """`env.ledger()`: read-only facts about the ledger being applied."""
+    """`env.ledger()`: read-only facts about the ledger being applied.
 
-    __slots__ = ("_sequence", "_timestamp")
+    Both readers are gated on the invocation frame like every other host call
+    (`_require_frame`), even though neither can change anything: on chain
+    `get_ledger_timestamp` is a host function, and a tier-1 read of it with no
+    invocation open is the same state the chain cannot produce.
+    """
 
-    def __init__(self, timestamp: int, sequence: int) -> None:
+    __slots__ = ("_env", "_sequence", "_timestamp")
+
+    def __init__(self, env: Env, timestamp: int, sequence: int) -> None:
+        self._env = env
         self._timestamp = timestamp
         self._sequence = sequence
 
@@ -764,19 +902,22 @@ class Ledger:
         `U64`, not `Timepoint`: the host's `get_ledger_timestamp` returns a
         `U64Val`, and serpent does not silently reinterpret an `ScVal` case.
         """
+        _require_frame(self._env, "a ledger timestamp read")
         return U64(self._timestamp)
 
     def sequence(self) -> U32:
         """The sequence number of the ledger being applied."""
+        _require_frame(self._env, "a ledger sequence read")
         return U32(self._sequence)
 
 
 class Events:
     """`env.events()`: the contract event sink."""
 
-    __slots__ = ("_published",)
+    __slots__ = ("_env", "_published")
 
-    def __init__(self, published: list[PublishedEvent]) -> None:
+    def __init__(self, env: Env, published: list[PublishedEvent]) -> None:
+        self._env = env
         self._published = published
 
     def publish(self, topics: tuple[ChainValue, ...], data: ChainValue) -> None:
@@ -800,6 +941,7 @@ class Events:
         topics or the data cannot change what was published, exactly as on
         chain, where `contract_event` serializes them.
         """
+        _require_frame(self._env, "an event publish")
         if not topics:
             raise BadArgument("an event needs at least one topic, naming it")
         name = topics[0]
@@ -827,9 +969,23 @@ class Env:
     `auths=None` means mock-all-auths: every `require_auth` is recorded and
     allowed. A non-None iterable is the allow-set an authorization is checked
     against.
+
+    **One `Env` is one deployed contract.** `deploy` runs the constructor into
+    it once and marks it deployed; until then every host accessor here refuses,
+    and so does `frame()` (ruling E7(ii), `_require_frame`). M1 has no
+    cross-contract call, so there is no second instance to model and no
+    semantics for two envs framed at once.
     """
 
-    __slots__ = ("_auths", "_events", "_recorded_auths", "_store", "_timestamp", "_ttl")
+    __slots__ = (
+        "_auths",
+        "_events",
+        "_instance",
+        "_recorded_auths",
+        "_store",
+        "_timestamp",
+        "_ttl",
+    )
 
     def __init__(
         self,
@@ -847,18 +1003,124 @@ class Env:
         # exactly one copy of the number both `ledger().sequence()` and every
         # expiry comparison read (`_TtlState`).
         self._ttl = _TtlState(sequence)
+        #: The instance `deploy` constructed, or `None` while nothing is
+        #: deployed. ONE object doing two jobs: the pre-deploy refusal reads it
+        #: as a boolean, and a second `deploy` names what is already here.
+        self._instance: object | None = None
 
     def storage(self) -> Storage:
-        _require_frame()
-        return Storage(self._store, self._ttl)
+        _require_frame(self, "env.storage()")
+        return Storage(self, self._store, self._ttl)
 
     def ledger(self) -> Ledger:
-        _require_frame()
-        return Ledger(self._timestamp, self._ttl.sequence)
+        _require_frame(self, "env.ledger()")
+        return Ledger(self, self._timestamp, self._ttl.sequence)
 
     def events(self) -> Events:
-        _require_frame()
-        return Events(self._events)
+        _require_frame(self, "env.events()")
+        return Events(self, self._events)
+
+    # --- the invocation frame (ruling E7) ------------------------------------
+
+    def frame(self) -> contextlib.AbstractContextManager[None]:
+        """Run a block as one invocation of the deployed contract. TEST-FACING.
+
+        Tier-1 contract methods are ORDINARY PYTHON -- ruling E1 deliberately
+        did not wrap them in an `invoke` helper, because the whole point of tier
+        1 is that `counter.bump(env)` is a method call. What the host also
+        supplies, and Python does not, is the FRAME the call runs in, so that is
+        the one thing a test says out loud::
+
+            env = Env()
+            counter = deploy(Counter, env, U32(0))
+            with env.frame():
+                counter.bump(env)
+
+        Deliberately not in `serpent.__all__` (the loader restricts a contract's
+        imports to those names, so a contract cannot reach this) and not a
+        method a compiled contract has any analogue of.
+
+        Three rules, each because of something the chain does or refuses:
+
+        * **it refuses to open before `deploy`** -- the deploy operation runs
+          `__constructor` first, always (`_require_frame`'s docstring);
+        * **it nests on the same env** -- a contract calling its own method is
+          another host frame, and the ambient env is the same env either way.
+          The exit restores the OUTER frame rather than clearing everything,
+          which is what the token-based `_frame.leave` is for;
+        * **it refuses a second env while one is active** -- no cross-contract
+          call in M1, so there is no ambient-frame semantics to give it.
+
+        The exit is a `try/finally`, so a frame whose body RAISES still clears
+        the ambient env (dossier F.1.7). Nothing else here rolls back: the
+        events and the storage writes of a failed frame stay, and the module
+        docstring names that as one of the model's non-models.
+        """
+        return self._invocation(deploying=False)
+
+    @contextlib.contextmanager
+    def _invocation(self, *, deploying: bool) -> Iterator[None]:
+        """`frame()`'s body, plus the one variant only `deploy` may use.
+
+        `deploying=True` is how the constructor gets its frame: on chain
+        `__constructor` runs inside the deploy operation's frame, so it has full
+        storage access and can authorize, and it is the ONE frame that legally
+        opens on an env with nothing deployed yet. Keeping it a private keyword
+        is what stops that exemption from being the hole the whole gate leaks
+        through.
+        """
+        if not deploying and self._instance is None:
+            raise RuntimeError(
+                "cannot open an invocation frame before the contract is deployed: "
+                "`instance = serpent.env.deploy(MyContract, env)` first (deploy runs "
+                "__init__, the __constructor export, in a frame of its own)"
+            )
+        active = _frame.current()
+        if active is not None and active is not self:
+            raise RuntimeError(
+                "an invocation frame for another Env is already active. M1 models no "
+                "cross-contract call, so two contracts cannot be in each other's "
+                "frames; close the outer one first."
+            )
+        token = _frame.enter(self)
+        try:
+            yield
+        finally:
+            # Unconditional, and a RESTORE rather than a clear: a raising frame
+            # must not leave a stale ambient env behind (dossier F.1.7), and a
+            # nested frame's exit must leave the outer one standing.
+            _frame.leave(token)
+
+    def _record_auth(self, address: Address, args: Vec[Any] | None) -> None:
+        """Record (and allow, or refuse) one authorization. `Address` calls this.
+
+        The auth model in four lines, and every one of them is S4's
+        mock-all-auths rather than the host's machinery:
+
+        * it needs a frame -- `Address.require_auth()` takes no `Env`, so the
+          ambient frame is the only thing that says which contract is asking,
+          and a stray call outside one is refused loudly (dossier risk 7: with
+          mock-all-auths a silent pass would SUCCEED, recording an
+          authorization against whatever env happened to be ambient);
+        * `auths=None` records and allows -- that is what mock-all-auths means;
+        * a non-`None` allow-set refuses a non-member with
+          `AuthorizationFailed`, and refuses BEFORE recording: on chain the host
+          traps, so there is no invocation left to have recorded anything;
+        * the args are DEEP-COPIED in (ruling E5). The host serializes them into
+          the authorization entry, and the frontend's escape exemption for
+          `require_auth_for_args` (`recognize.note_escapes`) is only sound
+          because of this copy -- `test_env_deploy.py`'s snapshot test is what
+          holds that up.
+        """
+        what = "require_auth()" if args is None else "require_auth_for_args()"
+        _require_frame(self, what)
+        if self._auths is not None and address not in self._auths:
+            raise AuthorizationFailed(
+                f"{address.strkey} is not authorized: it is not in this Env's "
+                f"auths allow-set ({len(self._auths)} address(es)). Pass "
+                "`Env(auths=None)` for mock-all-auths, or add the address."
+            )
+        self._recorded_auths.append((address, copy.deepcopy(args)))
 
     # --- test-facing inspection (NOT `serpent.__all__` names) ----------------
 
@@ -912,12 +1174,104 @@ class Env:
     def recorded_auths(self) -> tuple[RecordedAuth, ...]:
         """Every authorization asked for through this `Env`, in order.
 
+        Each entry is `(address, args)`: the args are a `Vec` SNAPSHOT for
+        `require_auth_for_args` and `None` for a bare `require_auth`, so the two
+        forms are distinguishable rather than collapsed (which is what the
+        mini-host does -- it shape-checks the args and discards them).
+
         Recording IS the auth model (mock-all-auths): the host's real
         authorization trees -- nonces written to storage, sub-invocation trees,
-        signature verification -- are not modelled anywhere in this repo.
+        signature verification -- are not modelled anywhere in this repo. A
+        refused authorization is NOT here (`_record_auth`): the host traps, so
+        there is no invocation left to have recorded one.
 
-        Empty until `require_auth`/`require_auth_for_args` have bodies. Whoever
-        lands them owes the deep copy `published_events` makes, on the way in
-        (the recorded args are a snapshot) and on the way out.
+        DEEP-COPIED on the way out, for the same reason `published_events` is:
+        an inspection surface that handed out its own records would let a test
+        mutate the args it just read and see the mutation on the next read. The
+        copy on the way IN is in `_record_auth`.
         """
-        return tuple(self._recorded_auths)
+        return copy.deepcopy(tuple(self._recorded_auths))
+
+
+def deploy(cls: type[_C], env: Env, *args: Any, **kwargs: Any) -> _C:
+    """Deploy `cls` into `env`: construct it and run `__init__` once. TEST-FACING.
+
+    **`__init__` IS `__constructor` (S12).** On chain the deploy operation runs
+    it exactly once, before any invocation, in a frame with full storage access
+    -- so this helper constructs the instance, opens that frame, runs `__init__`
+    in it, and closes the frame again on the way out (`try/finally`, so a
+    constructor that raises leaves nothing ambient behind). Making the
+    once-and-at-deploy nature visible in the test is the whole point of the
+    helper; the alternative (`C()` then a method call) silently models a
+    contract that was never deployed.
+
+    Returns the instance, typed as `cls`, so the test can call its methods --
+    which are ordinary Python, inside `with env.frame():`.
+
+    * **an exception out of `__init__` becomes `ConstructorFailed`**, chaining
+      the original as `__cause__`. That is S12's laundering, and
+      `ConstructorFailed`'s docstring quotes the spec on why it must be
+      prominent. Only errors from the constructor's BODY are laundered: a
+      wrong-arity or unknown-keyword call is bound and rejected first, as a
+      plain `TypeError`, because that mistake is the test author's and no host
+      laundering describes it;
+    * **a second deploy into the same env is refused.** One `Env` is one
+      deployed contract instance (M1 has no cross-contract call), so a second
+      one is a test-authoring mistake, not a second constructor run;
+    * **no constructor is fine** (S12: a 0-arg constructor may be absent), but
+      passing arguments to a class that has none is an error rather than a
+      silent drop -- on chain the deploy operation itself fails.
+
+    `deploy` does NOT require `@contract`: it models the host's deploy step, not
+    the compiler's declaration checks (which the decorator already made at class
+    creation, and which the frontend makes again at compile time). A plain class
+    with an `__init__(self, env, ...)` deploys, which is what lets the model's
+    own tests deploy a do-nothing contract.
+
+    Deliberately a module attribute of `serpent.env` and NOT a
+    `serpent.__all__` name: the loader restricts a contract's imports to that
+    list, so a contract can never resolve `deploy`.
+    """
+    if env._instance is not None:
+        raise RuntimeError(
+            f"this Env already has {type(env._instance).__name__} deployed into it. "
+            "One Env models one deployed contract instance (M1 has no cross-contract "
+            "call), and a constructor runs exactly once -- use a fresh Env()."
+        )
+
+    instance = cls.__new__(cls)
+    if cls.__init__ is object.__init__:
+        if args or kwargs:
+            raise TypeError(
+                f"{cls.__name__} has no constructor (__init__), so deploy() takes no "
+                "contract arguments. On chain, deploying with constructor arguments a "
+                "contract has no __constructor for fails the deploy operation."
+            )
+        env._instance = instance
+        return instance
+
+    constructor = cast("Callable[..., None]", cls.__init__)
+    # Bind first: a signature mistake is the caller's, and laundering it as
+    # `ConstructorFailed` would blame the contract for a bad test.
+    try:
+        inspect.signature(constructor).bind(instance, env, *args, **kwargs)
+    except TypeError as exc:
+        raise TypeError(f"{cls.__name__}.__init__ cannot take these arguments: {exc}") from exc
+
+    with env._invocation(deploying=True):
+        try:
+            constructor(instance, env, *args, **kwargs)
+        except Exception as exc:
+            raise ConstructorFailed(
+                f"the constructor of {cls.__name__} failed: "
+                f"{type(exc).__name__}: {exc}. The HOST launders this -- the deployer "
+                "sees Context(InvalidAction), never the contract's own error code -- "
+                "so the original is available as __cause__ and nowhere else."
+            ) from exc
+
+    # Only a SUCCESSFUL constructor deploys anything: a failed deploy leaves an
+    # env that still refuses to be invoked. What the constructor already wrote
+    # stays in the store, because the model has no frame rollback (module
+    # docstring) -- the refusal is what keeps that unobservable.
+    env._instance = instance
+    return instance
