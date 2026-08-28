@@ -568,7 +568,7 @@ class AssembledModule:
       linked, not which the frontend merely expected.
     * ``pool_size``/``scratch_size`` are ``layout.Memory``'s own byte counts:
       the literal pool's length and the scratch bump allocator's total
-      reservation (``self._scratch - SCRATCH_BASE``), the same two numbers
+      reservation (``Memory.scratch_size``), the same two numbers
       ``Memory.check`` guards against ``SCRATCH_BASE``/``PAGE``.
     """
 
@@ -767,12 +767,7 @@ def assemble(
         ),
         runtime_parts_linked=ctx.parts_linked,
         pool_size=len(pool),
-        # `Memory._scratch` is private, but `module.py` and `layout.py` are one
-        # closely-coupled pair (this function already calls `memory.check()`,
-        # `.seed()`, `.pool_bytes()`, `.is_empty`) and Task 11's scope does not
-        # touch `layout.py`; the ceiling minus its fixed base is the total
-        # scratch reservation `Memory.check` itself guards against `PAGE`.
-        scratch_size=memory._scratch - Memory.SCRATCH_BASE,
+        scratch_size=memory.scratch_size,
     )
 
 

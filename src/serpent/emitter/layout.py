@@ -90,6 +90,18 @@ class Memory:
         return bytes(self.pool)
 
     @property
+    def scratch_size(self) -> int:
+        """Total bytes reserved for scratch, i.e. the bump minus its fixed base.
+
+        The number `check` guards against `PAGE` and the one
+        ``module.assemble`` reports as ``AssembledModule.scratch_size``. A
+        property rather than a caller reaching for ``_scratch``: the base is
+        part of the arithmetic, and subtracting it at the call site is how one
+        of the two places ends up off by ``SCRATCH_BASE``.
+        """
+        return self._scratch - self.SCRATCH_BASE
+
+    @property
     def is_empty(self) -> bool:
         """True iff nothing has been interned and no scratch has been reserved."""
         return not self.pool and self._scratch == self.SCRATCH_BASE

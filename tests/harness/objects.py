@@ -32,14 +32,58 @@ in their element/key/value classes, and a host handed `vec_new()` has no element
 type to give them -- the host's own model of a vec is a sequence of untyped
 `Val` words, so that is what is stored. Scalar `Val`s inside are still decoded
 through `serpent.val`, the one codec.
+
+## Keys are compared BY VALUE, never by handle (`map_key`)
+
+A map key and a storage key are compared by the host **structurally** -- with
+`obj_cmp`, i.e. by the value, not by the handle. Nothing about that is optional
+here: a struct storage key (`BalanceKey(owner=Address(...))`, the dominant
+real-world shape, `tests/fixtures/token_style.py`) is a `MapObject`, and the
+contract builds a FRESH one on every invocation. A store that keyed on the
+handle word would file `mint`'s write under handle 844 and then look `balance`
+up under handle 901, find nothing, and return the storage default -- a
+plausible number, silently wrong, from a module that validates and runs. That
+is the exact failure mode this rig exists to catch, so `map_key` normalizes
+every key to a value-equal Python key, recursively for containers, and
+`key_word` remembers the `Val` word each normalized key first arrived as (which
+is what lets `map_keys` hand real `Val`s back).
+
+## The Val codec, and the ordering it borrows (A8, A9)
+
+`chain_value`/`val_word` are the two halves of the codec between a `Val` word
+and a tier-1 `serpent.types` instance, and `compare` is the ordering `obj_cmp`
+(in `hostfns.py`) and the map key order are both built on. Every ordering
+answer comes from `types._ordering.val_cmp` -- the oracle the compiler is
+proven against -- applied to DECODED operands, so the rig cannot quietly
+disagree with it. Cross-type order is `ScValType` rank (A8) and lives only in
+`val_cmp`; a tag `serpent.types` has no class for (`Void`, `Error`, the 256-bit
+family) raises rather than guessing (A9).
 """
 
 import struct
 from collections.abc import Callable, Mapping
+from typing import ClassVar
 
 from serpent import val
-from serpent.types import Bytes, String, Symbol
-from tests.harness.engine import HostError, MiniHost
+from serpent.types import (
+    I32,
+    I64,
+    I128,
+    U32,
+    U64,
+    U128,
+    Address,
+    Bool,
+    Bytes,
+    Duration,
+    Map,
+    String,
+    Symbol,
+    Timepoint,
+    Vec,
+)
+from serpent.types._ordering import ChainValue, val_cmp
+from tests.harness.engine import HostError, HostTrap, MiniHost
 
 __all__ = ["ObjectStore"]
 
@@ -48,6 +92,106 @@ __all__ = ["ObjectStore"]
 STORAGE_TEMPORARY = 0
 STORAGE_PERSISTENT = 1
 STORAGE_INSTANCE = 2
+
+
+class _RankOnly:
+    """A container as `val_cmp` can see it here: a rank, and no payload order.
+
+    `serpent.types.Vec`/`Map` are statically typed in their element/key/value
+    classes and a host handed `vec_new()` has no element type to give them (see
+    this module's docstring), so the store's model of a vec is a list of untyped
+    `Val` words. For ORDERING that is enough: `val_cmp` answers a cross-type
+    compare on rank alone, and refuses a same-type one -- which is exactly what
+    tier 1 itself does for a container (`containers.py`'s `_cmp_payload`
+    raises).
+    """
+
+    __slots__ = ()
+
+    def _cmp_payload(self) -> object:
+        raise NotImplementedError(
+            "container comparison; sub-plan B -- tier 1 defers the payload order "
+            "for Vec/Map (A15: no inventing an order the host has not been "
+            "differentially checked against), so this rig defers it too"
+        )
+
+
+class _VecRank(_RankOnly):
+    """Rank read off tier 1, never restated (A8's table lives in one place)."""
+
+    __slots__ = ()
+    _SCVAL_RANK: ClassVar[int] = Vec._SCVAL_RANK
+
+
+class _MapRank(_RankOnly):
+    __slots__ = ()
+    _SCVAL_RANK: ClassVar[int] = Map._SCVAL_RANK
+
+
+#: Every `Val` tag whose value is a NUMBER, mapped to the tier-1 class that
+#: models it. Both forms of each type are here: the same class answers for the
+#: small immediate and for the object handle, which is what makes a mixed
+#: compare (`U64` small vs `U64` object) work without a special case.
+#: `U256`/`I256` are ABSENT because `serpent.types` has no class for them --
+#: there is no oracle answer to delegate to, so `chain_value` says so loudly
+#: (A9).
+_NUMERIC_BY_TAG: dict[int, Callable[[int], ChainValue]] = {
+    val.TAG_U32: U32,
+    val.TAG_I32: I32,
+    val.TAG_U64_SMALL: U64,
+    val.TAG_U64_OBJECT: U64,
+    val.TAG_I64_SMALL: I64,
+    val.TAG_I64_OBJECT: I64,
+    val.TAG_TIMEPOINT_SMALL: Timepoint,
+    val.TAG_TIMEPOINT_OBJECT: Timepoint,
+    val.TAG_DURATION_SMALL: Duration,
+    val.TAG_DURATION_OBJECT: Duration,
+    val.TAG_U128_SMALL: U128,
+    val.TAG_U128_OBJECT: U128,
+    val.TAG_I128_SMALL: I128,
+    val.TAG_I128_OBJECT: I128,
+}
+
+#: The small tags whose 56-bit body is SIGNED. Getting this set wrong is silent:
+#: every non-negative operand agrees either way.
+_SMALL_SIGNED = frozenset({val.TAG_I64_SMALL, val.TAG_I128_SMALL})
+_SMALL_UNSIGNED = frozenset(
+    {
+        val.TAG_U64_SMALL,
+        val.TAG_TIMEPOINT_SMALL,
+        val.TAG_DURATION_SMALL,
+        val.TAG_U128_SMALL,
+    }
+)
+
+#: The object tags whose stored payload IS the tier-1 instance, so the decoder
+#: hands the payload straight back.
+_PAYLOAD_TAGS = frozenset(
+    {
+        val.TAG_SYMBOL_OBJECT,
+        val.TAG_STRING_OBJECT,
+        val.TAG_BYTES_OBJECT,
+        val.TAG_ADDRESS_OBJECT,
+    }
+)
+
+#: `type(value) -> (small tag, object tag)` for `val_word`, the encoder. Keyed
+#: on the EXACT type: `Timepoint`/`Duration` share `U64`'s payload shape, and an
+#: encoder that reused `U64`'s tag for either would round-trip perfectly while
+#: sorting in the wrong rank.
+_NUMERIC_FORMS: dict[type, tuple[int, int]] = {
+    U64: (val.TAG_U64_SMALL, val.TAG_U64_OBJECT),
+    I64: (val.TAG_I64_SMALL, val.TAG_I64_OBJECT),
+    Timepoint: (val.TAG_TIMEPOINT_SMALL, val.TAG_TIMEPOINT_OBJECT),
+    Duration: (val.TAG_DURATION_SMALL, val.TAG_DURATION_OBJECT),
+    U128: (val.TAG_U128_SMALL, val.TAG_U128_OBJECT),
+    I128: (val.TAG_I128_SMALL, val.TAG_I128_OBJECT),
+}
+
+#: Every tag `chain_value` can answer for, other than the two container tags
+#: and `SymbolSmall` (which `map_key` normalizes to its text before it gets
+#: here). A tag outside this set has no tier-1 model at all.
+_MODELLED_TAGS = frozenset(_NUMERIC_BY_TAG) | _PAYLOAD_TAGS | {val.TAG_FALSE, val.TAG_TRUE}
 
 
 class ObjectStore:
@@ -78,6 +222,12 @@ class ObjectStore:
         #: the same list for its own default callback; this store binds its own
         #: so the abort shows up in `calls` beside the calls that led to it.
         self.errors: list[int] = []
+        #: `(tag, payload) -> handle`, so `val_word` is idempotent.
+        self._interned: dict[tuple[int, object], int] = {}
+        #: One normalized key (`map_key`) -> the first `Val` word it arrived as.
+        #: `key_word`'s table; see its docstring for why it is remembered rather
+        #: than reconstructed.
+        self._key_words: dict[object, int] = {}
         self._host: MiniHost | None = None
 
     def attach(self, host: MiniHost) -> None:
@@ -149,20 +299,165 @@ class ObjectStore:
             raise AssertionError("ObjectStore.attach(host) was never called")
         return self._host.read_memory(ptr, length)
 
-    def map_key(self, word: int) -> object:
-        """The Python key one `Val` word stands for, inside a map's dict.
+    def chain_value(self, word: int) -> ChainValue:
+        """The tier-1 chain value one `Val` word stands for.
 
-        A `Symbol` is normalized to its TEXT, because the host compares symbols
-        by their characters regardless of whether they arrived as a
-        `SymbolSmall` immediate or as a handle -- a map built through
-        `map_new_from_linear_memory` (whose keys are name bytes) and one built
-        through `map_put` (whose keys are `Val`s) must answer `map_get` the
-        same way. Everything else is keyed on its `Val` word.
+        The decoder half of the codec: what `compare` (and so `obj_cmp`, and so
+        the map key order) delegates to, and what a test decodes a returned
+        `Val` with. Raises `AssertionError` for a tag `serpent.types` has no
+        class for -- there is no oracle answer to borrow, and a guess would be a
+        second, drifting model (A9).
         """
-        if val.tag_of(word) == val.TAG_SYMBOL_SMALL:
-            return val.symbol_small_text(word)
-        if val.tag_of(word) == val.TAG_SYMBOL_OBJECT:
-            return self.text_of(word)
+        tag = val.tag_of(word)
+        if tag in (val.TAG_FALSE, val.TAG_TRUE):
+            return Bool(val.unpack_bool(word))
+        if tag == val.TAG_SYMBOL_SMALL:
+            return Symbol(val.symbol_small_text(word))
+        if tag == val.TAG_VEC_OBJECT:
+            self._vec(word)  # the handle must really name a vec
+            return _VecRank()
+        if tag == val.TAG_MAP_OBJECT:
+            self._map(word)
+            return _MapRank()
+        if tag in _PAYLOAD_TAGS:
+            payload = self._object(word, tag)
+            assert isinstance(payload, (Symbol, String, Bytes, Address)), (
+                f"object {word:#018x} does not hold a text/bytes/address payload: {payload!r}"
+            )
+            return payload
+        make = _NUMERIC_BY_TAG.get(tag)
+        if make is None:
+            raise AssertionError(
+                f"tag {tag} ({word:#018x}) has no tier-1 chain type, so there is no "
+                "oracle ordering to delegate to (A9: extending the supported set "
+                "requires extending the differential tests)"
+            )
+        if tag == val.TAG_U32:
+            return make(val.unpack_u32val(word))
+        if tag == val.TAG_I32:
+            return make(val.unpack_i32val(word))
+        if tag in _SMALL_SIGNED:
+            return make(val.unpack_small_i64(word, tag))
+        if tag in _SMALL_UNSIGNED:
+            return make(val.unpack_small_u64(word, tag))
+        number = self._object(word, tag)
+        assert isinstance(number, int), f"object {word:#018x} does not hold a number: {number!r}"
+        return make(number)
+
+    def val_word(self, value: object) -> int:
+        """The canonical `Val` word for a tier-1 chain value.
+
+        The inverse of `chain_value`: the small form when the type has one and
+        the value fits it, an object handle otherwise. Equal values intern to
+        ONE handle (`_interned`), so this is idempotent and a caller can rebuild
+        an expected word instead of remembering a handle. The store's own
+        CONSTRUCTORS (`vec_new`, `bytes_new_from_linear_memory`, ...) never
+        intern -- a real host hands out a fresh handle per call, and the tests
+        that prove host objects are immutable depend on that.
+        """
+        if isinstance(value, Bool):
+            return val.pack_bool(value.value)
+        if isinstance(value, U32):
+            return val.pack_u32val(value.value)
+        if isinstance(value, I32):
+            return val.pack_i32val(value.value)
+        if isinstance(value, Symbol):
+            if val.fits_symbol_small(value.text):
+                return val.symbol_small(value.text)
+            return self._intern(val.TAG_SYMBOL_OBJECT, value)
+        if isinstance(value, String):
+            return self._intern(val.TAG_STRING_OBJECT, value)
+        if isinstance(value, Bytes):
+            # `Bytes32`/`bytes_n(N)` subclass `Bytes` and are the same ScVal
+            # case, so they share the tag -- `isinstance`, not `type(...)`.
+            return self._intern(val.TAG_BYTES_OBJECT, value)
+        if isinstance(value, Address):
+            return self._intern(val.TAG_ADDRESS_OBJECT, value)
+        forms = _NUMERIC_FORMS.get(type(value))
+        if forms is None:
+            raise AssertionError(f"no Val encoding for {value!r} in this rig (A9)")
+        small_tag, object_tag = forms
+        assert isinstance(value, (U64, I64, Timepoint, Duration, U128, I128))
+        number = value.value
+        if small_tag in _SMALL_SIGNED:
+            if val.fits_small_i(number):
+                return val.pack_small_i64(number, small_tag)
+        elif val.fits_small_u(number):
+            return val.pack_small_u64(number, small_tag)
+        return self._intern(object_tag, number)
+
+    def _intern(self, tag: int, payload: object) -> int:
+        key = (tag, payload)
+        if key not in self._interned:
+            self._interned[key] = self._new(tag, payload)
+        return self._interned[key]
+
+    def compare(self, left: int, right: int) -> int:
+        """`-1`/`0`/`1` for two `Val` words, straight out of `val_cmp`.
+
+        The whole content of `obj_cmp` (`hostfns.py` binds it), and the order
+        the host keeps a map's keys in.
+        """
+        answer = val_cmp(self.chain_value(left), self.chain_value(right))
+        return (answer > 0) - (answer < 0)
+
+    def map_key(self, word: int) -> object:
+        """The Python key one `Val` word stands for, inside a map or storage.
+
+        Normalized BY VALUE, because that is how the host compares a key (see
+        this module's docstring for the struct-storage-key bug a handle-keyed
+        store produces):
+
+        * a `Symbol` becomes its TEXT, whether it arrived as a `SymbolSmall`
+          immediate or as a handle -- so a map built through
+          `map_new_from_linear_memory` (whose keys are name bytes) and one built
+          through `map_put` (whose keys are `Val`s) answer `map_get` the same;
+        * a vec or a map becomes its CONTENTS, recursively (a `frozenset` for a
+          map, so entry order cannot matter) -- this is the struct-key case;
+        * every other modelled value becomes `(rank, payload)`, which collapses
+          the small and object forms of one number to one key and makes
+          `Bytes32` and `Bytes` with equal payloads one key, exactly as tier
+          1's own `__eq__` does;
+        * a value with no tier-1 model (`Void`, `Error`, the 256-bit family)
+          keeps its raw word. Canonical for every one of those that has a
+          single encoding, and the alternative would be to invent an equality
+          A9 says this rig does not have.
+
+        Every normalized key is recorded against the word it arrived as, which
+        is what `key_word` (and therefore `map_keys`) reads back.
+        """
+        tag = val.tag_of(word)
+        key: object
+        if tag == val.TAG_SYMBOL_SMALL:
+            key = val.symbol_small_text(word)
+        elif tag == val.TAG_SYMBOL_OBJECT:
+            key = self.text_of(word)
+        elif tag == val.TAG_VEC_OBJECT:
+            key = ("vec", tuple(self.map_key(item) for item in self._vec(word)))
+        elif tag == val.TAG_MAP_OBJECT:
+            key = (
+                "map",
+                frozenset((entry, self.map_key(value)) for entry, value in self._map(word).items()),
+            )
+        elif tag in _MODELLED_TAGS:
+            value = self.chain_value(word)
+            key = (value._SCVAL_RANK, value._cmp_payload())
+        else:
+            key = word
+        self._key_words.setdefault(key, word)
+        return key
+
+    def key_word(self, key: object) -> int:
+        """A `Val` word for one normalized key -- `map_key`'s inverse.
+
+        Recorded rather than reconstructed: a container key normalizes to its
+        contents, and rebuilding an object from those would hand back a handle
+        the guest has never seen. The word remembered is the FIRST one that key
+        arrived as, which is a real handle to a value-equal object -- all the
+        host itself promises about the keys `map_keys` returns.
+        """
+        word = self._key_words.get(key)
+        assert word is not None, f"no Val word was ever recorded for map key {key!r}"
         return word
 
     def _log(self, name: str, *args: int) -> None:
@@ -192,11 +487,18 @@ class ObjectStore:
         return val.pack_u32val(len(self._vec(vec)))
 
     def vec_get(self, vec: int, index: int) -> int:
+        """`v.6`, and env.json: "Traps if the index is out of bound."
+
+        A `HostTrap`, not an `AssertionError`: the semantics table pins this as
+        a `kind="trap"` observable (`vec_get_out_of_bounds_traps`), so it is a
+        contract-level outcome the differential run compares, not a broken-rig
+        signal.
+        """
         self._log("vec_get", vec, index)
         items = self._vec(vec)
         i = self._u32(index)
         if i >= len(items):
-            raise AssertionError(f"vec_get: index {i} past the end of a {len(items)}-item vec")
+            raise HostTrap(f"vec_get: index {i} past the end of a {len(items)}-item vec")
         return items[i]
 
     def vec_new_from_linear_memory(self, vals_pos: int, length: int) -> int:
@@ -218,11 +520,16 @@ class ObjectStore:
         return self._new(val.TAG_MAP_OBJECT, {**self._map(m), self.map_key(key): value})
 
     def map_get(self, m: int, key: int) -> int:
+        """`m.1`, and env.json: "Traps if the key doesn't exist."
+
+        A `HostTrap` for the same reason `vec_get`'s bound is
+        (`map_get_missing_key_traps` is a `kind="trap"` row).
+        """
         self._log("map_get", m, key)
         entries = self._map(m)
         k = self.map_key(key)
         if k not in entries:
-            raise AssertionError(f"map_get: no key {k!r} (have {sorted(map(repr, entries))})")
+            raise HostTrap(f"map_get: no key {k!r} (have {sorted(map(repr, entries))})")
         return entries[k]
 
     def map_has(self, m: int, key: int) -> int:
@@ -262,7 +569,13 @@ class ObjectStore:
                     "(env.json: the host PANICS here)"
                 )
             previous = name
-            entries[name.decode("utf-8")] = int.from_bytes(values[8 * i : 8 * i + 8], "little")
+            # Through `val_word`/`map_key` rather than straight to the decoded
+            # text, so this path records a `Val` word for the key like every
+            # other one does -- `map_keys` on a map built here must hand back
+            # real `Symbol` `Val`s, and the host's own answer for these keys is
+            # a `Symbol` made from the same bytes.
+            key = self.map_key(self.val_word(Symbol(name.decode("utf-8"))))
+            entries[key] = int.from_bytes(values[8 * i : 8 * i + 8], "little")
         return self._new(val.TAG_MAP_OBJECT, entries)
 
     # -- pooled blobs -----------------------------------------------------

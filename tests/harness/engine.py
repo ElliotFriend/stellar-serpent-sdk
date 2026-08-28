@@ -99,6 +99,24 @@ class HostError(Exception):
         self.val = word
 
 
+class HostTrap(Exception):
+    """The host TRAPPED: an env.json "Traps if ..." precondition was violated.
+
+    A distinct class from `HostError` because the two are different on-chain
+    outcomes and the semantics table pins them separately: a `HostError` is a
+    contract that ABORTED with a `Val` a client can classify, while a trap has
+    no error `Val` at all (an out-of-bounds `vec_get`, a `map_get` on a missing
+    key). Task 13's differential run asserts the two kinds against different
+    expectations, so a rig that raised one class for both could not tell a
+    passing `kind="trap"` case from a passing `kind="contract_error"` one.
+
+    Deliberately NOT an `AssertionError`: this rig keeps `AssertionError` for
+    its own broken invariants -- a dangling handle, an object with the wrong
+    tag, map keys the emitter failed to sort -- which mean the harness or the
+    lowering is wrong, not that the contract did something the host forbids.
+    """
+
+
 def _valtype(name: str) -> wasmtime.ValType:
     """One wasm type name from the pin, as a wasmtime `ValType`.
 
