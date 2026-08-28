@@ -37,9 +37,19 @@ from serpent.compiler.frontend import CompiledModule
 from serpent.emitter.frame import EmitError
 from serpent.spec import build_env_meta, build_meta, build_spec_entries
 
+# Re-exported, not re-defined (P15): Task 11's `build_wasm` must reject a
+# reserved `--meta` key BEFORE assembly even starts (a plain `ValueError`,
+# not a registry code -- an API-argument mistake), and this is the one module
+# `serpent/emitter/` is allowed to import `serpent.spec` from. A second,
+# hand-copied tuple in `serpent/emitter/__init__.py` would be a place for the
+# two to drift; importing the real constant through here keeps the "one place
+# allowed to reach `serpent.spec`" boundary intact.
+from serpent.spec.sections import RESERVED_META_KEYS
+
 __all__ = [
     "ENV_META_SECTION_NAME",
     "META_SECTION_NAME",
+    "RESERVED_META_KEYS",
     "SPEC_SECTION_NAME",
     "env_meta_payload",
     "meta_payload",

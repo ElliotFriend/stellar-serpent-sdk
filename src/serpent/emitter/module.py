@@ -49,6 +49,15 @@ does).
 Validation is Task 11's gate, not this function's: ``build_wasm`` always runs
 ``validate.validate_internal`` over these bytes and is the only public path to
 them.
+
+``assemble`` returns an ``AssembledModule``, not bare bytes (Task 10 handoff,
+controller-adopted): the wasm bytes plus every fact pass 1 alone knows and
+``build_wasm``/``BuildResult`` need -- whether the module expects a memory
+(ruling E10), the emitted import names, the exported names, which runtime
+parts got linked, and the pool/scratch byte counts. Recomputing any of these
+from the bytes a second time in Task 11 would be a second place for the same
+truth; ``assemble`` already had to compute every one of them to lay out the
+sections in the first place.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -72,6 +81,7 @@ from serpent.emitter.validate import iter_sections, read_byte, read_name, read_u
 
 __all__ = [
     "MEMORY_EXPORT_NAME",
+    "AssembledModule",
     "assemble",
     "check_call_targets",
     "check_linear_memory_abi",
@@ -537,8 +547,44 @@ def _data_section(pool: bytes) -> bytes:
 # --- the assembler --------------------------------------------------------------
 
 
-def assemble(compiled: CompiledModule, *, meta: Mapping[str, str], version: str | None) -> bytes:
-    """Assemble ``compiled`` into a wasm module (see this module's docstring).
+@dataclass(frozen=True)
+class AssembledModule:
+    """Everything ``assemble`` produced: the wasm bytes plus pass 1's own facts.
+
+    The Task 10 handoff record, controller-adopted: ``build_wasm`` and
+    ``BuildResult`` (Task 11) need several facts that are cheap here and
+    expensive -- or, for ``expect_memory``, impossible -- to recompute
+    independently from ``wasm`` afterwards.
+
+    * ``expect_memory`` is ruling E10's own decision (``needs_memory`` above),
+      handed straight to ``validate.validate_internal`` -- the validator must
+      not re-derive it, since it has no other way to distinguish "no literals
+      and no linear-memory host call" from "assembled memoryless on purpose".
+    * ``import_names``/``exports`` are the emitted host-fn import names and the
+      contract's own exported names (``FuncKind.EXPORT``/``CONSTRUCTOR``),
+      already computed for the import/export sections above.
+    * ``runtime_parts_linked`` is ``ctx.parts_linked`` (Task 13's superset of
+      C's ``runtime_parts_needed`` hint) -- which parts THIS build actually
+      linked, not which the frontend merely expected.
+    * ``pool_size``/``scratch_size`` are ``layout.Memory``'s own byte counts:
+      the literal pool's length and the scratch bump allocator's total
+      reservation (``self._scratch - SCRATCH_BASE``), the same two numbers
+      ``Memory.check`` guards against ``SCRATCH_BASE``/``PAGE``.
+    """
+
+    wasm: bytes
+    expect_memory: bool
+    import_names: tuple[str, ...]
+    exports: tuple[str, ...]
+    runtime_parts_linked: frozenset[str]
+    pool_size: int
+    scratch_size: int
+
+
+def assemble(
+    compiled: CompiledModule, *, meta: Mapping[str, str], version: str | None
+) -> AssembledModule:
+    """Assemble ``compiled`` into an ``AssembledModule`` (see this module's docstring).
 
     ``meta`` is the user's ``contractmetav0`` pairs and ``version`` the
     contract's own version, omitted from the section when ``None`` (ruling E8).
@@ -709,7 +755,25 @@ def assemble(compiled: CompiledModule, *, meta: Mapping[str, str], version: str 
         )
     check_call_targets(wasm)
     _check_call_sites_agree(wasm, defined, recomputed)
-    return wasm
+    return AssembledModule(
+        wasm=wasm,
+        expect_memory=needs_memory,
+        import_names=import_order,
+        # `FuncKind.EXPORT`/`CONSTRUCTOR` in `compiled.functions` order -- the
+        # same filter `export_entries` above used to build the export section,
+        # so the two can never disagree about which names are exported.
+        exports=tuple(
+            func.export_name for func in compiled.functions if func.kind in _EXPORTED_KINDS
+        ),
+        runtime_parts_linked=ctx.parts_linked,
+        pool_size=len(pool),
+        # `Memory._scratch` is private, but `module.py` and `layout.py` are one
+        # closely-coupled pair (this function already calls `memory.check()`,
+        # `.seed()`, `.pool_bytes()`, `.is_empty`) and Task 11's scope does not
+        # touch `layout.py`; the ceiling minus its fixed base is the total
+        # scratch reservation `Memory.check` itself guards against `PAGE`.
+        scratch_size=memory._scratch - Memory.SCRATCH_BASE,
+    )
 
 
 def _check_call_sites_agree(

@@ -41,6 +41,32 @@ jobs:
       - name: Type check (mypy --strict)
         run: uv run mypy --strict
 
+      # Task 11 (M1-D): `build_wasm`'s `validate_external=None` means "run
+      # wasm-tools when it's on PATH", and CI must be one of the places it
+      # actually is -- otherwise the wasm-tools half of the gate (ruling E5)
+      # never runs anywhere but a contributor's own machine. Installed from
+      # the project's prebuilt release tarball (not `cargo`/`cargo-binstall`,
+      # which would need a Rust toolchain and minutes of build time for a
+      # single static binary) and pinned to an EXACT version rather than
+      # "latest", so a CI failure can never be "wasm-tools changed under us"
+      # -- only a deliberate version bump changes what runs here.
+      #
+      # Drift watch: `WASM_TOOLS_VERSION` should track a contributor's local
+      # `wasm-tools --version` closely enough that "passes in CI" and "passes
+      # locally" mean the same thing; bump it by hand (checking
+      # https://github.com/bytecodealliance/wasm-tools/releases) every so
+      # often rather than letting it go stale for years.
+      - name: Install wasm-tools
+        env:
+          WASM_TOOLS_VERSION: "1.258.0"
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSfL -o wasm-tools.tar.gz \
+            "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz"
+          tar xzf wasm-tools.tar.gz
+          install "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
+          rm -rf wasm-tools.tar.gz "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux"
+          wasm-tools --version
+
       # testpaths = ["tests"] in pyproject.toml, so spikes/ tests are never
       # collected here (deliberate: spikes are frozen evidence, not CI subjects).
       # This includes tests/unit/test_host_bindings.py, which covers env.json

@@ -511,7 +511,9 @@ def test_wasm_tools_accepts_every_module_this_sub_plan_can_assemble() -> None:
     for src in (COUNTER_SRC, NAMER_SRC, WIDE_SRC, HELPED_SRC):
         assert validate.validate_external(build(src)) is True, src.splitlines()[0]
     token_style = _TOKEN_STYLE.read_text(encoding="utf-8")
-    wasm = module.assemble(compile_module(token_style, str(_TOKEN_STYLE)), meta={}, version=None)
+    wasm = module.assemble(
+        compile_module(token_style, str(_TOKEN_STYLE)), meta={}, version=None
+    ).wasm
     assert validate.validate_external(wasm) is True
 
 

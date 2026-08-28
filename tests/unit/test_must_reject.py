@@ -144,10 +144,10 @@ FIXTURES: list[FixtureSpec] = _discover_fixtures()
 
 def test_seed_fixtures_are_discovered() -> None:
     # A floor, not a moving target: Task 11b completes the fixture set (95
-    # fixtures covering the 92 required registry codes -- 96 total minus the
-    # four in `codes.NO_FIXTURE_ALLOWLIST`, SPT6001/SPT1009/SPT4018/SPT7003).
-    # This guards the completed tree does not regress under a later edit, not
-    # the exact count.
+    # fixtures covering the 92 required registry codes -- 100 total minus the
+    # eight in `codes.NO_FIXTURE_ALLOWLIST`, SPT6001/SPT1009/SPT4018/SPT7003/
+    # SPT8001/SPT8002/SPT8003/SPT8004). This guards the completed tree does
+    # not regress under a later edit, not the exact count.
     assert len(FIXTURES) >= 90
 
 

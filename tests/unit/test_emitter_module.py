@@ -138,7 +138,7 @@ def compiled(src: str, path: str = "contracts/t.py") -> CompiledModule:
 
 
 def build(src: str, *, meta: dict[str, str] | None = None, version: str | None = None) -> bytes:
-    return module.assemble(compiled(src), meta={} if meta is None else meta, version=version)
+    return module.assemble(compiled(src), meta={} if meta is None else meta, version=version).wasm
 
 
 # ===========================================================================
@@ -399,7 +399,7 @@ def test_only_host_functions_the_code_actually_calls_are_imported() -> None:
     counter's reachable set equals its used set, so the emitted set must equal
     it exactly -- no `extend_contract_data_ttl`, no `del_contract_data`."""
     c = compiled(COUNTER_SRC)
-    emitted = set(module.recompute_import_names(module.assemble(c, meta={}, version=None)))
+    emitted = set(module.recompute_import_names(module.assemble(c, meta={}, version=None).wasm))
     assert emitted == set(c.host_fns_used)
     assert "extend_contract_data_ttl" not in emitted
 
@@ -410,7 +410,7 @@ def test_the_import_set_may_name_functions_C_deliberately_omitted() -> None:
     is what needs them, and every one is pinned UNGATED so the declared
     protocol is unaffected."""
     c = compiled(WIDE_SRC)
-    emitted = set(module.recompute_import_names(module.assemble(c, meta={}, version=None)))
+    emitted = set(module.recompute_import_names(module.assemble(c, meta={}, version=None).wasm))
     assert "obj_from_u128_pieces" in emitted
     assert "obj_from_u128_pieces" not in c.host_fns_reachable
 
@@ -639,7 +639,7 @@ def test_a_two_result_runtime_part_forces_a_memory_C_could_not_foresee() -> None
     still empty."""
     c = compiled(WIDE_SRC)
     assert c.needs_memory is False
-    wasm = module.assemble(c, meta={}, version=None)
+    wasm = module.assemble(c, meta={}, version=None).wasm
     assert _section(wasm, 5) == b"\x01\x00\x01"
     assert _section(wasm, 11) is None
     assert [name for name, kind, _idx in _exports(wasm) if kind == 0x02] == ["memory"]
@@ -681,7 +681,7 @@ def test_the_pool_is_seeded_from_the_INVENTORY_not_from_lowering_order() -> None
     nothing else would notice."""
     c = compiled(TWO_LITERALS_SRC)
     assert c.literals.strings == ("aaa", "zzz")
-    segment = _data_segment(module.assemble(c, meta={}, version=None))
+    segment = _data_segment(module.assemble(c, meta={}, version=None).wasm)
     assert segment == (0, 0, b"aaazzz")
 
 
@@ -801,7 +801,9 @@ def test_no_module_carries_a_datacount_section() -> None:
 
 def test_the_env_meta_payload_is_build_env_meta_of_the_declared_protocol() -> None:
     c = compiled(COUNTER_SRC)
-    payload = _customs(module.assemble(c, meta={}, version=None))[sections.ENV_META_SECTION_NAME]
+    payload = _customs(module.assemble(c, meta={}, version=None).wasm)[
+        sections.ENV_META_SECTION_NAME
+    ]
     assert payload == build_env_meta(c.declared_protocol)
     assert payload == sections.env_meta_payload(c)
 
@@ -822,7 +824,9 @@ def test_a_requested_target_protocol_is_what_the_env_meta_declares() -> None:
     `build_env_meta(23)` produces."""
     c = compile_module(COUNTER_SRC, "contracts/t.py", target_protocol=23)
     assert c.declared_protocol == 23
-    payload = _customs(module.assemble(c, meta={}, version=None))[sections.ENV_META_SECTION_NAME]
+    payload = _customs(module.assemble(c, meta={}, version=None).wasm)[
+        sections.ENV_META_SECTION_NAME
+    ]
     assert payload == build_env_meta(23)
     assert payload != build_env_meta(20)
 
@@ -836,7 +840,7 @@ def test_the_spec_payload_is_the_direct_build_spec_entries_call() -> None:
     c = compiled(COUNTER_SRC)
     contract_cls = c.spec_inputs.contract_cls
     assert contract_cls is not None
-    payload = _customs(module.assemble(c, meta={}, version=None))[sections.SPEC_SECTION_NAME]
+    payload = _customs(module.assemble(c, meta={}, version=None).wasm)[sections.SPEC_SECTION_NAME]
     assert payload == build_spec_entries(contract_cls, types=c.spec_inputs.declared_types_in_order)
 
 
@@ -952,7 +956,7 @@ def test_the_token_style_fixture_assembles_and_stays_well_under_the_size_cap() -
     131072 bytes, so a code-size regression shows up as a number rather than as
     a deploy failure."""
     src = _TOKEN_STYLE.read_text(encoding="utf-8")
-    wasm = module.assemble(compiled(src, str(_TOKEN_STYLE)), meta={}, version=None)
+    wasm = module.assemble(compiled(src, str(_TOKEN_STYLE)), meta={}, version=None).wasm
     assert len(wasm) < 131072 * 0.20
 
 
