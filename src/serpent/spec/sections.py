@@ -415,7 +415,7 @@ def _event_entry(declared: type) -> xdr.SCSpecEntry:
         # ONE copy of the format/arity rule, the decorator's. Its `ValueError`
         # already names the class; re-raising as `SpecTypeError` puts it in the
         # family every other refusal in this module belongs to.
-        _check_data_format(declared, data_format, locations)
+        _check_data_format(declared, data_format, fields, locations)
     except ValueError as exc:
         raise SpecTypeError(str(exc)) from exc
 

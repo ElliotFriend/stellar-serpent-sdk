@@ -36,17 +36,21 @@ from serpent import (
     U64,
     U128,
     Address,
+    Annotated,
     Bool,
     Bytes,
     Bytes32,
     Bytes64,
     Duration,
+    Event,
     Map,
     String,
     Symbol,
     Timepoint,
     Vec,
+    contractevent,
     contracttype,
+    topic,
 )
 from serpent import env as env_module
 from serpent.env import (
@@ -82,6 +86,40 @@ class Holder:
 class Named:
     name: Symbol
     count: U32
+
+
+# The four `@contractevent` shapes `Event.publish` has to build a payload for
+# (Task 6's tier-1 half): the three `data_format` cases and a long prefix topic.
+
+
+@contractevent(topics=("transfer",), data_format="single-value")
+class Transfer(Event):
+    from_: Annotated[Address, topic]
+    to: Annotated[Address, topic]
+    amount: U32
+
+
+@contractevent
+class Traded(Event):
+    who: Annotated[Address, topic]
+    amount: U32
+    memo: String
+
+
+@contractevent(data_format="vec")
+class Scored(Event):
+    first: U32
+    second: U32
+
+
+@contractevent
+class Carried(Event):
+    items: Vec[U32]
+
+
+@contractevent
+class TransferCompleted(Event):
+    amount: U32
 
 
 def _buckets(env: Env) -> tuple[object, ...]:
@@ -649,16 +687,82 @@ def test_publish_requires_a_short_symbol_first_topic() -> None:
         env.events().publish((Symbol("a_very_long_name"),), U32(1))
 
 
-def test_event_publish_still_awaits_its_own_task() -> None:
-    """`Event.publish` is the authoring form the compiler DESUGARS; its tier-1
-    body lands with that desugar, not here."""
+def test_an_undecorated_event_subclass_cannot_publish() -> None:
+    """`publish` reads the `@contractevent` metadata, so a bare `Event`
+    subclass has no topic convention to publish BY -- said plainly, rather than
+    as an `AttributeError` from inside the model."""
     from serpent.env import Event
 
     class E(Event):
         __slots__ = ()
 
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
+    with pytest.raises(TypeError, match="@contractevent"):
         E().publish(deployed_env())
+
+
+def test_event_publish_builds_the_declared_topics_and_single_value_data() -> None:
+    """Task 6's tier-1 half: the SAME topic list and data the compiler's
+    desugar builds -- prefix topics first, then the marked fields in
+    declaration order."""
+    env = deployed_env()
+    frm, to = Address(ACCOUNT), Address(CONTRACT)
+    Transfer(from_=frm, to=to, amount=U32(7)).publish(env)
+    assert env.published_events == (((Symbol("transfer"), frm, to), U32(7)),)
+
+
+def test_event_publish_maps_data_fields_by_name_for_the_map_format() -> None:
+    """The `"map"` default: a `Map<Symbol, Val>` keyed by field name, sorted the
+    way every tier-1 `Map` is."""
+    env = deployed_env()
+    who = Address(ACCOUNT)
+    Traded(who=who, amount=U32(3), memo=String("hi")).publish(env)
+    (topics, data) = env.published_events[0]
+    assert topics == (Symbol("traded"), who)
+    assert isinstance(data, Map)
+    assert data.get(Symbol("amount")) == U32(3)
+    assert data.get(Symbol("memo")) == String("hi")
+    assert list(data.keys()) == [Symbol("amount"), Symbol("memo")]
+
+
+def test_event_publish_builds_a_vec_for_the_vec_format() -> None:
+    env = deployed_env()
+    Scored(first=U32(1), second=U32(2)).publish(env)
+    (topics, data) = env.published_events[0]
+    assert topics == (Symbol("scored"),)
+    assert data == Vec(U32, [U32(1), U32(2)])
+
+
+def test_event_publish_records_a_snapshot_like_events_publish() -> None:
+    """Same law (E5): the record cannot be changed by mutating what was
+    published, because `publish` deep-copies on the way in."""
+    env = deployed_env()
+    items = Vec(U32, [U32(1)])
+    Carried(items=items).publish(env)
+    items.push_back(U32(2))
+    (_topics, data) = env.published_events[0]
+    assert isinstance(data, Map)
+    recorded = data.get(Symbol("items"))
+    assert isinstance(recorded, Vec)
+    assert len(recorded) == 1
+
+
+def test_event_publish_needs_a_frame_like_every_other_env_operation() -> None:
+    """It reaches the model through `env.events()`, so it inherits that
+    accessor's gate: no deploy, no publish (ruling E7(ii))."""
+    with pytest.raises(RuntimeError, match="before the contract was deployed"):
+        Scored(first=U32(1), second=U32(2)).publish(Env())
+
+
+def test_event_publish_accepts_a_prefix_topic_longer_than_nine_characters() -> None:
+    """The declaration-time cap is the Symbol's 32, not SymbolSmall's 9 (Task
+    5), and the frontend desugar pools a long prefix through linear memory
+    rather than refusing it -- so the model must not refuse it either. This is
+    exactly why `publish` does not re-run `Events.publish`'s tier-1-only
+    short-Symbol check."""
+    env = deployed_env()
+    TransferCompleted(amount=U32(1)).publish(env)
+    (topics, _data) = env.published_events[0]
+    assert topics == (Symbol("transfer_completed"),)
 
 
 # --- the ledger ------------------------------------------------------------

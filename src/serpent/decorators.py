@@ -289,7 +289,12 @@ def contractevent(
     * `data_format` picks the `SCSpecEventDataFormat` case: `"map"` (the
       default, a `Map<Symbol, Val>` keyed by field name), `"vec"`, or
       `"single-value"` -- which publishes the ONE data value bare and therefore
-      requires exactly one non-topic field.
+      requires exactly one non-topic field. `"map"` and `"vec"` publish a
+      container OF the data fields, so each needs at least one; and in M1
+      `"vec"`'s data fields must all have the SAME type (see
+      `_check_data_format` -- the compiler's vector node carries one element
+      type, because tier 1's `Vec` is statically typed in its element class).
+      A mixed payload is what the default `"map"` format is for.
 
     Both spellings are one decorator: `@contractevent` applies directly, and
     `@contractevent(...)` returns the decorator. Every validation happens at
@@ -362,7 +367,8 @@ def _build_record(
         # `metadata["fields"]` as pairs for structs AND events alike.
         metadata["locations"] = locations
         metadata["prefix_topics"] = _prefix_topics(cls, topics)
-        metadata["data_format"] = _check_data_format(cls, data_format, locations)
+        metadata["data_format"] = _check_data_format(cls, data_format, fields, locations)
+        _check_topic_list(cls, metadata["prefix_topics"], locations)
 
     decorated = dataclasses.dataclass(frozen=True, eq=True)(cls)
     setattr(decorated, _METADATA_ATTR, metadata)
@@ -468,8 +474,27 @@ def _bad_prefix_topic(cls: type[Any], declared_topic: object, *, derived: bool) 
     return f"{cls.__name__}: prefix topic {declared_topic!r} must be {cap}"
 
 
-def _check_data_format(cls: type[Any], data_format: str, locations: Mapping[str, str]) -> str:
-    """Validate `data_format` and, for `"single-value"`, the field arity.
+def _check_data_format(
+    cls: type[Any],
+    data_format: str,
+    fields: Sequence[tuple[str, object]],
+    locations: Mapping[str, str],
+) -> str:
+    """Validate `data_format` against the event's data fields.
+
+    Three rules, one per case, all of them about ARITY or TYPE UNIFORMITY of
+    the non-topic fields:
+
+    * `"single-value"` publishes ONE data value, so exactly one data field;
+    * `"map"` and `"vec"` publish a container OF the data fields, so at least
+      one -- `map_new_from_linear_memory` over an empty key array has nothing
+      to describe, and a `Vec` with no element has no element type;
+    * `"vec"` additionally needs every data field to share ONE type, an M1
+      restriction (Task 6's controller ruling (a)): the IR's `MakeVec` carries a
+      single `elem_ty` because tier 1's `Vec` is statically typed in its element
+      class, and the heterogeneous vector node (`MakeTopics`) is topics-only by
+      contract. Refused here, at the declaration, rather than compiling to a
+      vector whose element type is a guess.
 
     Shared with `spec.sections._event_entry`, which re-runs it against the
     metadata it is handed rather than keeping a second copy of the rule: a
@@ -481,15 +506,55 @@ def _check_data_format(cls: type[Any], data_format: str, locations: Mapping[str,
             f"{cls.__name__}: data_format must be one of "
             f"{', '.join(repr(f) for f in DATA_FORMATS)} (got {data_format!r})"
         )
-    if data_format == "single-value":
-        data_fields = [name for name, location in locations.items() if location == DATA_LOCATION]
-        if len(data_fields) != 1:
+    data_fields = [
+        (name, annotation) for name, annotation in fields if locations.get(name) == DATA_LOCATION
+    ]
+    names = [name for name, _annotation in data_fields]
+    if data_format == "single-value" and len(data_fields) != 1:
+        raise ValueError(
+            f"{cls.__name__}: data_format 'single-value' publishes exactly one "
+            f"data value, so the event needs exactly one non-topic field (got "
+            f"{len(data_fields)}: {', '.join(names) or 'none'})"
+        )
+    if data_format in ("map", "vec") and not data_fields:
+        raise ValueError(
+            f"{cls.__name__}: data_format {data_format!r} publishes the non-topic "
+            "fields as a container, so the event needs at least one of them "
+            "(every field here is marked `topic`)"
+        )
+    if data_format == "vec":
+        distinct = {_render(annotation) for _name, annotation in data_fields}
+        if len(distinct) > 1:
             raise ValueError(
-                f"{cls.__name__}: data_format 'single-value' publishes exactly one "
-                f"data value, so the event needs exactly one non-topic field (got "
-                f"{len(data_fields)}: {', '.join(data_fields) or 'none'})"
+                f"{cls.__name__}: data_format 'vec' publishes the data fields as one "
+                f"Vec, so in M1 they must all have the same type (got "
+                f"{', '.join(f'{name}: {_render(annotation)}' for name, annotation in data_fields)})"
+                " -- use the default 'map' format for a mixed payload"
             )
     return data_format
+
+
+def _check_topic_list(
+    cls: type[Any], prefix_topics: tuple[str, ...], locations: Mapping[str, str]
+) -> None:
+    """Refuse an event whose published topic list would be EMPTY.
+
+    `topics=()` is deliberately legal (review M3) because the marked fields
+    carry the topic list; with neither a prefix topic nor an
+    `Annotated[T, topic]` field there is no topic at all, which the tier-1
+    model refuses on the way in ("an event needs at least one topic, naming
+    it") and which no indexer can filter on. Refused at the declaration site,
+    where the fix is, rather than at every publish site.
+    """
+    if prefix_topics:
+        return
+    if any(location == TOPIC_LOCATION for location in locations.values()):
+        return
+    raise ValueError(
+        f"{cls.__name__}: an event publishes at least one topic, and this one has "
+        "no prefix topic and no `Annotated[T, topic]` field -- drop `topics=()` to "
+        "get the class-name topic back, or mark a field as a topic"
+    )
 
 
 def _snake_case(name: str) -> str:

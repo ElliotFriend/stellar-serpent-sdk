@@ -334,7 +334,14 @@ def test_contracttype_reports_unresolvable_annotation() -> None:
             inner: "Inner"
 
 
-def test_contractevent_publishes_under_sub_plan_e() -> None:
+def test_contractevent_records_the_convention_publish_reads() -> None:
+    """The metadata shape Task 6's desugar and `Event.publish` both read back.
+
+    `publish` is now implemented (M1-E Task 6), so the tier-1 half is exercised
+    in `test_env_model.py`; what this pins is that the metadata carries every
+    piece of the convention -- and that an UNDEPLOYED `Env` still refuses the
+    publish for the ordinary frame reason, not for a missing implementation.
+    """
     assert _meta(Bumped) == {
         "kind": "event",
         "fields": [("count", U32)],
@@ -343,7 +350,7 @@ def test_contractevent_publishes_under_sub_plan_e() -> None:
         "data_format": "map",
     }
     event = Bumped(count=U32(1))
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
+    with pytest.raises(RuntimeError, match="before the contract was deployed"):
         event.publish(Env())
 
 
@@ -544,6 +551,61 @@ def test_an_unknown_data_format_is_refused() -> None:
 
         @contractevent(data_format="tuple")
         class Odd(Event):
+            amount: U32
+
+
+# --- the three M1 shape restrictions (Task 6's desugar, ruling (a)) ----------
+
+
+def test_vec_data_takes_uniformly_typed_fields_in_m1() -> None:
+    """An M1 restriction, and a narrow one (Task 6, controller ruling (a)).
+
+    `data_format="vec"` publishes the data fields as one `Vec`, and the IR node
+    for a vector -- `MakeVec` -- carries exactly ONE `elem_ty`, because tier
+    1's `Vec` is statically typed in its element class. A heterogeneous
+    `Vec<Val>` has no node (`MakeTopics` is the heterogeneous vec, and it is
+    topics-only by contract), so the declaration is refused HERE rather than
+    compiling into a vector whose element type is a guess.
+    """
+
+    @contractevent(data_format="vec")
+    class Uniform(Event):
+        who: Annotated[Address, topic]
+        first: U32
+        second: U32
+
+    assert _meta(Uniform)["data_format"] == "vec"
+
+    with pytest.raises(ValueError, match="same type"):
+
+        @contractevent(data_format="vec")
+        class Mixed(Event):
+            amount: U32
+            memo: String
+
+
+@pytest.mark.parametrize("data_format", ["map", "vec"])
+def test_map_and_vec_data_need_at_least_one_data_field(data_format: str) -> None:
+    """Every field a topic, with a container data format, has nothing to put in
+    the container -- and neither `map_new_from_linear_memory` over an empty key
+    array nor a `Vec` with no element type is a thing that exists. Refused at
+    the declaration (R5) instead of at the publish site."""
+    with pytest.raises(ValueError, match="at least one"):
+
+        @contractevent(data_format=data_format)
+        class AllTopics(Event):
+            who: Annotated[Address, topic]
+
+
+def test_an_event_with_no_topic_at_all_is_refused() -> None:
+    """`topics=()` is legal (review M3) BECAUSE the marked fields carry the
+    topic list. With neither, the published topic list would be empty -- which
+    the tier-1 model refuses ("an event needs at least one topic, naming it")
+    and which no indexer can filter on."""
+    with pytest.raises(ValueError, match="at least one topic"):
+
+        @contractevent(topics=())
+        class Topicless(Event):
             amount: U32
 
 

@@ -632,8 +632,110 @@ class Event:
     __slots__ = ()
 
     def publish(self, env: Env) -> None:
-        """Emit this event via the host's `contract_event`."""
-        raise NotImplementedError("sub-plan E")
+        """Emit this event: its declared topic list, then its data payload.
+
+        The convention itself lives in `@contractevent`'s metadata -- prefix
+        topics, which fields are topics, which `data_format` -- and the
+        compiler's desugar reads the SAME dict to build the same
+        `contract_event` call. This method is therefore the tier-1 half of one
+        convention, not a second model of it.
+
+        Recorded through the same snapshot path `Events.publish` uses
+        (`_record`), and deliberately NOT through that method's argument
+        validation. `Events.publish` refuses a `topics[0]` longer than the
+        9-character SymbolSmall bound, which is an honest tier-1-only reject for
+        a HAND-WRITTEN topics tuple (the frontend refuses the same shape,
+        `SPT3019`). A DECLARED prefix topic is capped at the Symbol's 32
+        characters instead, on purpose: `transfer_completed` is an ordinary
+        event name, and the compiler pools it through linear memory at the
+        publish site rather than refusing it. Re-running the short-Symbol check
+        here would refuse events the compiler accepts and the chain publishes.
+        """
+        topics, data = _event_payload(self)
+        env.events()._record(topics, data)
+
+
+def _event_payload(event: Event) -> tuple[tuple[ChainValue, ...], ChainValue]:
+    """One event instance's `(topics, data)`, per its declared convention.
+
+    `serpent.decorators` imports THIS module (`Event` is the base
+    `@contractevent` requires), so the metadata names are imported inside the
+    function rather than at module scope -- by the time an event instance
+    exists, `decorators` is fully loaded. Nothing here restates a rule the
+    decorator already validated: the topic/data split, the prefix topics and
+    the data format are read back, never re-derived.
+    """
+    from serpent.decorators import (
+        _METADATA_ATTR,
+        DATA_LOCATION,
+        TOPIC_LOCATION,
+    )
+
+    metadata = vars(type(event)).get(_METADATA_ATTR)
+    if not isinstance(metadata, dict) or metadata.get("kind") != "event":
+        raise TypeError(
+            f"{type(event).__name__} has no @contractevent declaration, so it has no "
+            "topic convention to publish by -- decorate the class with "
+            "@contractevent (a bare Event subclass declares nothing)"
+        )
+
+    fields: list[tuple[str, Any]] = metadata["fields"]
+    locations: dict[str, str] = metadata["locations"]
+    values: dict[str, Any] = {name: getattr(event, name) for name, _annotation in fields}
+
+    topics: list[ChainValue] = [Symbol(prefix) for prefix in metadata["prefix_topics"]]
+    topics += [values[name] for name, _annotation in fields if locations[name] == TOPIC_LOCATION]
+    data_fields = [
+        (name, annotation) for name, annotation in fields if locations[name] == DATA_LOCATION
+    ]
+    return tuple(topics), _event_data(metadata["data_format"], data_fields, values)
+
+
+def _event_data(
+    data_format: str, data_fields: list[tuple[str, Any]], values: dict[str, Any]
+) -> ChainValue:
+    """The data payload the three `SCSpecEventDataFormat` cases publish.
+
+    The `"map"` case is the one place tier 1 cannot say quite what the chain
+    says: on chain the data is a `Map<Symbol, Val>` whose values are
+    heterogeneous by design, while `serpent.types.Map` is statically typed in
+    its value class. The value type recorded here is therefore the FIRST data
+    field's, and it is cosmetic -- a `Map`'s values are never ordered or
+    type-checked (`require_map_value`, MJ-7) and `Map.__eq__` ignores it. The
+    KEYS, which is what the format is actually about, are exact: one `Symbol`
+    per field name, in the `val_cmp` order every tier-1 `Map` keeps.
+    """
+    # Imported inside the function for `_event_payload`'s cycle reason.
+    from serpent.decorators import DATA_FORMATS
+
+    if data_format not in DATA_FORMATS:  # pragma: no cover - the decorator validated it
+        raise AssertionError(f"unknown data_format {data_format!r}")
+    if data_format == "single-value":
+        ((name, _annotation),) = data_fields
+        return cast("ChainValue", values[name])
+    if data_format == "vec":
+        first_name, first_annotation = data_fields[0]
+        element_type = _event_vec_element_type(first_annotation, values[first_name])
+        return Vec(element_type, [values[name] for name, _annotation in data_fields])
+    pairs = [(Symbol(name), values[name]) for name, _annotation in data_fields]
+    return Map(Symbol, type(pairs[0][1]), pairs)
+
+
+def _event_vec_element_type(annotation: Any, first_value: Any) -> type[Any]:
+    """The element class a `"vec"`-format payload's `Vec` is built with.
+
+    The DECLARED annotation's class, not `type(first_value)`: a field annotated
+    `Bytes` may hold a `Bytes32`, and a `Vec` built on the value's own class
+    would then refuse the next element (`Vec` checks `isinstance` against the
+    element type). A parameterized annotation (`Vec[U32]`) contributes its
+    origin; anything with no runtime class at all (`U32 | None`) falls back to
+    the value's type, which is the only class available.
+    """
+    origin = get_origin(annotation)
+    candidate = annotation if origin is None else origin
+    if isinstance(candidate, type):
+        return candidate
+    return type(first_value)
 
 
 class _StorageBucket:
@@ -1001,14 +1103,22 @@ class Events:
         tier-1-only reject: the frontend already refuses all three shapes at
         compile time (`SPT1038` for an empty topic tuple, `SPT3019` for a first
         topic that is not a `Symbol` or is longer than the 9-character short
-        bound), so no compiled contract can reach these raises, and a
-        hand-written tier-1 call gets the same answer the compiler would have
-        given. The host itself enforces none of it.
+        bound), so no compiled contract can reach these raises through THIS
+        surface, and a hand-written tier-1 call gets the same answer the
+        compiler would have given. The host itself enforces none of it.
+
+        `Event.publish` records through `_record` instead, skipping these three
+        checks deliberately -- its topic list comes from a declaration the
+        decorator has already validated, where a prefix topic longer than nine
+        characters is legal and pools through linear memory (see that method).
 
         The recorded event is a SNAPSHOT (ruling E5): a later mutation of the
         topics or the data cannot change what was published, exactly as on
         chain, where `contract_event` serializes them.
         """
+        # The frame gate first, before any argument talk: `_record` re-applies
+        # it (it is the shared invariant), but a publish attempted with no
+        # invocation to attribute it to is that fact, not a bad argument.
         _require_frame(self._env, "an event publish")
         if not topics:
             raise BadArgument("an event needs at least one topic, naming it")
@@ -1021,6 +1131,17 @@ class Events:
             raise BadArgument(
                 f"topics[0] must be a short Symbol (at most 9 characters): {name.text!r}"
             )
+        self._record(topics, data)
+
+    def _record(self, topics: tuple[ChainValue, ...], data: ChainValue) -> None:
+        """Append one SNAPSHOT of `(topics, data)` inside a frame.
+
+        The frame gate and the deep copy, with no argument validation -- shared
+        by `publish` (which validates first) and by `Event.publish`, whose
+        topics come from a validated declaration. Both halves of the event
+        surface therefore obey ONE isolation law rather than two copies of it.
+        """
+        _require_frame(self._env, "an event publish")
         self._published.append(copy.deepcopy((tuple(topics), data)))
 
 
