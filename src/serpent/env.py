@@ -39,7 +39,9 @@ supplies them explicitly -- and REFUSES the states it cannot otherwise rule out:
   class or code, because that is what the deployer sees on chain. S12 says the
   caveat "must say so, prominently" precisely because Python developers expect
   `__init__` exception semantics; `ConstructorFailed`'s docstring is where it
-  says so, and the original is chained as `__cause__`;
+  says so, and the original is chained as `__cause__`. A FAILED deploy poisons
+  the env -- it deploys nothing and refuses every later deploy, because the dead
+  constructor's writes are still in the store and a chain deploy is atomic;
 * **`with env.frame():`** is one invocation. Every host accessor here, and every
   operation on the objects they hand out, refuses outside a frame, and a frame
   refuses to open before `deploy` -- `_require_frame` carries the reasoning.
@@ -154,7 +156,7 @@ from typing import Any, ClassVar, TypeAlias, TypeVar, Union, cast, get_args, get
 
 from serpent import _frame, val
 from serpent._host._scalars import STORAGE_TYPE
-from serpent.errors import AbiCheckFailed, BadArgument, MissingValue
+from serpent.errors import AbiCheckFailed, BadArgument, ContractError, MissingValue
 from serpent.types import (
     I32,
     I64,
@@ -433,6 +435,19 @@ class ConstructorFailed(RuntimeError):
     inventing one would put a number in a tier-1 trace that no on-chain trace
     can contain. A `RuntimeError` instead: loud, and not catchable by an
     `except ContractError` that meant to catch the contract's own errors.
+
+    **What is laundered is what S12 says is laundered: RECOVERABLE errors**
+    (`_LAUNDERED_BY_THE_HOST`). An `AuthorizationFailed` out of a constructor is
+    not one of them -- the host TRAPS an unauthorized invocation, and a trap is
+    not a `Context(InvalidAction)` the deployer reads as "the constructor
+    refused" -- so it propagates from `deploy` unchanged. Neither are the model's
+    own refusals (`_require_frame`'s `RuntimeError`s): laundering a test-harness
+    misuse into "the contract's constructor failed" would blame the contract for
+    a bad test.
+
+    **A failed deploy POISONS the env** (`deploy`): nothing is deployed, and no
+    second deploy is allowed either, because the failed constructor's writes are
+    still in the store -- there is no frame rollback here.
     """
 
 
@@ -450,7 +465,60 @@ class AuthorizationFailed(RuntimeError):
     trees, no nonces, no signature checks and no sub-invocation authorization
     anywhere in this repo (see the module docstring). A contract's auth LOGIC is
     therefore not under test at tier 1; sub-plan F's tier 2b is the gate.
+
+    Raised from a CONSTRUCTOR it is NOT laundered into `ConstructorFailed`
+    (`_LAUNDERED_BY_THE_HOST`): S12's laundering covers recoverable errors, and
+    an unauthorized invocation is a trap.
     """
+
+
+#: What `deploy` launders into `ConstructorFailed`, and nothing else.
+#:
+#: S12's rule is about "any **recoverable** error raised in the constructor", so
+#: the allowlist is exactly that: the contract's own error codes
+#: (`ContractError`, which is every `@contracterror` member plus serpent's
+#: reserved runtime errors), and the plain-Python failures an authored body can
+#: produce at tier 1 -- an arithmetic overflow, a bad index, a failed
+#: assertion. Each of those is something the COMPILED contract surfaces as an
+#: in-band error or a guest trap, i.e. a deploy that fails because the
+#: constructor did.
+#:
+#: Everything outside this tuple propagates from `deploy` UNCHANGED, and the two
+#: kinds that matters for are deliberate:
+#:
+#: * `AuthorizationFailed` -- the host traps an unauthorized invocation. A trap
+#:   is not the `Context(InvalidAction)` the deployer sees for a recoverable
+#:   constructor error, so surfacing it as `ConstructorFailed` would model a
+#:   laundering the host does not do (and hide, at tier 1, the one auth failure
+#:   a constructor can have);
+#: * the model's own `RuntimeError` refusals (`_require_frame`, the frame gate)
+#:   -- those say the TEST is wrong, and laundering them would rename a harness
+#:   misuse into "the contract's constructor failed".
+_LAUNDERED_BY_THE_HOST: tuple[type[Exception], ...] = (
+    ContractError,
+    ArithmeticError,
+    AssertionError,
+    AttributeError,
+    LookupError,
+    TypeError,
+    ValueError,
+)
+
+
+def _failed_deploy_note(env: Env) -> str:
+    """The clause a POISONED env earns, so "not deployed" is not misleading.
+
+    An env whose deploy failed is not merely undeployed -- it is unusable, and
+    saying only "deploy first" would send a caller into the loud refusal in
+    `deploy` with no idea why. Empty for every healthy env.
+    """
+    if not env._poisoned:
+        return ""
+    return (
+        " NOTE: a previous deploy on this Env already FAILED, and a failed "
+        "constructor's writes are still in the store (there is no frame "
+        "rollback), so this Env cannot be deployed into at all -- use a fresh Env()."
+    )
 
 
 def _require_frame(env: Env, what: str) -> None:
@@ -484,7 +552,7 @@ def _require_frame(env: Env, what: str) -> None:
                 "operation runs __init__ (the __constructor export) before any "
                 "invocation, so nothing can read or write storage first. At tier 1: "
                 "`instance = serpent.env.deploy(MyContract, env)`, then call inside "
-                "`with env.frame():`."
+                f"`with env.frame():`.{_failed_deploy_note(env)}"
             )
         raise RuntimeError(
             f"{what} outside any invocation frame: a host function is only callable "
@@ -975,12 +1043,21 @@ class Env:
     and so does `frame()` (ruling E7(ii), `_require_frame`). M1 has no
     cross-contract call, so there is no second instance to model and no
     semantics for two envs framed at once.
+
+    **And one Env is one ATTEMPT.** A deploy whose constructor fails POISONS the
+    env: it is not deployed, and it can never be deployed into again. The reason
+    is the model's own honesty about rollback -- the failed constructor's writes
+    are still in the store, so a retry would hand the second instance the dead
+    one's leftovers, which is exactly the class of tier-1-only state the whole
+    gate exists to refuse (a chain deploy is atomic: it either publishes the
+    instance or leaves nothing behind).
     """
 
     __slots__ = (
         "_auths",
         "_events",
         "_instance",
+        "_poisoned",
         "_recorded_auths",
         "_store",
         "_timestamp",
@@ -1007,6 +1084,10 @@ class Env:
         #: deployed. ONE object doing two jobs: the pre-deploy refusal reads it
         #: as a boolean, and a second `deploy` names what is already here.
         self._instance: object | None = None
+        #: Set by a FAILED deploy, and never cleared: the constructor's writes
+        #: survive it, so this env can no longer honestly deploy anything
+        #: (`deploy`, and the class docstring's second paragraph).
+        self._poisoned = False
 
     def storage(self) -> Storage:
         _require_frame(self, "env.storage()")
@@ -1074,6 +1155,7 @@ class Env:
                 "cannot open an invocation frame before the contract is deployed: "
                 "`instance = serpent.env.deploy(MyContract, env)` first (deploy runs "
                 "__init__, the __constructor export, in a frame of its own)"
+                f"{_failed_deploy_note(self)}"
             )
         active = _frame.current()
         if active is not None and active is not self:
@@ -1105,7 +1187,16 @@ class Env:
         * `auths=None` records and allows -- that is what mock-all-auths means;
         * a non-`None` allow-set refuses a non-member with
           `AuthorizationFailed`, and refuses BEFORE recording: on chain the host
-          traps, so there is no invocation left to have recorded anything;
+          traps, so there is no invocation left to have recorded anything.
+          **That reasoning is not free of tension**, and the tension is named
+          rather than smoothed over: the same argument would discard the events
+          and storage writes of a frame that raises, and this model KEEPS those
+          (`test_an_event_published_before_a_raise_is_not_rolled_back` pins the
+          non-rollback deliberately). The difference is only that a refused auth
+          never produced a record to have to roll back, so not creating one is
+          the cheap answer here -- it is not evidence that the model rolls
+          anything back. S9's rollback stays a named carried obligation to
+          sub-plan F's tier 2b, for both surfaces;
         * the args are DEEP-COPIED in (ruling E5). The host serializes them into
           the authorization entry, and the frontend's escape exemption for
           `require_auth_for_args` (`recognize.note_escapes`) is only sound
@@ -1162,8 +1253,8 @@ class Env:
 
         DEEP-COPIED on the way out, for the same reason `get` is: an inspection
         surface that handed out the recorded objects would let a test mutate the
-        record it just read and see its own mutation on the next read. (When
-        Task 4 fills `recorded_auths`, it owes the same copy on the way out.)
+        record it just read and see its own mutation on the next read.
+        `recorded_auths` makes the same copy, on the way in and on the way out.
 
         No frame rollback (module docstring): an event published by a method
         that then raises is still here.
@@ -1208,19 +1299,31 @@ def deploy(cls: type[_C], env: Env, *args: Any, **kwargs: Any) -> _C:
     Returns the instance, typed as `cls`, so the test can call its methods --
     which are ordinary Python, inside `with env.frame():`.
 
-    * **an exception out of `__init__` becomes `ConstructorFailed`**, chaining
-      the original as `__cause__`. That is S12's laundering, and
+    * **a RECOVERABLE exception out of `__init__` becomes `ConstructorFailed`**,
+      chaining the original as `__cause__`. That is S12's laundering, and
       `ConstructorFailed`'s docstring quotes the spec on why it must be
-      prominent. Only errors from the constructor's BODY are laundered: a
-      wrong-arity or unknown-keyword call is bound and rejected first, as a
-      plain `TypeError`, because that mistake is the test author's and no host
-      laundering describes it;
-    * **a second deploy into the same env is refused.** One `Env` is one
-      deployed contract instance (M1 has no cross-contract call), so a second
-      one is a test-authoring mistake, not a second constructor run;
+      prominent. What counts as recoverable is `_LAUNDERED_BY_THE_HOST`;
+      anything else -- an `AuthorizationFailed` (the host traps instead), the
+      model's own refusals -- propagates unchanged. Only errors from the
+      constructor's BODY are considered at all: a wrong-arity or unknown-keyword
+      call is bound and rejected first, as a plain `TypeError`, because that
+      mistake is the test author's and no host laundering describes it;
+    * **a FAILED deploy poisons the env.** It deploys nothing (so `frame()` and
+      every accessor still refuse), and it also refuses every LATER deploy into
+      the same env: the failed constructor's writes are still in the store,
+      because this model has no frame rollback, so a retry would hand the second
+      instance the dead one's leftovers. On chain a deploy is atomic -- there is
+      no such half-written contract to inherit -- so retrying here would be a
+      tier-1-only state, which is the one thing this gate is for. The remedy is a
+      fresh `Env()`, and the message says so;
+    * **a second deploy into the same env is refused** for the same one-Env-one-
+      instance reason (M1 has no cross-contract call): a second one is a
+      test-authoring mistake, not a second constructor run;
     * **no constructor is fine** (S12: a 0-arg constructor may be absent), but
       passing arguments to a class that has none is an error rather than a
-      silent drop -- on chain the deploy operation itself fails.
+      silent drop -- on chain the deploy operation itself fails. That path still
+      enters and leaves the deploy frame, so the no-cross-contract rule applies
+      to a constructor-less contract exactly as it does to any other.
 
     `deploy` does NOT require `@contract`: it models the host's deploy step, not
     the compiler's declaration checks (which the decorator already made at class
@@ -1238,6 +1341,14 @@ def deploy(cls: type[_C], env: Env, *args: Any, **kwargs: Any) -> _C:
             "One Env models one deployed contract instance (M1 has no cross-contract "
             "call), and a constructor runs exactly once -- use a fresh Env()."
         )
+    if env._poisoned:
+        raise RuntimeError(
+            "a deploy into this Env already FAILED, so it cannot be deployed into "
+            "again: the failed constructor's storage writes are still here (this "
+            "model has no frame rollback), and a second instance must not inherit "
+            "them -- on chain a deploy is atomic, so there is no half-written "
+            "contract to inherit from. Use a fresh Env()."
+        )
 
     instance = cls.__new__(cls)
     if cls.__init__ is object.__init__:
@@ -1247,31 +1358,74 @@ def deploy(cls: type[_C], env: Env, *args: Any, **kwargs: Any) -> _C:
                 "contract arguments. On chain, deploying with constructor arguments a "
                 "contract has no __constructor for fails the deploy operation."
             )
+        # Nothing to run -- but the frame is still entered and left, so that a
+        # constructor-less contract is refused by exactly the same rules as any
+        # other (notably: not while another Env's frame is active).
+        with env._invocation(deploying=True):
+            pass
         env._instance = instance
         return instance
 
     constructor = cast("Callable[..., None]", cls.__init__)
+    signature = inspect.signature(constructor)
     # Bind first: a signature mistake is the caller's, and laundering it as
     # `ConstructorFailed` would blame the contract for a bad test.
     try:
-        inspect.signature(constructor).bind(instance, env, *args, **kwargs)
+        signature.bind(instance, env, *args, **kwargs)
     except TypeError as exc:
-        raise TypeError(f"{cls.__name__}.__init__ cannot take these arguments: {exc}") from exc
+        raise TypeError(
+            f"{cls.__name__}.__init__ cannot take these arguments: {exc}"
+            f"{_missing_env_note(signature)}"
+        ) from exc
 
     with env._invocation(deploying=True):
         try:
             constructor(instance, env, *args, **kwargs)
-        except Exception as exc:
+        except _LAUNDERED_BY_THE_HOST as exc:
+            env._poisoned = True
             raise ConstructorFailed(
                 f"the constructor of {cls.__name__} failed: "
                 f"{type(exc).__name__}: {exc}. The HOST launders this -- the deployer "
                 "sees Context(InvalidAction), never the contract's own error code -- "
                 "so the original is available as __cause__ and nowhere else."
             ) from exc
+        except BaseException:
+            # NOT laundered (`_LAUNDERED_BY_THE_HOST`): an auth trap, one of the
+            # model's own refusals, or an interrupt. The deploy still failed, so
+            # the env is still poisoned -- only the identity of the error differs.
+            env._poisoned = True
+            raise
 
     # Only a SUCCESSFUL constructor deploys anything: a failed deploy leaves an
-    # env that still refuses to be invoked. What the constructor already wrote
-    # stays in the store, because the model has no frame rollback (module
-    # docstring) -- the refusal is what keeps that unobservable.
+    # env that is both undeployed and poisoned. What the constructor already
+    # wrote stays in the store, because the model has no frame rollback (module
+    # docstring) -- the two refusals are what keep that unobservable.
     env._instance = instance
     return instance
+
+
+def _missing_env_note(signature: inspect.Signature) -> str:
+    """The hint a bind failure earns when the constructor forgot `env`.
+
+    `__init__(self)` is the shape a Python author writes by habit, and the bare
+    bind error for it ("too many positional arguments") describes the symptom
+    rather than the cause: `deploy` always passes the env, because
+    `__constructor` runs with a live host env. Empty for every other shape.
+    """
+    positional = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    variadic = any(
+        parameter.kind is inspect.Parameter.VAR_POSITIONAL
+        for parameter in signature.parameters.values()
+    )
+    if len(positional) >= 2 or variadic:
+        return ""
+    return (
+        " A contract constructor takes the env after `self` -- "
+        "`def __init__(self, env: Env, ...) -> None` -- because __constructor runs "
+        "with a live host env, and deploy() always passes it."
+    )

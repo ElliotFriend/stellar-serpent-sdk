@@ -84,6 +84,29 @@ class Refusing:
         raise Error.Refused
 
 
+@contract
+class WritesThenRaises:
+    """A constructor that WRITES and then fails: the poison-flag repro."""
+
+    def __init__(self, env: Env) -> None:
+        env.storage().instance().set(COUNT, U32(41))
+        raise Error.Refused
+
+
+@contract
+class ReadsInTheConstructor:
+    def __init__(self, env: Env) -> None:
+        env.storage().instance().set(COUNT, env.storage().instance().get(COUNT, U32, U32(0)))
+
+
+@contract
+class Overflows:
+    """A constructor that fails the plain-Python way, not with a code."""
+
+    def __init__(self, env: Env) -> None:
+        raise ValueError("a constructor can fail without a contract error code")
+
+
 class Counted:
     """A plain (undecorated) class counting its own constructor runs."""
 
@@ -95,6 +118,13 @@ class Counted:
 
 class NoConstructor:
     __slots__ = ()
+
+
+class NoEnvParameter:
+    """The habit-shaped mistake: a constructor that forgot the env."""
+
+    def __init__(self) -> None:  # pragma: no cover - never actually called
+        raise AssertionError("deploy must refuse this before calling it")
 
 
 # --- deploy: once, at deploy, inside a frame --------------------------------
@@ -176,9 +206,26 @@ def test_deploy_reports_a_signature_mistake_as_itself() -> None:
         deploy(Counter, env, U32(1), U32(2))
     with pytest.raises(TypeError, match="cannot take these arguments"):
         deploy(Counter, env, nope=U32(1))
-    # Nothing was deployed, so nothing can be invoked.
+    # Nothing was deployed, so nothing can be invoked. And nothing RAN, so the
+    # env is not poisoned either -- a bad call is not a failed deploy.
     with pytest.raises(RuntimeError, match="deploy"):
         env.storage()
+    deploy(Counter, env, U32(1))
+
+
+def test_a_constructor_that_forgot_the_env_is_told_so() -> None:
+    """`def __init__(self)` is the shape a Python author writes by habit, and
+    the bare bind error for it ("too many positional arguments") names the
+    symptom. `deploy` always passes the env, because `__constructor` runs with a
+    live host env -- so the message says that."""
+    with pytest.raises(TypeError, match="cannot take these arguments") as excinfo:
+        deploy(NoEnvParameter, Env())
+    assert "def __init__(self, env: Env" in str(excinfo.value)
+    # ...and the hint is not attached to a constructor that DOES take an env and
+    # was merely called wrong.
+    with pytest.raises(TypeError) as counter_excinfo:
+        deploy(Counter, Env())
+    assert "env: Env" not in str(counter_excinfo.value)
 
 
 def test_a_second_deploy_into_the_same_env_is_a_loud_error() -> None:
@@ -243,6 +290,75 @@ def test_constructor_failed_is_not_a_contract_error_and_has_no_code() -> None:
     assert issubclass(ConstructorFailed, RuntimeError)
     assert not issubclass(ConstructorFailed, ContractError)
     assert not hasattr(ConstructorFailed, "code")
+
+
+def test_a_plain_python_failure_in_the_constructor_is_laundered_too() -> None:
+    """S12 says "any recoverable error", not "any contract error": a constructor
+    that fails the ordinary Python way is still a failed deploy, and the
+    deployer still sees the host's laundered answer."""
+    env = Env()
+    with pytest.raises(ConstructorFailed) as excinfo:
+        deploy(Overflows, env)
+    assert isinstance(excinfo.value.__cause__, ValueError)
+
+
+def test_an_auth_failure_in_the_constructor_is_NOT_laundered() -> None:
+    """**The boundary of S12's laundering.** The rule is about RECOVERABLE
+    errors: those reach the deployer as `Context(InvalidAction)`. An
+    unauthorized invocation is not one of them -- the host TRAPS -- so
+    `AuthorizationFailed` propagates from `deploy` as itself.
+
+    Laundering it would model a host behaviour that does not exist, and would
+    hide the one auth failure a constructor can actually have.
+    """
+    env = Env(auths=[])
+    with pytest.raises(AuthorizationFailed, match="not authorized"):
+        deploy(Authorizing, env, Address(ACCOUNT))
+    assert _frame.current() is None
+    # It failed, so the env is poisoned exactly as a laundered failure would
+    # leave it: only the identity of the error differs.
+    with pytest.raises(RuntimeError, match="already FAILED"):
+        deploy(NoConstructor, env)
+
+
+def test_a_failed_deploy_poisons_the_env() -> None:
+    """**A retry would hand the second instance the dead one's leftovers.**
+
+    The reviewer's repro, as a test: the failed constructor wrote `COUNT = 41`
+    and there is NO FRAME ROLLBACK in this model, so those bytes are still in
+    the store. On chain the deploy operation is atomic -- a failed deploy
+    publishes no instance and leaves no storage -- so a second deploy reading
+    that 41 is a tier-1-only state, which is the whole class the E7(ii) gate
+    exists to refuse. Poison, do not permit: the env is refused for good, and
+    the message names `Env()` as the remedy.
+    """
+    env = Env()
+    with pytest.raises(ConstructorFailed):
+        deploy(WritesThenRaises, env)
+
+    with pytest.raises(RuntimeError, match="already FAILED") as excinfo:
+        deploy(ReadsInTheConstructor, env)
+    assert "fresh Env()" in str(excinfo.value)
+    # ...for every class shape, and for a re-deploy of the same class.
+    with pytest.raises(RuntimeError, match="already FAILED"):
+        deploy(NoConstructor, env)
+    with pytest.raises(RuntimeError, match="already FAILED"):
+        deploy(WritesThenRaises, env)
+
+    # Nothing is deployed, so the frame refuses as well -- and the refusal now
+    # says WHY this env is unusable rather than just "deploy first".
+    with pytest.raises(RuntimeError, match="deploy") as frame_excinfo, env.frame():
+        pytest.fail("a frame opened on a poisoned Env")  # pragma: no cover
+    assert "already FAILED" in str(frame_excinfo.value)
+    with pytest.raises(RuntimeError, match="already FAILED"):
+        env.storage()
+
+    # A fresh Env is the remedy, and it starts empty: the leftovers were the
+    # poisoned env's, not the class's.
+    clean = Env()
+    deploy(ReadsInTheConstructor, clean)
+    with clean.frame():
+        assert clean.storage().instance().get(COUNT, U32) == U32(0)
 
 
 def test_a_failed_deploy_leaves_the_env_undeployed_and_unframed() -> None:
@@ -317,6 +433,14 @@ def test_a_bucket_captured_inside_a_frame_refuses_after_it_closes() -> None:
         bucket = env.storage().persistent()
         bucket.set(COUNT, U32(1))
         events = env.events()
+        ledger = env.ledger()
+    # The ledger is read-only, and gated all the same: `get_ledger_timestamp` is
+    # a host function, so reading one with no invocation open is the same
+    # impossible state as a write with no invocation to attribute it to.
+    with pytest.raises(RuntimeError, match="frame"):
+        ledger.timestamp()
+    with pytest.raises(RuntimeError, match="frame"):
+        ledger.sequence()
     with pytest.raises(RuntimeError, match="frame"):
         bucket.set(COUNT, U32(2))
     with pytest.raises(RuntimeError, match="frame"):
@@ -367,6 +491,27 @@ def test_a_frame_for_another_env_while_one_is_active_is_refused() -> None:
         # ...and the outer frame is untouched by the refusal.
         first.storage().instance().set(COUNT, U32(1))
     assert _frame.current() is None
+
+
+def test_deploy_is_refused_while_another_envs_frame_is_active() -> None:
+    """The deploy frame is a frame, so it obeys the same cross-env rule -- and it
+    obeys it for BOTH class shapes.
+
+    The constructor-less path has nothing to run, but it still enters and leaves
+    the frame: an early return that skipped it would have made a
+    constructor-less contract the one thing that could be deployed from inside
+    another contract's invocation, which is a cross-contract deploy and M1 has
+    no such thing.
+    """
+    first = Env()
+    deploy(NoConstructor, first)
+    with first.frame():
+        # The constructor-less shape...
+        with pytest.raises(RuntimeError, match="cross-contract"):
+            deploy(NoConstructor, Env())
+        # ...and the one that has a constructor to run.
+        with pytest.raises(RuntimeError, match="cross-contract"):
+            deploy(Counter, Env(), U32(1))
 
 
 def test_the_other_envs_accessors_are_refused_while_this_ones_frame_is_open() -> None:
