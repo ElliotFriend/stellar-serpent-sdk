@@ -150,6 +150,7 @@ def _sample_inventory() -> LiteralInventory:
         symbols_over_9=("counter_value", "some_symbol"),
         strings=("hello", "world"),
         bytes_literals=(b"\x01\x02\x03", b"\xff"),
+        address_strkeys=(),
         struct_key_descriptor_sets=(
             ("counter_limit", "display_name"),
             ("a", "bb", "ccc"),
@@ -171,12 +172,38 @@ def test_seed_is_deterministic_across_equal_but_distinct_inventories() -> None:
     assert mem_a.pool_bytes() == mem_b.pool_bytes()
 
 
+def test_seed_interns_address_strkeys_as_ascii_after_the_bytes_literals() -> None:
+    """Review B6: an `Address` literal's strkey is a pooled linear-memory blob.
+
+    `Address` has no small Val form, so a literal one is built by pooling its
+    strkey's ASCII bytes, calling `string_new_from_linear_memory`, and
+    converting with `strkey_to_address`. That blob has to come out of the
+    SEEDED pool like every other literal (E7): if `seed` skipped it, the
+    offset would instead be decided by whichever function body happened to be
+    lowered first, and pool offsets would stop being a pure function of the
+    inventory.
+    """
+    inv = LiteralInventory(
+        symbols_over_9=(),
+        strings=(),
+        bytes_literals=(b"\x01",),
+        address_strkeys=("GABC", "CDEF"),
+        struct_key_descriptor_sets=(),
+    )
+    mem = Memory()
+    mem.seed(inv)
+    # Bytes first, then the strkeys in inventory order -- ASCII, not UTF-16 or
+    # a decoded 32-byte payload: `strkey_to_address` takes the STRING.
+    assert mem.pool_bytes() == b"\x01" + b"GABC" + b"CDEF"
+
+
 def test_seed_dedupes_a_name_shared_between_a_string_and_a_descriptor_key() -> None:
     """A field name equal to an already-interned literal is stored once."""
     inv = LiteralInventory(
         symbols_over_9=(),
         strings=("shared",),
         bytes_literals=(),
+        address_strkeys=(),
         struct_key_descriptor_sets=(("shared",),),
     )
     mem = Memory()
@@ -207,6 +234,7 @@ def test_seed_never_re_sorts_an_adversarially_ordered_key_set() -> None:
         symbols_over_9=(),
         strings=(),
         bytes_literals=(),
+        address_strkeys=(),
         struct_key_descriptor_sets=(("zebra", "apple"),),
     )
     mem = Memory()
@@ -247,6 +275,7 @@ def test_seed_multi_category_inventory_exact_byte_layout() -> None:
         symbols_over_9=("abcdefghij",),
         strings=("hi",),
         bytes_literals=(b"\x01\x02",),
+        address_strkeys=(),
         struct_key_descriptor_sets=(("x", "yy"),),
     )
     mem = Memory()
@@ -295,6 +324,7 @@ def test_settings_descriptor_layout_self_snapshot() -> None:
         symbols_over_9=(),
         strings=(),
         bytes_literals=(),
+        address_strkeys=(),
         struct_key_descriptor_sets=(("counter_limit", "display_name"),),
     )
     mem = Memory()

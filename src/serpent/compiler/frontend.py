@@ -150,6 +150,16 @@ _SYMBOL_LM_FN = "symbol_new_from_linear_memory"
 _STRING_LM_FN = "string_new_from_linear_memory"
 _BYTES_LM_FN = "bytes_new_from_linear_memory"
 
+#: An `Address` literal's second host function (review B6). `Address` is a
+#: HOST_OBJECT-repr type with no small Val form and no linear-memory
+#: constructor of its OWN, so a literal one is built in two steps: pool the
+#: strkey's ASCII bytes and call `_STRING_LM_FN`, then convert that
+#: `StringObject` with `strkey_to_address` (`a.1`, whose `strkey` parameter
+#: documents accepting either a `BytesObject` or a `StringObject`). Both names
+#: are CERTAIN uses of an `Address` `Const` -- neither is a route D may choose
+#: against.
+_ADDRESS_FROM_STRKEY_FN = "strkey_to_address"
+
 #: Names sourced from the recognition table's own rows rather than restated
 #: (MJ-5): the struct constructor, and the struct field read's two functions.
 _STRUCT_NEW_FN = RECOGNIZED["struct.new"].host_fns[0]
@@ -214,6 +224,12 @@ class LiteralInventory:
       which are the only `Symbol`s that need `symbol_new_from_linear_memory`.
     * `strings` / `bytes_literals` -- every `String` and `Bytes`/`BytesN`
       literal; both host forms are linear-memory-only.
+    * `address_strkeys` -- every `Address` literal's strkey, as the ASCII text
+      the source spelled (review B6). Kept SEPARATE from `strings` even though
+      both are pooled as UTF-8: they are different authoring surfaces with
+      different lowerings (an `Address` literal needs
+      `strkey_to_address` after the string constructor), and folding one into
+      the other would make `strings` a claim that is no longer true.
     * `struct_key_descriptor_sets` -- one entry per distinct `@contracttype`
       field-name set, ALREADY in the P7 byte-string order `MakeStruct` fixed.
       `map_new_from_linear_memory` needs the key descriptors in that order at
@@ -224,6 +240,7 @@ class LiteralInventory:
     symbols_over_9: tuple[str, ...]
     strings: tuple[str, ...]
     bytes_literals: tuple[bytes, ...]
+    address_strkeys: tuple[str, ...]
     struct_key_descriptor_sets: tuple[tuple[str, ...], ...]
 
 
@@ -506,22 +523,27 @@ def _collect_host_fns(
         elif isinstance(node, MakeMap):
             note(_MAP_BUILD_FNS, node.loc, certain=False)
         elif isinstance(node, Const):
-            literal_fn = _literal_host_fn(node)
-            if literal_fn is not None:
-                note((literal_fn,), node.loc, certain=True)
+            note(_literal_host_fns(node), node.loc, certain=True)
 
     return frozenset(used), frozenset(reachable), locs
 
 
-def _literal_host_fn(node: Const) -> str | None:
-    """The linear-memory constructor `node` needs, or `None` for an immediate."""
+def _literal_host_fns(node: Const) -> tuple[str, ...]:
+    """The host functions `node`'s literal form needs; empty for an immediate.
+
+    A tuple rather than one optional name because of review B6's `Address`
+    case: its literal costs TWO calls (the string constructor, then
+    `strkey_to_address`), and both are certain.
+    """
     if node.ty.tag is TyTag.SYMBOL and isinstance(node.py_value, str):
-        return None if val.fits_symbol_small(node.py_value) else _SYMBOL_LM_FN
+        return () if val.fits_symbol_small(node.py_value) else (_SYMBOL_LM_FN,)
     if node.ty.tag is TyTag.STRING and isinstance(node.py_value, str):
-        return _STRING_LM_FN
+        return (_STRING_LM_FN,)
     if node.ty.tag in (TyTag.BYTES, TyTag.BYTES_N) and isinstance(node.py_value, bytes):
-        return _BYTES_LM_FN
-    return None
+        return (_BYTES_LM_FN,)
+    if node.ty.tag is TyTag.ADDRESS and isinstance(node.py_value, str):
+        return (_STRING_LM_FN, _ADDRESS_FROM_STRKEY_FN)
+    return ()
 
 
 # --- the protocol floor (B4/B5/S18, BL-1) -------------------------------------
@@ -624,6 +646,7 @@ def _collect_literals(ir: ModuleIR) -> LiteralInventory:
     symbols: set[str] = set()
     strings: set[str] = set()
     byte_literals: set[bytes] = set()
+    strkeys: set[str] = set()
     key_sets: set[tuple[str, ...]] = set()
     for node in walk(ir):
         if isinstance(node, Const):
@@ -634,6 +657,11 @@ def _collect_literals(ir: ModuleIR) -> LiteralInventory:
                 strings.add(node.py_value)
             elif node.ty.tag in (TyTag.BYTES, TyTag.BYTES_N) and isinstance(node.py_value, bytes):
                 byte_literals.add(node.py_value)
+            elif node.ty.tag is TyTag.ADDRESS and isinstance(node.py_value, str):
+                # Review B6: the strkey text, pooled as ASCII, is what
+                # `string_new_from_linear_memory` reads before
+                # `strkey_to_address` turns it into an `AddressObject`.
+                strkeys.add(node.py_value)
         elif isinstance(node, MakeStruct):
             # Already in P7's byte-string order -- recorded, never re-sorted.
             key_sets.add(tuple(name for name, _value in node.fields))
@@ -641,6 +669,7 @@ def _collect_literals(ir: ModuleIR) -> LiteralInventory:
         symbols_over_9=tuple(sorted(symbols)),
         strings=tuple(sorted(strings)),
         bytes_literals=tuple(sorted(byte_literals)),
+        address_strkeys=tuple(sorted(strkeys)),
         struct_key_descriptor_sets=tuple(sorted(key_sets)),
     )
 
@@ -675,6 +704,13 @@ def _needs_memory(ir: ModuleIR, literals: LiteralInventory, used: frozenset[str]
     supported.
     """
     if literals.symbols_over_9 or literals.strings or literals.bytes_literals:
+        return True
+    if literals.address_strkeys:
+        # Review B6: `Address` has no small Val form, so a literal one is
+        # ALWAYS a pooled strkey plus `string_new_from_linear_memory`. The
+        # `used` test below would settle it too; this row is here so the
+        # inventory alone answers the question, as it does for every other
+        # pooled literal.
         return True
     if literals.struct_key_descriptor_sets:
         return True

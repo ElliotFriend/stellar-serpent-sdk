@@ -103,7 +103,10 @@ class Memory:
         """Pre-intern every literal in ``literals``, IN INVENTORY ORDER (E7).
 
         Order: ``symbols_over_9`` (UTF-8), then ``strings`` (UTF-8), then
-        ``bytes_literals``, then -- for each entry of
+        ``bytes_literals``, then ``address_strkeys`` (UTF-8 -- a strkey is
+        ASCII, and it is the STRING that ``string_new_from_linear_memory``
+        reads before ``strkey_to_address`` converts it, review B6), then --
+        for each entry of
         ``struct_key_descriptor_sets`` in turn -- its descriptor blob: for
         every field name in that set's own (already-P7-sorted, C9) order,
         ``struct.pack("<II", intern(name_bytes), len(name_bytes))``,
@@ -123,6 +126,8 @@ class Memory:
             self.intern(s.encode("utf-8"))
         for b in literals.bytes_literals:
             self.intern(b)
+        for strkey in literals.address_strkeys:
+            self.intern(strkey.encode("utf-8"))
         for key_set in literals.struct_key_descriptor_sets:
             descriptor = bytearray()
             for field_name in key_set:

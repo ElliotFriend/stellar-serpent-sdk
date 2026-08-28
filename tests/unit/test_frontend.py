@@ -17,6 +17,8 @@ import pytest
 
 from serpent._host import functions_by_name
 from serpent._host._protocol import BASE_PROTOCOL, DEFAULT_TARGET_PROTOCOL
+from serpent._strkey import VERSION_ACCOUNT
+from serpent._strkey import encode as strkey_encode
 from serpent.compiler import codes, frontend
 from serpent.compiler.diagnostics import CompileError, Diagnostic, Loc, LocKind
 from serpent.compiler.frontend import CompiledModule, compile_module
@@ -257,7 +259,7 @@ def test_a_memoryless_contract_compiles_memoryless() -> None:
     # String/Bytes literal, a struct, or a static bulk construction.
     compiled = _compile(_MINIMAL)
     assert compiled.needs_memory is False
-    assert compiled.literals == frontend.LiteralInventory((), (), (), ())
+    assert compiled.literals == frontend.LiteralInventory((), (), (), (), ())
     assert compiled.host_fns_used == frozenset()
     assert compiled.runtime_parts_needed == frozenset()
 
@@ -285,6 +287,42 @@ def test_literal_inventory_collects_every_linear_memory_literal() -> None:
         "string_new_from_linear_memory",
         "bytes_new_from_linear_memory",
     } <= compiled.host_fns_used
+
+
+#: A structurally valid account strkey, built through `serpent._strkey` rather
+#: than pasted, so a re-pin of the checksum rules cannot leave a stale literal
+#: here that the oracle would reject at compile time.
+ADDRESS_STRKEY = strkey_encode(VERSION_ACCOUNT, bytes(range(32)))
+
+
+def test_address_literal_is_inventoried_and_names_both_host_fns() -> None:
+    """Review B6: an `Address` literal is a POOLED strkey, not an immediate.
+
+    An `Address` has no small Val form at all (`ReprForm.HOST_OBJECT`), so the
+    only way to build one from a literal is to pool the strkey's ASCII bytes,
+    hand them to `string_new_from_linear_memory`, and convert with
+    `strkey_to_address` (`a.1`). Both names are therefore CERTAIN uses, the
+    strkey is a linear-memory literal, and the module needs memory -- none of
+    which the inventory noticed before this test.
+    """
+    compiled = _compile(
+        f"""
+        from serpent import Address, Env, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> Address:
+                return Address("{ADDRESS_STRKEY}")
+        """
+    )
+    assert compiled.literals.address_strkeys == (ADDRESS_STRKEY,)
+    # The strkey is NOT a `String` literal: the two are pooled the same way but
+    # they are different authoring surfaces, and `strings` describes only the
+    # first.
+    assert compiled.literals.strings == ()
+    assert {"string_new_from_linear_memory", "strkey_to_address"} <= compiled.host_fns_used
+    assert compiled.needs_memory is True
 
 
 def test_wide_integer_arithmetic_names_its_guest_runtime_parts() -> None:
