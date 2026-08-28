@@ -2,9 +2,10 @@
 
 Ported **by copy** from `spikes/spike1/harness.py:143-158` (R5: `spikes/` is
 read-only evidence, never imported from). Two things were deliberately NOT
-copied: the spike's `OBJECT_CODE_UPPER_BOUND = 79` (stale -- `Val` facts come
-from `serpent.val`, never from a second transcription of the tag table), and the
-spike's `env.json` loader (F.1.17: bindings are looked up by name in
+copied: the spike's stale object-tag upper bound (a second, drifting
+transcription of the tag table -- `Val` facts come from `serpent.val`, and the
+number itself is deliberately not repeated here so a grep for it stays clean),
+and the spike's `env.json` loader (F.1.17: bindings are looked up by name in
 `serpent._host.functions_by_name`, the same pin the emitter compiles against, so
 a re-pin that moves an export code cannot silently mis-wire the harness into
 testing the wrong import).
@@ -36,10 +37,17 @@ def make_config() -> wasmtime.Config:
     write-only setters, and assigning an attribute that does not exist on the
     class silently succeeds -- so a plausible-looking `config.wasm_sign_extension
     = True` would leave the feature at wasmtime's default while reading as a
-    pin. `tests/unit/test_harness_engine.py` asserts every name set here is a
-    real descriptor, and asserts the resulting feature set BEHAVIOURALLY (probe
-    modules that must be rejected or accepted), because there is nothing to read
-    back.
+    pin. `tests/unit/test_harness_engine.py` asserts the set of names assigned
+    here EQUALS the expected list and that each is a real descriptor, and asserts
+    the resulting feature set BEHAVIOURALLY (probe modules that must be rejected
+    or accepted), because there is nothing to read back.
+
+    **How complete this pin can be.** Floating point and the extended-const
+    proposal have no wasmtime-48 Python toggle at all -- an f64 global and an
+    `(i32.const 1) (i32.const 2) i32.add` global initializer both instantiate
+    here and cannot be switched off. Those are the emitter's problem to never
+    emit, not this config's to forbid; every proposal the Python `Config` DOES
+    expose is pinned below, so this is as tight as the API allows.
     """
     config = wasmtime.Config()
     # relaxed-simd must go first: wasmtime refuses "simd off, relaxed-simd on"
@@ -56,10 +64,17 @@ def make_config() -> wasmtime.Config:
     # the wide-arithmetic proposal, so a module using it would run here and
     # trap on chain, the one direction a harness must never be wrong in.
     config.wasm_wide_arithmetic = False
-    # Not in the spike's list, and NOT off by wasmtime 48's default -- the
-    # behavioural second-memory probe is what found that. Soroban's wasmi
-    # accepts exactly one memory, so a two-memory module must be rejected here.
-    config.wasm_multi_memory = False
+    # --- chain-fidelity pins -------------------------------------------------
+    # None of these four are in the spike's frozen flag list, and every one of
+    # them is ON by wasmtime 48's default -- the behavioural probes are what
+    # found that, one module at a time. The chain's wasmi 0.31 accepts none of
+    # them, so leaving any at its default would give the harness a strictly
+    # laxer VM than the host: a module that runs green here and fails on chain,
+    # the one direction a rig like this must never be wrong in.
+    config.wasm_multi_memory = False  # Soroban allows exactly one memory
+    config.wasm_memory64 = False  # S23 lists memory64 OFF by name
+    config.wasm_exceptions = False  # `try_table` validates without this
+    config.wasm_gc = False  # a struct type in the type section, likewise
     # Enabled, matching the emitter's `wasm-tools validate --features=` line.
     config.wasm_bulk_memory = True
     return config
@@ -158,8 +173,14 @@ class MiniHost:
         self.errors.append(error)
         raise HostError(error)
 
-    def invoke(self, name: str, *vals: int) -> int:
+    def invoke(self, name: str, *vals: int) -> int | None:
         """Call an exported function with u64 `Val` words; return its raw u64 word.
+
+        Returns `None` for a `results=()` void helper (review M2, E11ii) rather
+        than tripping over `None & mask`: D's internal helpers are void, so
+        Tasks 5-9 will call this on functions that return nothing, and a
+        `TypeError` raised from inside the masking would be a baffling way to
+        learn that.
 
         The outbound `as_i64` is currently *defensive*: wasmtime 48 wraps an
         out-of-i64-range Python int itself, so deleting it changes no observable
@@ -171,4 +192,4 @@ class MiniHost:
         export = self._instance.exports(self._store)[name]
         assert isinstance(export, wasmtime.Func), f"export {name!r} is not a function"
         result = export(self._store, *(val.as_i64(v) for v in vals))
-        return val.as_u64(result)
+        return None if result is None else val.as_u64(result)

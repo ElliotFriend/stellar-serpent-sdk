@@ -68,7 +68,14 @@ _SEC_MEMORY = 5
 _SEC_CODE = 10
 
 _FUNCTYPE = 0x60
+_STRUCT_TYPE = 0x5F  # the GC proposal's struct type-section form
 _VALTYPE_V128 = 0x7B
+_VALTYPE_EXTERNREF = 0x6F
+
+_TRY_TABLE = 0x1F  # exception handling
+_RETURN_CALL = 0x12  # tail call
+_LIMITS_MIN_ONLY = 0x00
+_LIMITS_MEMORY64 = 0x04  # the memory64 proposal's limits flag
 
 _MISC_PREFIX = 0xFC  # the 0xFC-prefixed opcode space (bulk memory, wide arith)
 _MEMORY_FILL = 11  # bulk-memory proposal
@@ -186,8 +193,64 @@ def _wide_arithmetic_probe() -> bytes:
 
 def _two_memories_probe() -> bytes:
     """A module declaring two memories (the multi-memory proposal)."""
-    limits = b"\x00" + encode.uleb(1)
+    limits = bytes([_LIMITS_MIN_ONLY]) + encode.uleb(1)
     return _MAGIC + encode.section(_SEC_MEMORY, encode.vec([limits, limits]))
+
+
+def _memory64_probe() -> bytes:
+    """One memory declared with the memory64 limits flag (0x04).
+
+    S23 lists memory64 OFF by name, and wasmtime 48 defaults it ON -- so without
+    an explicit pin the harness would happily run 64-bit-addressed modules the
+    chain rejects.
+    """
+    limits = bytes([_LIMITS_MEMORY64]) + encode.uleb(1)
+    return _MAGIC + encode.section(_SEC_MEMORY, encode.vec([limits]))
+
+
+def _exceptions_probe() -> bytes:
+    """`() -> i64` opening a `try_table` with an empty catch vector.
+
+    Not named in S23, but excluded by the same argument as multi-memory: the
+    chain's wasmi 0.31 has no exception handling, so a module using it would run
+    green here and fail on chain.
+    """
+    body = (
+        bytes([_TRY_TABLE, opcodes.BLOCKTYPE_VOID])
+        + encode.vec([])  # no catch clauses
+        + bytes([opcodes.END])
+        + bytes([opcodes.I64_CONST])
+        + encode.sleb(0)
+        + bytes([opcodes.END])
+    )
+    return _one_function_module(_I64_RESULT_TYPE, _NO_LOCALS, body)
+
+
+def _gc_struct_type_probe() -> bytes:
+    """A type section declaring a GC struct type with no fields.
+
+    `wasm_gc` defaults ON and, unlike most of the GC surface, is NOT transitively
+    gated by `wasm_reference_types = False` -- verified by toggling `wasm_gc`
+    alone against this module. It needs its own pin.
+    """
+    return _MAGIC + encode.section(_SEC_TYPE, encode.vec([bytes([_STRUCT_TYPE]) + encode.vec([])]))
+
+
+def _externref_local_probe() -> bytes:
+    """`() -> i64` declaring one `externref` local (the reference-types proposal)."""
+    body = bytes([opcodes.I64_CONST]) + encode.sleb(0) + bytes([opcodes.END])
+    locals_decl = encode.vec([encode.uleb(1) + bytes([_VALTYPE_EXTERNREF])])
+    return _one_function_module(_I64_RESULT_TYPE, locals_decl, body)
+
+
+def _return_call_probe() -> bytes:
+    """`() -> i64` that tail-calls itself (the tail-call proposal).
+
+    Never executed -- there is no start section, and instantiation is the whole
+    assertion -- so the unbounded self-recursion is inert.
+    """
+    body = bytes([_RETURN_CALL]) + encode.uleb(0) + bytes([opcodes.END])
+    return _one_function_module(_I64_RESULT_TYPE, _NO_LOCALS, body)
 
 
 def _sign_extension_probe() -> bytes:
@@ -222,12 +285,39 @@ def _bulk_memory_probe() -> bytes:
 # --- make_config: structure ---------------------------------------------------
 
 
+#: Exactly the flags `make_config` is expected to set. Asserted as a SET
+#: EQUALITY, not a subset and not a count: `wasm_reference_types` and
+#: `wasm_tail_call` have behavioural probes below, but a bare ">= n" sentinel
+#: would let a deletion hide behind an addition elsewhere.
+_EXPECTED_CONFIG_FLAGS = frozenset(
+    {
+        "wasm_relaxed_simd",
+        "wasm_simd",
+        "wasm_multi_value",
+        "wasm_reference_types",
+        "wasm_tail_call",
+        "wasm_threads",
+        "wasm_wide_arithmetic",
+        "wasm_multi_memory",
+        "wasm_memory64",
+        "wasm_exceptions",
+        "wasm_gc",
+        "wasm_bulk_memory",
+    }
+)
+
+
 def _config_flag_assignments() -> list[str]:
     """The `config.<flag> = ...` names `make_config` sets, in source order.
 
     Read out of the AST rather than by calling `make_config` and inspecting the
     result, because `Config`'s feature properties are WRITE-ONLY: there is
     nothing to read back (review B2).
+
+    Only attributes of the `Config` object `make_config` itself builds are
+    collected -- the local it binds `wasmtime.Config()` to, found by looking for
+    that call rather than by assuming a name. Any other `something.attr = ...`
+    in the function would otherwise be miscounted as a feature flag.
     """
     tree = ast.parse(inspect.getsource(engine))
     fn = next(
@@ -235,12 +325,26 @@ def _config_flag_assignments() -> list[str]:
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "make_config"
     )
+    config_name = next(
+        target.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "Config"
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    )
     names: list[str] = []
     for node in ast.walk(fn):
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == config_name
+            ):
                 names.append(target.attr)
     return names
 
@@ -276,8 +380,17 @@ def test_every_configured_flag_is_a_real_config_property() -> None:
         f"make_config sets {unknown}, which are not properties of wasmtime.Config; "
         "the assignment silently succeeds and the feature is left at its default"
     )
-    assert "wasm_wide_arithmetic" in configured, "S13: the mul_wide_s ban is not optional"
-    assert len(configured) >= 8
+    assert len(configured) == len(set(configured)), f"a flag is set twice: {configured}"
+
+
+def test_the_configured_flag_set_is_exactly_the_expected_one() -> None:
+    """Set EQUALITY, so a deleted flag cannot hide behind an added one.
+
+    Several of these flags are also held in place behaviourally below, but not
+    all of them can be: `wasm_wide_arithmetic` is already off by wasmtime 48's
+    default, so only this assertion keeps S13's ban in the source at all.
+    """
+    assert set(_config_flag_assignments()) == _EXPECTED_CONFIG_FLAGS
 
 
 # --- make_config: behaviour ---------------------------------------------------
@@ -302,6 +415,26 @@ def test_wide_arithmetic_is_rejected() -> None:
 
 def test_multi_memory_is_rejected() -> None:
     _assert_gated(_two_memories_probe(), "a second memory")
+
+
+def test_memory64_is_rejected() -> None:
+    _assert_gated(_memory64_probe(), "a memory64 memory")
+
+
+def test_exception_handling_is_rejected() -> None:
+    _assert_gated(_exceptions_probe(), "try_table")
+
+
+def test_gc_types_are_rejected() -> None:
+    _assert_gated(_gc_struct_type_probe(), "a GC struct type")
+
+
+def test_reference_types_are_rejected() -> None:
+    _assert_gated(_externref_local_probe(), "an externref local")
+
+
+def test_tail_calls_are_rejected() -> None:
+    _assert_gated(_return_call_probe(), "return_call")
 
 
 def test_sign_extension_is_accepted() -> None:
@@ -508,6 +641,18 @@ def test_void_functions_are_supported() -> None:
     assert [e.name for e in module.exports] == ["nothing"]
 
 
+def test_invoking_a_void_export_returns_none() -> None:
+    """D's internal helpers are void (review M2), and Tasks 5-9 will call them.
+
+    Masking `None` would raise `TypeError: unsupported operand type(s) for &`
+    from inside `invoke` -- a baffling way to be told a function returns nothing.
+    """
+    fn = frame.Fn("nothing", 0, 0, ())
+    fn.ret()
+    wasm = testmod.build_test_module([("nothing", 0, 0, (), fn.finish())])
+    assert engine.MiniHost(wasm).invoke("nothing") is None
+
+
 def test_import_types_come_from_the_pin() -> None:
     """The import's module/field strings and arity are the pinned ones, not guesses."""
     wasm = testmod.build_test_module([], imports=["obj_cmp"])
@@ -625,16 +770,19 @@ def test_host_error_masks_a_negative_val() -> None:
 # --- binding discipline -------------------------------------------------------
 
 
-def test_no_export_code_is_hardcoded_in_the_harness() -> None:
-    """F.1.17: module/field strings come from the pin, never from a literal.
+def test_no_pinned_import_string_is_hardcoded_in_the_harness() -> None:
+    """F.1.17: BOTH halves of the import pair come from the pin, never a literal.
 
     The spike loaded its own `env.json`; this rig looks names up in
     `serpent._host.functions_by_name`, the same pin the emitter compiles
     against, so a re-pin that moves an export code cannot silently mis-wire the
-    harness into testing the wrong import.
+    harness into testing the wrong import. The module string is checked as well
+    as the field: it is a single character at this pin, exactly the kind of value
+    that gets inlined "because it never changes".
     """
     source = inspect.getsource(engine) + inspect.getsource(testmod)
     for name in ("obj_cmp", "fail_with_error", "get_ledger_sequence"):
-        code = functions_by_name[name].export
-        assert f'"{code}"' not in source, f"{name}'s export code {code!r} is hardcoded"
-        assert f"'{code}'" not in source, f"{name}'s export code {code!r} is hardcoded"
+        host_fn = functions_by_name[name]
+        for label, literal in (("module", host_fn.module), ("export code", host_fn.export)):
+            assert f'"{literal}"' not in source, f"{name}'s {label} {literal!r} is hardcoded"
+            assert f"'{literal}'" not in source, f"{name}'s {label} {literal!r} is hardcoded"
