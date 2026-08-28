@@ -21,7 +21,8 @@ the five things dossier SS C.2 says C must hand sub-plan D "beyond the tree":
     validate_limits        the SPT5xxx band, pre-empted against the AST (S12)
     check_declarations     structs/enums/events/consts/signatures + call graph
     per function:          FuncCtx  ->  check_function_body  ->  FuncIR
-    protocol floor         declared_protocol over the reachable host-fn set
+    protocol floor         declared_protocol over the reachable host-fn set,
+                           raised by the FEATURE gates (`_resolve_protocol`)
 
 Everything reports into ONE sink, so a 200-line contract yields every problem
 in a single `CompileError` sorted by location (E16) rather than one per run.
@@ -83,6 +84,7 @@ from typing import Any
 
 from serpent import val
 from serpent._host._protocol import (
+    CONSTRUCTOR_MIN_PROTOCOL,
     DEFAULT_TARGET_PROTOCOL,
     ProtocolGateError,
     check_protocol_target,
@@ -99,6 +101,7 @@ from serpent.compiler.ir import (
     ContractIR,
     FieldGet,
     FuncIR,
+    FuncKind,
     HostCall,
     IfExp,
     IRNode,
@@ -352,7 +355,14 @@ def compile_module(source: str, path: str, *, target_protocol: int | None = None
     ir = _build_module_ir(loaded, declarations, sink)
 
     used, reachable, host_fn_locs = _collect_host_fns(ir)
-    protocol = _resolve_protocol(reachable, target_protocol, host_fn_locs, path, sink)
+    protocol = _resolve_protocol(
+        reachable,
+        target_protocol,
+        host_fn_locs,
+        path,
+        sink,
+        constructor_loc=_constructor_loc(ir),
+    )
 
     sink.raise_if_any()
     _assert_no_invalid_ir(ir)
@@ -493,6 +503,20 @@ def _flat_functions(ir: ModuleIR) -> tuple[FuncIR, ...]:
     return (*methods, *ir.helpers)
 
 
+def _constructor_loc(ir: ModuleIR) -> Loc | None:
+    """The `__init__` definition's `Loc`, or `None` if the module has none.
+
+    The ASSEMBLY is asked, not the AST or the loader: `FuncKind.CONSTRUCTOR` is
+    the decision `decls.py` already recorded (there is exactly one, and only a
+    `@contract` method can carry it), so nothing here re-derives "is this a
+    constructor" from a name. The `Loc` rather than a bare `bool` is returned
+    because the diagnostic the feature gate can raise must point AT the
+    `__init__` that needs the higher protocol (P2).
+    """
+    methods = ir.contract.methods if ir.contract is not None else ()
+    return next((f.loc for f in methods if f.kind is FuncKind.CONSTRUCTOR), None)
+
+
 # --- the host-function sets (SS C.2 output 1) ---------------------------------
 
 
@@ -631,7 +655,17 @@ def _literal_host_fns(node: Const) -> tuple[str, ...]:
 
 _GATE_HELP = (
     "raise the build's target protocol, or use a surface available at it -- the declared "
-    "protocol is computed from the host functions the contract reaches, never hand-set"
+    "protocol is computed from the host functions and gated features the contract reaches, "
+    "never hand-set"
+)
+
+#: The one FEATURE gate's help: there is no lower-protocol spelling of a
+#: constructor to suggest, so the second arm is "drop it", not "use another
+#: surface".
+_CONSTRUCTOR_GATE_HELP = (
+    f"raise the build's target protocol to {CONSTRUCTOR_MIN_PROTOCOL} or higher, or remove the "
+    "contract's `__init__` and initialize from an ordinary method -- the declared protocol is "
+    "computed from the host functions and gated features the contract reaches, never hand-set"
 )
 
 
@@ -641,8 +675,10 @@ def _resolve_protocol(
     locs: dict[str, Loc],
     path: str,
     sink: Diagnostics,
+    *,
+    constructor_loc: Loc | None,
 ) -> int:
-    """`declared_protocol(reachable, target_protocol)`, or `SPT6001`.
+    """`declared_protocol(reachable, target_protocol)` plus the feature gates, or `SPT6001`.
 
     `_host.declared_protocol` is THE value D writes into `build_env_meta`
     (B4), so it is called rather than reimplemented -- including its `is None`
@@ -656,10 +692,21 @@ def _resolve_protocol(
     diagnostic -- reusing `check_protocol_target` rather than re-deriving which
     names offend -- and the aggregate message (B5's documented shape, naming
     every offender with its min/max) rides along on whichever one is reported.
+
+    **This is THE feature-gate seam.** IMPORT gates -- a host function whose
+    binding carries a `min_protocol`/`max_protocol` -- come from
+    `declared_protocol` and are the only kind `_host` can compute, because it
+    only ever sees names from `HOST_FUNCTIONS`. A FEATURE gate is a capability
+    the module uses that is NOT a host-function import, so no binding carries
+    it and only the frontend knows whether the module used it; such gates are
+    applied HERE, on top of the import answer, by `_apply_feature_gates`.
+    `__constructor` (spec SS 13, protocol >= 22, CAP-0058) is the first and
+    currently the only one -- a future gate joins that function rather than
+    re-deriving this composition.
     """
     names = sorted(reachable)
     try:
-        return declared_protocol(names, target_protocol)
+        resolved = declared_protocol(names, target_protocol)
     except KeyError as exc:
         # `declared_protocol` looks every name up in the pinned bindings (B2)
         # and raises `KeyError` naming the one it could not find. That means C
@@ -683,10 +730,55 @@ def _resolve_protocol(
             f"{_INTENT['SPT6001']}: {exc}",
             help=_GATE_HELP,
         )
+    else:
+        return _apply_feature_gates(
+            resolved, target_protocol, sink, constructor_loc=constructor_loc
+        )
     # A gated compile never reaches sub-plan D (the sink is non-empty, so
     # `compile_module` raises), and returning the floor-ignoring target keeps
     # this function total rather than inventing a protocol.
     return target_protocol if target_protocol is not None else DEFAULT_TARGET_PROTOCOL
+
+
+def _apply_feature_gates(
+    resolved: int,
+    target_protocol: int | None,
+    sink: Diagnostics,
+    *,
+    constructor_loc: Loc | None,
+) -> int:
+    """The import-gate answer, raised (or rejected) by the FEATURE gates.
+
+    One gate today, `__constructor` (spec SS 13's reserved-name row, dossier
+    S26, CAP-0058): the host only honors the reserved export from protocol
+    `CONSTRUCTOR_MIN_PROTOCOL`, so bytes declaring less than that with a
+    `__constructor` in them would deploy on an older network and simply never
+    run the constructor. Three arms, matching the import gates' own shape:
+
+    * no explicit target -- the computed floor RISES to the gate, since S18's
+      "computed, never hand-set" only stays honest if the computation sees
+      every gated capability the module uses, not only its imports;
+    * an explicit target at or above the gate -- returned verbatim; the target
+      already clears it, and "users may raise, never lower" (B4/S6) holds;
+    * an explicit target below the gate -- a located `SPT6001` at the
+      `__init__` that needs the higher protocol, exactly as a gated host
+      function is reported at the call that reached it.
+    """
+    if constructor_loc is None:
+        return resolved
+    if target_protocol is None:
+        return max(resolved, CONSTRUCTOR_MIN_PROTOCOL)
+    if target_protocol < CONSTRUCTOR_MIN_PROTOCOL:
+        sink.error(
+            "SPT6001",
+            constructor_loc,
+            f"{_INTENT['SPT6001']}: a contract with a constructor requires protocol "
+            f">= {CONSTRUCTOR_MIN_PROTOCOL} (CAP-0058), but the build's target protocol is "
+            f"{target_protocol} -- `__init__` compiles to the reserved `__constructor` export, "
+            f"which the host does not honor below {CONSTRUCTOR_MIN_PROTOCOL}",
+            help=_CONSTRUCTOR_GATE_HELP,
+        )
+    return resolved
 
 
 def _report_gate_offenders(

@@ -647,16 +647,38 @@ def test_sandbox_hello_world_refuses_the_unimaginative_greeting() -> None:
 # ===========================================================================
 
 
+#: The fixtures with an `__init__`, i.e. a `__constructor` export. The host
+#: only honors that reserved name from protocol 22 (spec SS 13 / CAP-0058), so
+#: the computed floor over these is 22 even though nothing they IMPORT is gated
+#: -- see `test_every_fixture_instantiates_and_declares_the_protocol_floor`.
+CONSTRUCTOR_BEARING: frozenset[Path] = frozenset(
+    {TOKEN_STYLE, TOKEN_STYLE_CANONICAL, SANDBOX_HELLO_WORLD, EXAMPLE_ERRORS}
+)
+
+
 @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)
 def test_every_fixture_instantiates_and_declares_the_protocol_floor(path: Path) -> None:
     """Every fixture links under the full mini host and declares the computed
-    floor. `declared_protocol == 20` for all of them is not a coincidence
-    worth hiding: none of them reaches a protocol-gated host function, so the
-    floor is `BASE_PROTOCOL`, and a fixture that started declaring something
-    else would mean a gated function crept into one of them."""
+    floor -- and the floor SPLITS, which is the property worth stating.
+
+    None of these fixtures reaches a protocol-gated host function, so their
+    IMPORT floor is `BASE_PROTOCOL` (20) across the board; a fixture that
+    started declaring something higher for an import reason would mean a gated
+    function crept into one of them. But the floor also counts FEATURE gates
+    (2026-08-28 ruling): a `__constructor` export needs protocol 22 (spec SS 13
+    / CAP-0058), so the four constructor-bearing fixtures declare 22 and the
+    constructor-less four declare 20. Both halves are asserted, and which half
+    a fixture is in is derived from its own IR rather than restated, so adding
+    an `__init__` to a fixture cannot silently drop it out of the pin.
+    """
     built, _host, _mini = start(path)
-    assert built.declared_protocol == 20
     assert built.target_protocol is None
+
+    # `__constructor` in the ASSEMBLED exports is the derivation: it is the
+    # export name the gate is about, read back off the bytes.
+    has_constructor = "__constructor" in built.exports
+    assert has_constructor == (path in CONSTRUCTOR_BEARING), (path.stem, has_constructor)
+    assert built.declared_protocol == (22 if has_constructor else 20)
 
 
 @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)

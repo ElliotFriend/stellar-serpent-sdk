@@ -223,10 +223,15 @@ def test_token_style_spec_inputs_keep_events_separate(token_style: CompiledModul
     assert not set(spec_inputs.events) & set(spec_inputs.declared_types_in_order)
 
 
-def test_token_style_declares_the_base_protocol(token_style: CompiledModule) -> None:
-    # Nothing token_style reaches is gated above the base, so the COMPUTED
-    # floor (never hand-set, S18) is the base itself.
-    assert token_style.declared_protocol == BASE_PROTOCOL
+def test_token_style_declares_the_constructor_gate(token_style: CompiledModule) -> None:
+    # Nothing token_style IMPORTS is gated above the base, so its import floor
+    # is `BASE_PROTOCOL` -- but it has an `__init__`, and `__constructor` is a
+    # capability the host only honors from protocol 22 (spec SS 13 / CAP-0058).
+    # The COMPUTED floor (never hand-set, S18) sees both kinds of gate.
+    from serpent._host import CONSTRUCTOR_MIN_PROTOCOL, compute_protocol_floor
+
+    assert compute_protocol_floor(token_style.host_fns_reachable) == BASE_PROTOCOL
+    assert token_style.declared_protocol == CONSTRUCTOR_MIN_PROTOCOL == 22
 
 
 def test_token_style_module_level_facts(token_style: CompiledModule) -> None:
@@ -595,6 +600,86 @@ def _expect_reject_kwargs(source: str, code: str, **kwargs: Any) -> CompileError
     return info.value
 
 
+# --- the constructor FEATURE gate (2026-08-28 ruling; spec SS 13 / CAP-0058) --
+
+_WITH_CONSTRUCTOR = """
+from serpent import Env, U32, Symbol, contract
+
+
+@contract
+class C:
+    def __init__(self, env: Env, start: U32) -> None:
+        env.storage().instance().set(Symbol("N"), start)
+
+    def go(self, env: Env) -> U32:
+        return env.storage().instance().get(Symbol("N"), U32)
+"""
+
+
+def test_the_constructor_min_protocol_constant_is_pinned_with_its_citation() -> None:
+    # Spec SS 13's "`__constructor` (protocol >= 22 ...)" row (dossier S26,
+    # CAP-0058). The constant lives with the other protocol facts, next to
+    # BASE_PROTOCOL and DEFAULT_TARGET_PROTOCOL, and is re-exported.
+    from serpent import _host
+    from serpent._host import _protocol
+
+    assert _protocol.CONSTRUCTOR_MIN_PROTOCOL == 22
+    assert _host.CONSTRUCTOR_MIN_PROTOCOL == 22
+    assert _protocol.CONSTRUCTOR_MIN_PROTOCOL > BASE_PROTOCOL
+    assert _protocol.CONSTRUCTOR_MIN_PROTOCOL <= DEFAULT_TARGET_PROTOCOL
+
+
+def test_a_constructor_raises_the_floor_to_twenty_two_with_no_target() -> None:
+    # The import floor over what this module reaches is 20 (nothing it touches
+    # is gated), but `__constructor` is an EXPORT-name capability the host only
+    # honors from protocol 22 -- so the honest declaration is 22.
+    from serpent._host import compute_protocol_floor
+
+    compiled = _compile(_WITH_CONSTRUCTOR)
+    assert any(f.kind is FuncKind.CONSTRUCTOR for f in compiled.functions)
+    assert compute_protocol_floor(compiled.host_fns_reachable) == BASE_PROTOCOL
+    assert compiled.declared_protocol == 22
+
+
+def test_a_constructor_bearing_modules_env_meta_bytes_declare_twenty_two() -> None:
+    from serpent.spec import build_env_meta
+
+    compiled = _compile(_WITH_CONSTRUCTOR)
+    assert build_env_meta(compiled.declared_protocol) == build_env_meta(22)
+    assert build_env_meta(compiled.declared_protocol) != build_env_meta(BASE_PROTOCOL)
+
+
+def test_an_explicit_target_above_the_constructor_gate_is_returned_verbatim() -> None:
+    # The target already clears the gate, so nothing is raised and nothing is
+    # rejected: "users may raise, never lower" (B4/S6).
+    compiled = _compile(_WITH_CONSTRUCTOR, target_protocol=27)
+    assert compiled.declared_protocol == 27
+
+
+def test_an_explicit_target_below_the_constructor_gate_is_located_spt6001() -> None:
+    exc = _expect_reject_kwargs(_WITH_CONSTRUCTOR, "SPT6001", target_protocol=21)
+    gate = next(d for d in exc.diagnostics if d.code == "SPT6001")
+    assert "constructor" in gate.message
+    assert "22" in gate.message and "CAP-0058" in gate.message
+    # Located at the `__init__` definition -- the thing that needs 22 -- not at
+    # the whole file (P2: a real span whenever one exists).
+    assert gate.loc.kind is LocKind.NODE
+    assert gate.loc.line == (
+        _WITH_CONSTRUCTOR.strip()
+        .splitlines()
+        .index("    def __init__(self, env: Env, start: U32) -> None:")
+        + 1
+    )
+
+
+def test_a_constructor_less_module_still_declares_the_import_floor() -> None:
+    # The counterpart pin: the feature gate must not raise a module that has no
+    # constructor, at any target.
+    compiled = _compile(_MINIMAL)
+    assert not any(f.kind is FuncKind.CONSTRUCTOR for f in compiled.functions)
+    assert compiled.declared_protocol == BASE_PROTOCOL
+
+
 # --- SPT6xxx wired end to end through a fake gated HostFn -------------------
 
 _RAISES = """
@@ -666,8 +751,24 @@ def test_a_gated_pinned_host_fn_also_maps_to_spt6001(monkeypatch: pytest.MonkeyP
 
 
 def test_spt6001_is_allowlisted_with_its_reason() -> None:
+    """The row survives the 2026-08-28 constructor-floor ruling, and the reason
+    now says which of the two gate kinds is un-fixturable and why.
+
+    The ruling gave SPT6001 a real source-level trigger for the first time: a
+    contract with an `__init__` and a `target_protocol` below 22. But
+    `target_protocol` is a `compile_module` KEYWORD, and a `tests/must_reject/`
+    fixture is only ever compiled at the default (`None`) -- so the code still
+    cannot be tripped by any fixture, and the row stays. What changed is that
+    "no gated authoring surface" stopped being true, so the reason string may
+    not say it.
+    """
     assert "SPT6001" in codes.NO_FIXTURE_ALLOWLIST
-    assert codes.NO_FIXTURE_REASONS["SPT6001"].startswith("no gated authoring surface at M1-C")
+    reason = codes.NO_FIXTURE_REASONS["SPT6001"]
+    assert reason.startswith("no fixture-reachable trigger")
+    assert "target_protocol" in reason
+    assert "constructor" in reason
+    # The claim the ruling falsified must be gone, not merely qualified.
+    assert "no gated authoring surface" not in reason
 
 
 def test_an_unpinned_host_fn_name_is_a_compiler_bug(monkeypatch: pytest.MonkeyPatch) -> None:

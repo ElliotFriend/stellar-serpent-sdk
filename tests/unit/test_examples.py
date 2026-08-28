@@ -46,6 +46,7 @@ import pytest
 
 from serpent import val
 from serpent.compiler.frontend import compile_module
+from serpent.compiler.ir import FuncKind
 from serpent.env import ConstructorFailed, Env, deploy
 from serpent.errors import ContractError
 from serpent.types import U32, Address, String
@@ -104,10 +105,22 @@ def test_examples_is_a_flat_directory_of_modules() -> None:
 def test_every_example_compiles(path: Path) -> None:
     """Leg 1 of the triple. A returned `CompiledModule` is the no-diagnostics
     claim (its own docstring: "anything else raised `CompileError`"), and the
-    module really declares a contract rather than compiling to nothing."""
+    module really declares a contract rather than compiling to nothing.
+
+    The declared protocol is the COMPUTED floor over both kinds of gate: no
+    example reaches a gated host function, so the import floor is 20 for all
+    three -- but `errors.py` has an `__init__`, and `__constructor` is a
+    capability the host only honors from protocol 22 (spec SS 13 / CAP-0058), so
+    it declares 22. The split is derived from the module's own IR rather than
+    listed by name, so adding an `__init__` to an example cannot silently
+    invalidate the pin.
+    """
     compiled = compile_module(path.read_text(encoding="utf-8"), str(path))
-    assert compiled.ir.contract is not None
-    assert compiled.declared_protocol == 20
+    contract = compiled.ir.contract
+    assert contract is not None
+    has_constructor = any(m.kind is FuncKind.CONSTRUCTOR for m in contract.methods)
+    assert has_constructor == (path.stem == "errors"), (path.stem, has_constructor)
+    assert compiled.declared_protocol == (22 if has_constructor else 20)
 
 
 # ===========================================================================

@@ -977,8 +977,11 @@ NO_FIXTURE_REASONS: dict[str, str] = {
         "emitted"
     ),
     "SPT6001": (
-        "no gated authoring surface at M1-C; band wired end-to-end via a "
-        "synthetic-bindings unit test (Task 10)"
+        "no fixture-reachable trigger: no host function the frontend emits is gated above "
+        "the base protocol (that arm is wired end-to-end via a synthetic-bindings unit "
+        "test, Task 10), and the one FEATURE gate -- a contract with a constructor needs "
+        "protocol >= 22, CAP-0058 -- fires only against an explicit target_protocol, which "
+        "is a compile_module keyword a must_reject fixture cannot set"
     ),
     "SPT7003": (
         "unreachable end-to-end: CPython's compile() rejects break/continue outside a "
