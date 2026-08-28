@@ -12,6 +12,8 @@ U256/I256 are deliberately absent (deferred to M2, per the amended spec).
 `Bytes64` and the `bytes_n(n)` factory.
 """
 
+import pytest
+
 import serpent
 from tests.fixtures import token_style
 
@@ -27,6 +29,7 @@ EXPECTED_ALL = [
     "U32",
     "U64",
     "U128",
+    "AbiCheckFailed",
     "Address",
     "ArithmeticOverflow",
     "BadArgument",
@@ -40,6 +43,7 @@ EXPECTED_ALL = [
     "Env",
     "Event",
     "Map",
+    "MissingValue",
     "String",
     "Symbol",
     "Timepoint",
@@ -65,6 +69,18 @@ def test_every_name_in_all_is_actually_importable() -> None:
 
 def test_version_string() -> None:
     assert serpent.__version__ == "0.0.1"
+
+
+def test_missing_value_and_abi_check_failed_are_catchable_off_the_root() -> None:
+    """M4: an author writes `except serpent.MissingValue`, never
+    `except serpent.errors.MissingValue` -- `serpent.errors` is an
+    implementation seam, not the documented surface (module docstring)."""
+    assert issubclass(serpent.MissingValue, serpent.ContractError)
+    assert issubclass(serpent.AbiCheckFailed, serpent.ContractError)
+    with pytest.raises(serpent.MissingValue):
+        raise serpent.MissingValue()
+    with pytest.raises(serpent.AbiCheckFailed):
+        raise serpent.AbiCheckFailed()
 
 
 def test_u256_i256_and_bytesn_are_not_exported() -> None:

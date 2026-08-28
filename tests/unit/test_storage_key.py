@@ -9,7 +9,7 @@ net -- no wasm, no harness, no host at all.
 """
 
 from serpent.decorators import contracttype
-from serpent.types import U32, Address, Bool, Map, Symbol, Vec
+from serpent.types import U32, Address, Bool, Bytes, Bytes32, Map, Symbol, Vec
 from serpent.types._storage_key import storage_key
 
 ADDRESS_A = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
@@ -19,6 +19,14 @@ ADDRESS_B = "GAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPSABOV"
 @contracttype
 class BalanceKey:
     owner: Address
+
+
+@contracttype
+class Point:
+    """A multi-field struct with no nested containers -- the plainest S9 case."""
+
+    x: U32
+    y: U32
 
 
 @contracttype
@@ -158,3 +166,81 @@ def test_recursion_through_vec_and_map_inside_a_struct() -> None:
     assert storage_key(a) == storage_key(b)
     assert storage_key(a) != storage_key(c)
     hash(storage_key(a))
+
+
+# --- coverage (review M3) ---------------------------------------------------
+
+
+def test_bytes32_and_bytes_with_equal_payloads_collapse_to_one_key() -> None:
+    """D5: `Bytes32`/`Bytes64` are the SAME `ScVal` case as `Bytes`
+    (`_SCVAL_RANK` is inherited, not restated), so a fixed-length value and a
+    plain `Bytes` with the same payload are one storage key, exactly as tier
+    1's own `__eq__` treats them."""
+    payload = bytes(range(32))
+    assert storage_key(Bytes32(payload)) == storage_key(Bytes(payload))
+    assert storage_key(Bytes32(payload)) != storage_key(Bytes(payload[:-1]))
+
+
+def test_multi_field_struct_normalizes_identically_to_its_equivalent_map() -> None:
+    """S9 with more than one field: order in the struct's own declaration
+    must not matter, since the equivalent map is a `frozenset` of pairs."""
+    point_key = storage_key(Point(x=U32(1), y=U32(2)))
+    equivalent_map = Map(Symbol, U32, [(Symbol("x"), U32(1)), (Symbol("y"), U32(2))])
+    assert point_key == storage_key(equivalent_map)
+    # Order-independent on the MAP side too, since it is a frozenset.
+    reordered_map = Map(Symbol, U32, [(Symbol("y"), U32(2)), (Symbol("x"), U32(1))])
+    assert point_key == storage_key(reordered_map)
+
+
+def test_empty_vec_and_empty_map_produce_stable_hashable_keys() -> None:
+    assert storage_key(Vec(U32, [])) == storage_key(Vec(U32, []))
+    assert storage_key(Vec(U32, [])) != storage_key(Vec(U32, [U32(1)]))
+    hash(storage_key(Vec(U32, [])))
+
+    assert storage_key(Map(Symbol, U32)) == storage_key(Map(Symbol, U32, []))
+    assert storage_key(Map(Symbol, U32)) != storage_key(Map(Symbol, U32, [(Symbol("a"), U32(1))]))
+    hash(storage_key(Map(Symbol, U32)))
+
+
+def test_symbol_keys_agree_past_the_small_symbol_length_boundary() -> None:
+    """`storage_key` works purely at the tier-1 value level and never encodes
+    a `Val`, so the 9-character `SymbolSmall` boundary (`to_val()`'s own
+    `NotImplementedError` past it) has no bearing on it at all."""
+    long_a = Symbol("a_very_long_symbol_name")
+    long_b = Symbol("a_very_long_symbol_name")
+    assert len(long_a.text) > 9
+    assert long_a is not long_b
+    assert storage_key(long_a) == storage_key(long_b)
+    assert storage_key(long_a) != storage_key(Symbol("a_different_long_name"))
+
+
+def test_struct_as_a_map_value_recurses_too() -> None:
+    """Ruling MJ-7's widened `Map`-VALUE bound (a struct, not just a chain
+    value) applies at the key level too: two maps holding equal-but-distinct
+    struct values are one key, and differing struct values are not."""
+    same_a = Map(Symbol, BalanceKey, [(Symbol("k"), BalanceKey(owner=Address(ADDRESS_A)))])
+    same_b = Map(Symbol, BalanceKey, [(Symbol("k"), BalanceKey(owner=Address(ADDRESS_A)))])
+    different = Map(Symbol, BalanceKey, [(Symbol("k"), BalanceKey(owner=Address(ADDRESS_B)))])
+    assert storage_key(same_a) == storage_key(same_b)
+    assert storage_key(same_a) != storage_key(different)
+    hash(storage_key(same_a))
+
+
+def test_none_normalizes_to_the_void_rank_with_no_payload() -> None:
+    """Review M2: `Void`'s A8 rank (1) with no payload -- a legitimate value
+    for an `X | None` struct field to hold, not an authoring error."""
+    assert storage_key(None) == (1,)
+    assert storage_key(None) == storage_key(None)
+    hash(storage_key(None))
+
+
+def test_an_option_field_none_vs_set_produces_a_different_struct_key() -> None:
+    @contracttype
+    class WithOptional:
+        owner: Address | None
+
+    unset_a = WithOptional(owner=None)
+    unset_b = WithOptional(owner=None)
+    set_ = WithOptional(owner=Address(ADDRESS_A))
+    assert storage_key(unset_a) == storage_key(unset_b)
+    assert storage_key(unset_a) != storage_key(set_)

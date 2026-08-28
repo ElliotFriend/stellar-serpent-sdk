@@ -195,9 +195,14 @@ _NUMERIC_FORMS: dict[type, tuple[int, int]] = {
 }
 
 #: Every tag `chain_value` can answer for, other than the two container tags
-#: and `SymbolSmall` (which `map_key` normalizes to its text before it gets
-#: here). A tag outside this set has no tier-1 model at all.
-_MODELLED_TAGS = frozenset(_NUMERIC_BY_TAG) | _PAYLOAD_TAGS | {val.TAG_FALSE, val.TAG_TRUE}
+#: and `Void` (handled separately in `map_key`, since `chain_value` has no
+#: model for it at all -- `storage_key(None)` stands in for it instead, review
+#: I1/M2). `SymbolSmall` IS included: `chain_value` answers for it, and
+#: `map_key` used to short-circuit it to bare text before reaching this set --
+#: it no longer does (I1), so nothing about that special case belongs here now.
+_MODELLED_TAGS = (
+    frozenset(_NUMERIC_BY_TAG) | _PAYLOAD_TAGS | {val.TAG_FALSE, val.TAG_TRUE, val.TAG_SYMBOL_SMALL}
+)
 
 
 class ObjectStore:
@@ -414,19 +419,26 @@ class ObjectStore:
         this module's docstring for the struct-storage-key bug a handle-keyed
         store produces):
 
-        * a `Symbol` becomes its TEXT, whether it arrived as a `SymbolSmall`
-          immediate or as a handle -- so a map built through
-          `map_new_from_linear_memory` (whose keys are name bytes) and one built
-          through `map_put` (whose keys are `Val`s) answer `map_get` the same;
         * a vec or a map becomes its CONTENTS, recursively (a `frozenset` for a
           map, so entry order cannot matter) -- this is the struct-key case;
-        * every other modelled value delegates to `types._storage_key.storage_key`
-          (M-2: the value-level twin of this word-level decode) applied to the
-          decoded `chain_value`, which normalizes to `(rank, payload)` --
-          collapsing the small and object forms of one number to one key and
-          making `Bytes32` and `Bytes` with equal payloads one key, exactly as
-          tier 1's own `__eq__` does;
-        * a value with no tier-1 model (`Void`, `Error`, the 256-bit family)
+        * `Void` becomes `storage_key(None)` (`(1,)`, A8's Void rank with no
+          payload) -- a struct field typed `X | None` can hold it, and review
+          M2 requires it to key identically to `_storage_key.storage_key`'s
+          own Void rule, not to fall back to the "no tier-1 model" case below;
+        * every OTHER modelled value -- including `Symbol`, whether it arrived
+          as a `SymbolSmall` immediate or as a handle -- delegates to
+          `types._storage_key.storage_key` (M-2: the value-level twin of this
+          word-level decode) applied to the decoded `chain_value`. This is
+          review I1: `chain_value` already unifies the small and object forms
+          of a `Symbol` (and every other modelled scalar) into ONE tier-1
+          instance, so routing both through the SAME function tier 1 uses
+          means a map built through `map_new_from_linear_memory` (whose keys
+          are name bytes) and one built through `map_put` (whose keys are
+          `Val`s) do not just answer `map_get` the same as EACH OTHER, they
+          answer it the same as `storage_key` would for the equivalent tier-1
+          value -- one definition of key equality, not two that happen to
+          agree within this rig;
+        * a value with no tier-1 model at all (`Error`, the 256-bit family)
           keeps its raw word. Canonical for every one of those that has a
           single encoding, and the alternative would be to invent an equality
           A9 says this rig does not have.
@@ -436,17 +448,15 @@ class ObjectStore:
         """
         tag = val.tag_of(word)
         key: object
-        if tag == val.TAG_SYMBOL_SMALL:
-            key = val.symbol_small_text(word)
-        elif tag == val.TAG_SYMBOL_OBJECT:
-            key = self.text_of(word)
-        elif tag == val.TAG_VEC_OBJECT:
+        if tag == val.TAG_VEC_OBJECT:
             key = ("vec", tuple(self.map_key(item) for item in self._vec(word)))
         elif tag == val.TAG_MAP_OBJECT:
             key = (
                 "map",
                 frozenset((entry, self.map_key(value)) for entry, value in self._map(word).items()),
             )
+        elif tag == val.TAG_VOID:
+            key = storage_key(None)
         elif tag in _MODELLED_TAGS:
             key = storage_key(self.chain_value(word))
         else:

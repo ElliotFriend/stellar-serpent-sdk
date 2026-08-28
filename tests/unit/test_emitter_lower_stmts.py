@@ -571,7 +571,7 @@ def test_eval_of_a_void_host_call_drops_the_Void_Val() -> None:
     node = func("store", [put("k", 4), Return(loc=LOC, value=const(Ty.U32, 1))])
     store, host_ = start([node])
     assert host_.invoke("store") == val.pack_u32val(1)
-    assert store.storage[(STORAGE_INSTANCE, "k")] == val.pack_u32val(4)
+    assert store.storage[(STORAGE_INSTANCE, (15, b"k"))] == val.pack_u32val(4)
 
 
 def void_helper() -> FuncIR:
@@ -591,7 +591,7 @@ def test_eval_of_a_void_internal_call_has_nothing_to_drop() -> None:
     )
     store, host_ = start([caller, void_helper()])
     assert host_.invoke("call_it") == val.pack_u32val(1)
-    assert store.storage[(STORAGE_INSTANCE, "h")] == val.pack_u32val(8)
+    assert store.storage[(STORAGE_INSTANCE, (15, b"h"))] == val.pack_u32val(8)
     assert opcodes.DROP not in [op for op, _imm in instructions(body_of(caller, void_helper()))]
 
 
@@ -602,7 +602,7 @@ def test_a_void_internal_helper_falls_off_its_end_with_no_value_at_all() -> None
     assert fns[0].results == ()
     store, host_ = start([void_helper()])
     assert host_.invoke("remember") is None
-    assert store.storage[(STORAGE_INSTANCE, "h")] == val.pack_u32val(8)
+    assert store.storage[(STORAGE_INSTANCE, (15, b"h"))] == val.pack_u32val(8)
 
 
 def test_a_void_export_falls_off_with_VOID_VAL() -> None:
@@ -1239,7 +1239,7 @@ def reading(ty: Ty = Ty.U32) -> FuncIR:
 
 def test_a_storage_read_of_the_claimed_type_passes_the_narrowing_check() -> None:
     store = ObjectStore()
-    store.storage[(STORAGE_INSTANCE, "k")] = val.pack_u32val(41)
+    store.storage[(STORAGE_INSTANCE, (15, b"k"))] = val.pack_u32val(41)
     assert run([reading()], store=store) == val.pack_u32val(41)
 
 
@@ -1249,7 +1249,7 @@ def test_a_storage_read_of_a_WRONG_tagged_Val_fails_with_CODE_ABI_CHECK_FAILED()
     flows into arithmetic that reads its major field as an unsigned number --
     a wrong answer with no error anywhere."""
     store = ObjectStore()
-    store.storage[(STORAGE_INSTANCE, "k")] = val.pack_i32val(41)
+    store.storage[(STORAGE_INSTANCE, (15, b"k"))] = val.pack_i32val(41)
     _store, host_ = start([reading()], store)
     with pytest.raises(engine.HostError) as info:
         host_.invoke("read")
@@ -1259,7 +1259,7 @@ def test_a_storage_read_of_a_WRONG_tagged_Val_fails_with_CODE_ABI_CHECK_FAILED()
 
 def test_an_object_typed_storage_read_is_narrowed_too() -> None:
     store = ObjectStore()
-    store.storage[(STORAGE_INSTANCE, "k")] = object_word(val.TAG_VEC_OBJECT)
+    store.storage[(STORAGE_INSTANCE, (15, b"k"))] = object_word(val.TAG_VEC_OBJECT)
     _store, host_ = start([reading(Ty.Map(Ty.Symbol, Ty.U32))], store)
     with pytest.raises(engine.HostError) as info:
         host_.invoke("read")
@@ -1292,7 +1292,7 @@ def test_the_with_default_arm_is_narrowed_as_well() -> None:
     """Both storage-get arms produce an ANY-typed `Val`, so both are checked --
     the E13 exemption is about the presence GUARD, not about the type claim."""
     store = ObjectStore()
-    store.storage[(STORAGE_INSTANCE, "k")] = val.pack_i32val(1)
+    store.storage[(STORAGE_INSTANCE, (15, b"k"))] = val.pack_i32val(1)
     _store, host_ = start([with_default()], store)
     with pytest.raises(engine.HostError) as info:
         host_.invoke("read")
@@ -1311,8 +1311,8 @@ def test_a_map_read_is_narrowed_to_the_claimed_value_type() -> None:
         [Return(loc=LOC, value=host("map_get", Ty.U32, inner, const(Ty.Symbol, "f")))],
     )
     handle = val.from_body_tag(len(store.objects), val.TAG_MAP_OBJECT)
-    store.objects.append({"f": val.pack_i32val(3)})
-    store.storage[(STORAGE_INSTANCE, "k")] = handle
+    store.objects.append({(15, b"f"): val.pack_i32val(3)})
+    store.storage[(STORAGE_INSTANCE, (15, b"k"))] = handle
     _store, host_ = start([node], store)
     with pytest.raises(engine.HostError) as info:
         host_.invoke("field")

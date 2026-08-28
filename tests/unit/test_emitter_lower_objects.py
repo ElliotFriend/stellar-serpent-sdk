@@ -352,7 +352,7 @@ def test_a_bare_get_of_a_missing_key_fails_with_CODE_MISSING_VALUE() -> None:
 
 def test_a_bare_get_of_a_present_key_returns_it_and_asks_has_once() -> None:
     store = ObjectStore()
-    store.storage[(STORAGE_INSTANCE, "k")] = val.pack_u32val(41)
+    store.storage[(STORAGE_INSTANCE, (15, b"k"))] = val.pack_u32val(41)
     assert run(bare_get(), store=store) == val.pack_u32val(41)
     assert store.call_names() == ["has_contract_data", "get_contract_data"]
 
@@ -374,7 +374,7 @@ def test_a_with_default_get_returns_the_default_and_does_not_double_the_has() ->
     assert store.call_names() == ["has_contract_data"]
 
     present = ObjectStore()
-    present.storage[(STORAGE_PERSISTENT, "k")] = val.pack_u32val(99)
+    present.storage[(STORAGE_PERSISTENT, (15, b"k"))] = val.pack_u32val(99)
     assert run(node, store=present) == val.pack_u32val(99)
     assert present.count("has_contract_data") == 1
     assert present.count("get_contract_data") == 1
@@ -421,7 +421,7 @@ def test_a_with_default_get_evaluates_an_effectful_key_exactly_once() -> None:
     helper = Helper("bump", 0, ("i64",), bump)
 
     store = ObjectStore()
-    store.storage[(STORAGE_PERSISTENT, "k")] = val.pack_u32val(1234)
+    store.storage[(STORAGE_PERSISTENT, (15, b"k"))] = val.pack_u32val(1234)
     assert run(node, store=store, helpers=[helper]) == val.pack_u32val(1234)
     assert store.count("put_contract_data") == 1
 
@@ -444,7 +444,7 @@ def test_a_hand_written_get_if_has_is_still_guarded() -> None:
         orelse=const(Ty.U32, 0),
     )
     store = ObjectStore()
-    store.storage[(STORAGE_INSTANCE, "probed")] = val.pack_u32val(1)
+    store.storage[(STORAGE_INSTANCE, (15, b"probed"))] = val.pack_u32val(1)
 
     _store, host_ = start(node, store=store)
     with pytest.raises(engine.HostError) as info:
@@ -468,7 +468,7 @@ def test_equal_but_distinct_key_nodes_do_not_earn_the_exemption() -> None:
         orelse=const(Ty.U32, 0),
     )
     store = ObjectStore()
-    store.storage[(STORAGE_INSTANCE, "k")] = val.pack_u32val(3)
+    store.storage[(STORAGE_INSTANCE, (15, b"k"))] = val.pack_u32val(3)
     assert run(node, store=store) == val.pack_u32val(3)
     assert store.count("has_contract_data") == 2
 
@@ -484,7 +484,7 @@ def test_a_mismatched_storage_bucket_does_not_earn_the_exemption() -> None:
         orelse=const(Ty.U32, 0),
     )
     store = ObjectStore()
-    store.storage[(STORAGE_INSTANCE, "k")] = val.pack_u32val(1)
+    store.storage[(STORAGE_INSTANCE, (15, b"k"))] = val.pack_u32val(1)
     _store, host_ = start(node, store=store)
     with pytest.raises(engine.HostError) as info:
         host_.invoke("probe")
@@ -519,7 +519,7 @@ def test_an_immediate_from_the_wrong_scalar_table_does_not_earn_the_exemption() 
         orelse=const(Ty.U32, 0),
     )
     store = ObjectStore()
-    store.storage[(STORAGE_INSTANCE, "k")] = val.pack_u32val(4)
+    store.storage[(STORAGE_INSTANCE, (15, b"k"))] = val.pack_u32val(4)
     assert run(node, store=store) == val.pack_u32val(4)
     # Guarded: the hand-written condition, then the guard's own `has`.
     assert store.count("has_contract_data") == 2
@@ -655,8 +655,8 @@ def test_the_field_values_are_stored_in_the_nodes_own_order() -> None:
     assert word is not None
     entries = store.objects[val.body_of(word)]
     assert isinstance(entries, dict)
-    assert entries["counter_limit"] == val.pack_u32val(3)
-    assert store.text_of(entries["display_name"]) == "serpent phase zero"
+    assert entries[(15, b"counter_limit")] == val.pack_u32val(3)
+    assert store.text_of(entries[(15, b"display_name")]) == "serpent phase zero"
 
 
 def test_a_descending_key_descriptor_blob_is_rejected_by_the_harness() -> None:

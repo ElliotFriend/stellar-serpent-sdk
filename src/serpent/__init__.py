@@ -32,7 +32,13 @@ from serpent.decorators import (
     errorcode,
 )
 from serpent.env import ChainValue, Env, Event
-from serpent.errors import ArithmeticOverflow, BadArgument, ContractError
+from serpent.errors import (
+    AbiCheckFailed,
+    ArithmeticOverflow,
+    BadArgument,
+    ContractError,
+    MissingValue,
+)
 from serpent.types import (
     I32,
     I64,
@@ -63,6 +69,7 @@ __all__ = [
     "U32",
     "U64",
     "U128",
+    "AbiCheckFailed",
     "Address",
     "ArithmeticOverflow",
     "BadArgument",
@@ -76,6 +83,7 @@ __all__ = [
     "Env",
     "Event",
     "Map",
+    "MissingValue",
     "String",
     "Symbol",
     "Timepoint",

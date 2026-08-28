@@ -29,12 +29,21 @@ Normalization rules (review B7-corrected):
   storage_key(field_value)) for each field))`. A struct and its equivalent map
   ARE the same on-chain value (S9, `MapObject` either way), and this mirrors
   `objects.py:436-441`'s word-level struct/map convergence at the value level.
+* `None` -- the value an `X | None` struct field holds when absent, a
+  legitimate on-chain map value, not an authoring error -- normalizes to
+  `(_VOID_RANK,)` (review M2): `Void`'s own A8 `ScValType` rank (1, between
+  `Bool` at 0 and `Error` at 2), scalar-shaped but with no payload because
+  `Void` carries none. `serpent.types` has no `Void` class to hand
+  `_SCVAL_RANK`/`_cmp_payload()` off to, so this is the one case
+  `storage_key` special-cases directly instead of reading them structurally.
 
 Chain values are acyclic by construction -- a `Vec`/`Map`/struct built from
 values built from values cannot contain itself, there being no way to name an
 in-progress construction from within it -- so `storage_key` recurses with no
 cycle guard.
 """
+
+from __future__ import annotations
 
 from collections.abc import Hashable
 
@@ -44,9 +53,17 @@ from serpent.types.symbol import Symbol
 
 __all__ = ["storage_key"]
 
+#: `Void`'s A8 `ScValType` rank (`SCV_VOID = 1` in the host's XDR enum,
+#: between `SCV_BOOL = 0` and `SCV_ERROR = 2` -- `Bool._SCVAL_RANK` and
+#: `Address._SCVAL_RANK` pin the same table's ends at 0 and 18). No
+#: `serpent.types` class models `Void` (A9), so this is spelled here rather
+#: than read off a class the way every other rank in this module is.
+_VOID_RANK = 1
 
-def storage_key(value: ContainerValue) -> Hashable:
-    """The value-equal, hashable key one chain value (or struct) stands for.
+
+def storage_key(value: ContainerValue | None) -> Hashable:
+    """The value-equal, hashable key one chain value (`None` for Void, or a
+    struct) stands for.
 
     Two calls on structurally-equal-but-distinct values (two fresh struct
     instances built the same way, a `Vec`/`Map` built in a different order)
@@ -54,6 +71,8 @@ def storage_key(value: ContainerValue) -> Hashable:
     do (barring an accidental collision in the payload space, exactly as for
     any hash-based key).
     """
+    if value is None:
+        return (_VOID_RANK,)
     if isinstance(value, Struct):
         return _struct_key(value)
     if isinstance(value, Vec):
@@ -70,7 +89,15 @@ def storage_key(value: ContainerValue) -> Hashable:
 
 
 def _struct_key(value: Struct) -> Hashable:
-    """A struct's key: the SAME shape its equivalent field-keyed `Map` gets."""
+    """A struct's key: the SAME shape its equivalent field-keyed `Map` gets.
+
+    `getattr(value, name)` for each of `__dataclass_fields__` rather than
+    walking the class's annotations directly: safe because `@contracttype`
+    (`decorators._build_record`) rejects `ClassVar`/`InitVar` annotations
+    along with every non-chain one, so every name in `__dataclass_fields__` is
+    a real per-instance field `dataclasses` has already validated -- there is
+    no pseudo-field here that `getattr` could return something misleading for.
+    """
     field_names = type(value).__dataclass_fields__.keys()
     return (
         "map",

@@ -999,7 +999,7 @@ def test_the_assembled_counter_instantiates_and_runs_under_the_mini_host() -> No
     assert host.invoke("total") == val.pack_u32val(5)
     assert host.invoke("increment", val.pack_u32val(7)) == val.pack_u32val(12)
     assert host.invoke("total") == val.pack_u32val(12)
-    assert store.storage[(STORAGE_PERSISTENT, "TOTAL")] == val.pack_u32val(12)
+    assert store.storage[(STORAGE_PERSISTENT, (15, b"TOTAL"))] == val.pack_u32val(12)
 
 
 def test_the_assembled_counter_raises_its_own_contract_error_past_the_limit() -> None:
