@@ -87,6 +87,7 @@ __all__ = [
     "check_linear_memory_abi",
     "check_no_bulk_memory",
     "recompute_import_names",
+    "split_code_entries",
 ]
 
 #: The name the Soroban host reads the guest's linear memory under. The M13
@@ -404,22 +405,38 @@ def _skip_leb(data: bytes, i: int, what: str) -> int:
             return i
 
 
+def split_code_entries(payload: bytes) -> list[bytes]:
+    """Every code-section entry's raw bytes, in body order.
+
+    The size-prefixed-vector walk shared by `_decode_code_section` below
+    (which decodes only the `call` targets out of each entry) and
+    `serpent.emitter.printer` (which decodes the WHOLE entry -- locals plus
+    every instruction -- for disassembly): both need the same per-entry byte
+    slices first, so that splitting lives in exactly one place rather than
+    two copies of the same truncation check drifting apart.
+    """
+    count, i = read_uleb(payload, 0)
+    entries: list[bytes] = []
+    for index in range(count):
+        size, i = read_uleb(payload, i)
+        if i + size > len(payload):
+            raise EmitError(
+                f"truncated code section: body {index} declares {size} bytes but "
+                f"only {len(payload) - i} remain"
+            )
+        entries.append(payload[i : i + size])
+        i += size
+    return entries
+
+
 def _decode_code_section(wasm: bytes) -> list[list[int]]:
     """The ``call`` targets of every function body, in definition order."""
     bodies: list[list[int]] = []
     for sid, payload in iter_sections(wasm):
         if sid != _SEC_CODE:
             continue
-        count, i = read_uleb(payload, 0)
-        for index in range(count):
-            size, i = read_uleb(payload, i)
-            if i + size > len(payload):
-                raise EmitError(
-                    f"truncated code section: body {index} declares {size} bytes but "
-                    f"only {len(payload) - i} remain"
-                )
-            bodies.append(_call_targets(payload[i : i + size], f"body {index}"))
-            i += size
+        for index, entry in enumerate(split_code_entries(payload)):
+            bodies.append(_call_targets(entry, f"body {index}"))
     return bodies
 
 

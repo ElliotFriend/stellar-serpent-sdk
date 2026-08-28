@@ -454,6 +454,26 @@ def _tiny_module(body: bytes) -> bytes:
     )
 
 
+def test_split_code_entries_returns_each_bodys_raw_bytes() -> None:
+    """The shared helper (Task 14: factored out so the printer's disassembler
+    and `_decode_code_section` walk the same size-prefixed vector exactly
+    once) hands back each entry UNTOUCHED -- `_decode_code_section` decodes
+    call targets out of it, `serpent.emitter.printer` decodes everything."""
+    body_a = b"\x00" + bytes([opcodes.END])
+    body_b = bytes([opcodes.END])
+    payload = encode.vec([encode.uleb(len(body_a)) + body_a, encode.uleb(len(body_b)) + body_b])
+    assert module.split_code_entries(payload) == [body_a, body_b]
+
+
+def test_split_code_entries_refuses_a_truncated_body() -> None:
+    """One home for this error text now: a body that declares more bytes than
+    the section actually carries is a truncated module, caught here rather
+    than independently (and possibly divergently) in each caller."""
+    payload = encode.uleb(1) + encode.uleb(5) + b"\x0b"  # declares 5 bytes, only 1 remains
+    with pytest.raises(EmitError, match="truncated code section"):
+        module.split_code_entries(payload)
+
+
 def test_check_call_targets_accepts_every_module_the_emitter_assembles() -> None:
     for src in (COUNTER_SRC, NAMER_SRC, WIDE_SRC, HELPED_SRC):
         module.check_call_targets(build(src))

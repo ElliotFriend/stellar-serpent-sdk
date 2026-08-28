@@ -20,12 +20,14 @@ emitter DID, not a proof that what it did is right.
 (``iter_sections``, ``read_uleb``, ``read_name``, ``read_byte``) is imported
 from ``validate.py``, the opcode -> immediate-shape table is imported from
 ``module._instruction_immediates()`` (which also carries its own
-vocabulary/table consistency guard, run here as a side effect), and the
-import-name reverse lookup is ``module.recompute_import_names`` itself --
-the exact same table review B1's net already resolves calls against. A byte
-neither table recognizes is a loud ``EmitError``, never a guessed mnemonic
-(module.py's own established discipline for ``call``, extended here to the
-whole instruction stream).
+vocabulary/table consistency guard, run here as a side effect), the
+size-prefixed code-section walk is ``module.split_code_entries`` (factored
+out of ``module._decode_code_section`` in review, so the same truncation
+check is not maintained twice), and the import-name reverse lookup is
+``module.recompute_import_names`` itself -- the exact same table review B1's
+net already resolves calls against. A byte neither table recognizes is a
+loud ``EmitError``, never a guessed mnemonic (module.py's own established
+discipline for ``call``, extended here to the whole instruction stream).
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ from serpent.emitter.module import (
     _SEC_FUNCTION,
     _instruction_immediates,
     recompute_import_names,
+    split_code_entries,
 )
 from serpent.emitter.validate import (
     _SEC_CUSTOM,
@@ -275,21 +278,6 @@ def _decode_memories(payload: bytes) -> list[tuple[int, int | None]]:
     return out
 
 
-def _decode_code_entries(payload: bytes) -> list[bytes]:
-    count, i = read_uleb(payload, 0)
-    out: list[bytes] = []
-    for index in range(count):
-        size, i = read_uleb(payload, i)
-        if i + size > len(payload):
-            raise EmitError(
-                f"truncated code section: body {index} declares {size} bytes but only "
-                f"{len(payload) - i} remain"
-            )
-        out.append(payload[i : i + size])
-        i += size
-    return out
-
-
 def _decode_data(payload: bytes) -> list[tuple[int, int, bytes]]:
     count, i = read_uleb(payload, 0)
     out: list[tuple[int, int, bytes]] = []
@@ -414,7 +402,7 @@ def disassemble(wasm: bytes) -> str:
         elif sid == _SEC_EXPORT:
             export_entries = _decode_exports(payload)
         elif sid == _SEC_CODE:
-            code_entries = _decode_code_entries(payload)
+            code_entries = split_code_entries(payload)
         elif sid == _SEC_DATA:
             data_segments = _decode_data(payload)
         elif sid == _SEC_CUSTOM:
