@@ -983,12 +983,14 @@ def _in_scope(case: SemCase) -> bool:
     )
 
 
-#: The four whole-contract fixtures Task 13 builds. The two sandbox contracts
+#: The whole-contract fixtures Task 13 builds (M1-E added the fifth,
+#: `token_style_canonical.py`, with the canonical publish spelling). The two sandbox contracts
 #: are read from `sandbox/` -- the same source Task 13 promotes into
 #: `tests/fixtures/` (F.2.8) -- because `sandbox/` itself must not be touched.
 _ROOT = Path(__file__).resolve().parents[2]
 _FIXTURES = (
     _ROOT / "tests" / "fixtures" / "token_style.py",
+    _ROOT / "tests" / "fixtures" / "token_style_canonical.py",
     _ROOT / "tests" / "fixtures" / "spike1_reauthored.py",
     _ROOT / "sandbox" / "counter.py",
     _ROOT / "sandbox" / "hello_world.py",

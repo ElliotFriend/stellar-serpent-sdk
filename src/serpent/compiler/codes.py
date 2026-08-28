@@ -297,7 +297,8 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "SPT1032",
         "SPT1xxx",
         "Call -- <Event instance>.publish(env)",
-        "deferred to sub-plan E; use env.events().publish(topics, data)",
+        "superseded by M1-E: `<Event instance>.publish(env)` is supported and lowers to "
+        "the same contract_event call env.events().publish(topics, data) does",
         "Task 7a",
     ),
     CodeEntry(
@@ -937,9 +938,16 @@ CODES: frozenset[str] = frozenset(entry.code for entry in REGISTRY)
 #: `SPT8xxx` rows joined for a different reason: they are EMITTER-side limits,
 #: raised from `serpent.emitter` over a module the frontend already accepted,
 #: so no small source fixture can trip one (see `NO_FIXTURE_REASONS`).
+#: `SPT1032` joined in M1-E for a THIRD reason, and it is the one this list was
+#: always meant to absorb: the construct it rejected became SUPPORTED (sub-plan
+#: E's `Event.publish(env)` desugar), so there is no longer any source that
+#: trips it. The registry row survives un-renumbered (D9 is append-only, and
+#: reversal is not a thing a published code may do); its `message_intent` now
+#: says it is superseded, and its fixture was deleted in the same commit.
 NO_FIXTURE_ALLOWLIST: frozenset[str] = frozenset(
     {
         "SPT1009",
+        "SPT1032",
         "SPT4018",
         "SPT6001",
         "SPT7003",
@@ -956,6 +964,12 @@ NO_FIXTURE_REASONS: dict[str, str] = {
         "dead dispatch branch by construction: a bare Slice is always intercepted by "
         "SPT1013 (direct slice) or SPT1014 (multi-dim tuple); branch retained as "
         "defense-in-depth"
+    ),
+    "SPT1032": (
+        "retired by M1-E (sub-plan E): the form it rejected is now supported -- "
+        "`<Event instance>.publish(env)` desugars into the canonical event lowering, so "
+        "no source can trip it; the row stays under the append-only rule (D9), and it "
+        "leaves this allowlist with a fixture if it ever becomes reachable again"
     ),
     "SPT4018": (
         "superseded by SPT3020 per the Task 7b review adjudication (struct positional "

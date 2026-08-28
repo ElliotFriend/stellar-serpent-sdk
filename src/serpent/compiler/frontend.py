@@ -262,11 +262,14 @@ class SpecInputs:
     inventory -- the struct and error-enum CLASSES in declaration order, which
     is the order `build_spec_entries(cls, types=...)` emits them in (B10).
 
-    `events` is kept strictly SEPARATE (MJ-9): `sections._declared_type_entry`
-    refuses an event class unconditionally, because `SCSpecEventV0` needs a
-    topic/data split `_serpent_type_` does not carry and emitting a guess
-    "would ship a valid-but-lying spec" (B14/D8). Handing an event to `types=`
-    is a hard failure at emission, so the two inventories are two fields.
+    `events` is kept strictly SEPARATE (MJ-9): an event is not a declared TYPE
+    but its own spec entry kind, so it travels to
+    `sections.build_spec_entries` through the `events=` keyword and
+    `_declared_type_entry` refuses one handed to `types=`. Handing an event to
+    `types=` is a hard failure at emission, so the two inventories are two
+    fields. (Before M1-E Task 5 the refusal was unconditional: `_serpent_type_`
+    carried no topic/data split, and emitting a guess "would ship a
+    valid-but-lying spec" -- B14/D8.)
 
     `contract_cls` is `None` only when the module declared no usable
     `@contract` class -- which always comes with a diagnostic, and therefore

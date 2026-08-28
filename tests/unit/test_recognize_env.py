@@ -31,6 +31,7 @@ from serpent.compiler.ir import (
     HostCall,
     IfExp,
     IRExpr,
+    MakeStruct,
     MakeTopics,
     ParamRef,
     RawScalar,
@@ -204,7 +205,7 @@ _EXPECTED_ROWS: frozenset[str] = frozenset(
         "events.publish",
         "address.require_auth",
         "address.require_auth_for_args",
-        "event.publish_reject",
+        "event.publish",
     }
 )
 
@@ -520,17 +521,29 @@ def test_require_auth_on_a_non_address_is_rejected() -> None:
     _assert_reject(_reject_call("amt.require_auth()"), "SPT3018", "Address")
 
 
-# --- Event.publish(env) reject (E12) ------------------------------------------
+# --- Event.publish(env): the M1-E desugar (was SPT1032, ruling E12) ----------
 
 
-def test_event_instance_publish_is_rejected() -> None:
-    diag = _reject_call("Transfer(frm=addr, to=addr, amount=amt).publish(env)")
-    _assert_reject(diag, "SPT1032", "publish")
+def test_event_instance_publish_lowers_to_contract_event() -> None:
+    """The row that used to be a REJECT. `test_frontend_events.py` owns the
+    convention's translation table; what belongs HERE is that this module
+    recognizes the receiver shape at all and reaches the table's host
+    function."""
+    node = _ok_call("Transfer(frm=addr, to=addr, amount=amt).publish(env)")
+    assert isinstance(node, HostCall)
+    assert node.fn_name == "contract_event"
+    assert node.ty == Ty.Void
+    topics, data = node.args
+    assert isinstance(topics, MakeTopics)
+    assert isinstance(topics.topics[0], Const)
+    assert topics.topics[0].py_value == "transfer"
+    assert isinstance(data, MakeStruct)
 
 
-def test_events_dot_publish_is_not_the_rejected_form() -> None:
+def test_events_dot_publish_is_not_the_event_instance_form() -> None:
     """`env.events().publish(...)` must NOT be caught by the `Event.publish`
-    reject -- the two share a method name but not a receiver shape."""
+    branch -- the two share a method name but not a receiver shape (and only the
+    canonical one type-checks its topics as a tuple literal)."""
     node = _ok_call('env.events().publish((Symbol("t"), addr), amt)')
     assert isinstance(node, HostCall)
     assert node.fn_name == "contract_event"

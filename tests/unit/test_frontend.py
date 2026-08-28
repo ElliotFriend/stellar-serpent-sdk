@@ -1179,8 +1179,11 @@ def test_struct_construction_and_field_read_lower_through_recognition() -> None:
     assert compiled.literals.struct_key_descriptor_sets == (("amount", "owner"),)
 
 
-def test_an_event_publish_instance_form_is_still_deferred() -> None:
-    _expect_reject(
+def test_an_event_publish_instance_form_compiles_to_contract_event() -> None:
+    """M1-E Task 6 turned the old `SPT1032` reject into a desugar. Asserted
+    here at the `compile_module` level -- the whole-module outputs -- while
+    `test_frontend_events.py` owns the lowered shape itself."""
+    compiled = _compile(
         """
         from serpent import Address, Env, Event, U32, contract, contractevent
 
@@ -1195,9 +1198,10 @@ def test_an_event_publish_instance_form_is_still_deferred() -> None:
             def go(self, env: Env, who: Address) -> U32:
                 Moved(who=who).publish(env)
                 return U32(0)
-        """,
-        "SPT1032",
+        """
     )
+    assert "contract_event" in compiled.host_fns_used
+    assert [event.__name__ for event in compiled.spec_inputs.events] == ["Moved"]
 
 
 # --- the two output invariants compile_module asserts ----------------------

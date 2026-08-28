@@ -7,9 +7,11 @@ declaration into its `ir.py` node:
 * **structs, error enums and events** -- resolved from the loader's two views
   (`_serpent_type_` metadata + the AST) into `StructDecl`/`ErrorEnumDecl`/
   `EventDecl`. Events are tracked SEPARATELY from the spec-type inventory
-  (MJ-9): `spec.sections.build_spec_entries` refuses an event class, because
-  `SCSpecEventV0` needs a topic/data split `_serpent_type_` does not carry
-  (B14/D8), so handing one to `types=` would be a hard failure at emission.
+  (MJ-9): an event is not a declared TYPE, it is its own spec entry kind, so
+  `spec.sections.build_spec_entries` takes the module's events through its own
+  `events=` keyword and refuses an event handed to `types=`. (Until M1-E Task 5
+  the refusal was unconditional -- `_serpent_type_` carried no topic/data split
+  at all, B14/D8 -- and events reached the spec not at all.)
 * **module constants** (P5) -- `ADMIN = Symbol("ADMIN")` becomes a
   `ConstDecl` whose value is checked by the ordinary expression checker and
   then required to be STATIC (see `is_static_const_value`).

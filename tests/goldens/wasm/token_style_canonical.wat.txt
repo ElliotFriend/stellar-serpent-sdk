@@ -1,0 +1,112 @@
+;; SELF-SNAPSHOT (tests/goldens/README.md's third class, the `wasm/` rows):
+;; this is what `serpent.emitter.printer.disassemble` currently renders for
+;; `serpent.emitter.build_file("tests/fixtures/token_style_canonical.py")`.
+;; It must NEVER be cited as evidence the wasm bytes -- or this rendering of
+;; them -- are CORRECT (B12). Regenerate with
+;;     SERPENT_REGEN_GOLDENS=1 uv run pytest tests/unit/test_emitter_printer.py
+;; and READ THE DIFF: a change here is a behavioral change to what sub-plan D
+;; emits, not noise.
+;; wasm module: 554 byte(s), 8 section(s)
+;; type section: 4 entry(ies)
+;; import section: 6 entry(ies)
+(import "x" "5" (func $fail_with_error (param i64) (result i64)))
+(import "l" "_" (func $put_contract_data (param i64 i64 i64) (result i64)))
+(import "a" "0" (func $require_auth (param i64) (result i64)))
+(import "v" "_" (func $vec_new (result i64)))
+(import "v" "6" (func $vec_push_back (param i64 i64) (result i64)))
+(import "x" "1" (func $contract_event (param i64 i64) (result i64)))
+;; export section: 2 entry(ies)
+(export "__constructor" (func $__constructor))
+(export "send" (func $send))
+;; code section: 2 defined function(s)
+
+;; func[0] (combined index 6)
+(func $__constructor (param i64) (result i64)
+  local.get 0
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  i64.const 52571740430
+  local.get 0
+  i64.const 2
+  call $put_contract_data
+  drop
+  i64.const 2
+  return
+end
+)
+
+;; func[1] (combined index 7)
+(func $send (param i64 i64 i64) (result i64)
+  (local i64)
+  local.get 0
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 1
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 2
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 0
+  call $require_auth
+  drop
+  local.get 1
+  local.get 2
+  i64.const 1
+  call $put_contract_data
+  drop
+  call $vec_new
+  local.set 3
+  local.get 3
+  i64.const 65154533130155790
+  call $vec_push_back
+  local.set 3
+  local.get 3
+  local.get 0
+  call $vec_push_back
+  local.set 3
+  local.get 3
+  local.get 1
+  call $vec_push_back
+  local.set 3
+  local.get 3
+  local.get 2
+  call $contract_event
+  drop
+  i64.const 2
+  return
+end
+)
+
+;; custom sections: 3
+(custom "contractenvmetav0" 12 payload byte(s))
+(custom "contractspecv0" 132 payload byte(s))
+(custom "contractmetav0" 68 payload byte(s))

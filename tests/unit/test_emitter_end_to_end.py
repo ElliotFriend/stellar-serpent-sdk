@@ -12,7 +12,13 @@ the headline one is anchored to Phase 0:
   bytes, and the behavior sequence -- because each is anchored to a different
   recorded fact.
 * **`token_style.py`** (F.2.7) is the realistic shape: a struct storage key, a
-  heterogeneous event topic tuple, `require_auth`, an `Address` comparison.
+  heterogeneous event topic tuple, `require_auth`, an `Address` comparison. Its
+  event is published through the AUTHORING form (`Transfer(...).publish(env)`,
+  M1-E), and **`token_style_canonical.py`** publishes the equivalent event the
+  CANONICAL way (`env.events().publish((Symbol, Address, Address), data)`) --
+  the pair is what proves the desugar and the hand-written call reach the host
+  with the same topics and the same data
+  (`test_both_publish_spellings_record_the_same_event`).
 * **the two promoted sandbox contracts** (F.2.8) are the contracts an author
   actually plays with, copied into `tests/fixtures/` so that playing with
   `sandbox/` cannot turn the suite red. Each copy is asserted to build to a
@@ -73,6 +79,7 @@ CONTRACT = "CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI"
 
 SPIKE1 = _ROOT / "tests" / "fixtures" / "spike1_reauthored.py"
 TOKEN_STYLE = _ROOT / "tests" / "fixtures" / "token_style.py"
+TOKEN_STYLE_CANONICAL = _ROOT / "tests" / "fixtures" / "token_style_canonical.py"
 SANDBOX_COUNTER = _ROOT / "tests" / "fixtures" / "sandbox_counter.py"
 SANDBOX_HELLO_WORLD = _ROOT / "tests" / "fixtures" / "sandbox_hello_world.py"
 
@@ -80,7 +87,13 @@ SANDBOX_HELLO_WORLD = _ROOT / "tests" / "fixtures" / "sandbox_hello_world.py"
 #: here, where the contracts are built and invoked, and imported by
 #: `tests/unit/test_emitter_fuzz.py` for the two budget-shaped properties (the
 #: size tripwire and `needed <= linked`) so there is ONE list of fixtures.
-FIXTURES: tuple[Path, ...] = (SPIKE1, TOKEN_STYLE, SANDBOX_COUNTER, SANDBOX_HELLO_WORLD)
+FIXTURES: tuple[Path, ...] = (
+    SPIKE1,
+    TOKEN_STYLE,
+    TOKEN_STYLE_CANONICAL,
+    SANDBOX_COUNTER,
+    SANDBOX_HELLO_WORLD,
+)
 
 #: `pytest.mark.skipif` for every assertion that reads the deployed artifact
 #: (review M14). The file is NOT git-tracked, so a fresh clone legitimately
@@ -308,6 +321,112 @@ def test_token_style_runs_a_full_mint_and_transfer_sequence() -> None:
         Address(ACCOUNT),
     ]
     assert host.chain_value(data) == U32(40)
+
+
+def test_both_publish_spellings_record_the_same_event() -> None:
+    """The end-to-end half of M1-E's both-spellings equivalence (ruling E2).
+
+    `token_style.transfer` publishes through `Transfer(...).publish(env)` and
+    `token_style_canonical.send` publishes the same event through
+    `env.events().publish((Symbol("transfer"), frm, to), amount)`. Run under the
+    mini host, the two must arrive at `contract_event` with the SAME topic words
+    and the same data word -- compared as decoded chain values, because the
+    handles are per-instantiation.
+
+    This is the claim that makes "the emitter needed no change" observable: the
+    frontend IR goldens show the two trees are equal, and this shows the two
+    modules really do call the host the same way.
+    """
+    _built, host, mini = start(TOKEN_STYLE)
+    admin = host.val_word(Address(ACCOUNT))
+    other = host.val_word(Address(CONTRACT))
+    mini.invoke("__constructor", admin, host.val_word(String("Serpent")))
+    mini.invoke("mint", admin, other, val.pack_u32val(100))
+    mini.invoke("transfer", other, admin, val.pack_u32val(40))
+    ((desugared_topics, desugared_data),) = host.events
+
+    _built2, host2, mini2 = start(TOKEN_STYLE_CANONICAL)
+    admin2 = host2.val_word(Address(ACCOUNT))
+    other2 = host2.val_word(Address(CONTRACT))
+    mini2.invoke("__constructor", admin2)
+    mini2.invoke("send", other2, admin2, val.pack_u32val(40))
+    ((canonical_topics, canonical_data),) = host2.events
+
+    assert [host.chain_value(t) for t in desugared_topics] == [
+        host2.chain_value(t) for t in canonical_topics
+    ]
+    assert host.chain_value(desugared_data) == host2.chain_value(canonical_data)
+    # ... and both are the shape D4 calls canonical.
+    assert [host2.chain_value(t) for t in canonical_topics] == [
+        Symbol("transfer"),
+        Address(CONTRACT),
+        Address(ACCOUNT),
+    ]
+
+
+#: The two data formats no fixture publishes, in one throwaway contract: the
+#: default `"map"` (a heterogeneous payload -- `U32` and `String`) and `"vec"`.
+#: The fixtures cover `"single-value"` twice over.
+_EVENT_FORMATS = '''"""Both container data formats, published through the authoring form."""
+
+from serpent import Address, Annotated, Env, Event, String, U32, contract, contractevent, topic
+
+
+@contractevent
+class Traded(Event):
+    who: Annotated[Address, topic]
+    amount: U32
+    memo: String
+
+
+@contractevent(data_format="vec")
+class Scored(Event):
+    first: U32
+    second: U32
+
+
+@contract
+class Formats:
+    def trade(self, env: Env, who: Address, amount: U32, memo: String) -> None:
+        Traded(who=who, amount=amount, memo=memo).publish(env)
+
+    def score(self, env: Env, first: U32, second: U32) -> None:
+        Scored(first=first, second=second).publish(env)
+'''
+
+
+def test_the_container_event_data_formats_build_and_run_unchanged() -> None:
+    """`"map"` and `"vec"` event data, through the UNTOUCHED emitter (E2).
+
+    The desugar's premise is that an event's data payload is already an IR node
+    the emitter lowers: `"map"` is a `MakeStruct` (compile-time sorted `Symbol`
+    key descriptors + runtime `Val` words, `map_new_from_linear_memory`) and
+    `"vec"` is a `MakeVec`. This runs both and reads the host objects back, so
+    the claim is observed rather than argued -- including the ORDER of the map's
+    keys, which the host requires ascending and which C, not D, decided.
+    """
+    built = build_wasm(compile_module(_EVENT_FORMATS, "contracts/formats.py"))
+    host = FullHost()
+    mini = engine.MiniHost(built.wasm, imports=host.bindings())
+    host.attach(mini)
+
+    who = host.val_word(Address(ACCOUNT))
+    mini.invoke("trade", who, val.pack_u32val(5), host.val_word(String("hi")))
+    mini.invoke("score", val.pack_u32val(1), val.pack_u32val(2))
+
+    (map_topics, map_data), (vec_topics, vec_data) = host.events
+    assert [host.chain_value(t) for t in map_topics] == [Symbol("traded"), Address(ACCOUNT)]
+    # The map's keys are `(tag, bytes)` pairs as the store normalizes them; what
+    # matters here is the names, their ASCENDING order, and the values.
+    keys = [key for key in host._map(map_data)]
+    names = [key[1] for key in keys if isinstance(key, tuple)]
+    assert len(names) == len(keys)
+    assert names == [b"amount", b"memo"] == sorted(names)
+    values = [host.chain_value(word) for word in host._map(map_data).values()]
+    assert values == [U32(5), String("hi")]
+
+    assert [host.chain_value(t) for t in vec_topics] == [Symbol("scored")]
+    assert [host.chain_value(item) for item in host._vec(vec_data)] == [U32(1), U32(2)]
 
 
 def test_token_style_refuses_a_transfer_larger_than_the_balance() -> None:

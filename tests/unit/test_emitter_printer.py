@@ -351,13 +351,17 @@ GOLDEN_DIR = Path(__file__).resolve().parents[1] / "goldens" / "wasm"
 REGEN_ENV = "SERPENT_REGEN_GOLDENS"
 REGEN_HINT = f"{REGEN_ENV}=1 uv run pytest tests/unit/test_emitter_printer.py"
 
-#: The four fixtures the task brief names: the Phase 0 re-author, the one
-#: real richly-shaped contract, and the two promoted sandbox examples.
+#: The fixtures the task brief names: the Phase 0 re-author, the one real
+#: richly-shaped contract, and the two promoted sandbox examples -- plus M1-E's
+#: `token_style_canonical`, the contract that keeps the canonical
+#: `env.events().publish(topics, data)` spelling covered now that `token_style`
+#: publishes through `Event.publish`.
 FIXTURE_NAMES: tuple[str, ...] = (
     "sandbox_counter",
     "sandbox_hello_world",
     "spike1_reauthored",
     "token_style",
+    "token_style_canonical",
 )
 
 _HEADER_TEMPLATE = """\
