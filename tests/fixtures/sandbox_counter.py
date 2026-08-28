@@ -18,6 +18,14 @@ and nothing else: the same `Error.MaxReached = errorcode(1)`, the same
 `increment(step)`/`total()` pair, the same 1000 ceiling, the same `TOTAL`
 persistent key.
 
+**M1-E graduated this contract into `examples/counter.py`** -- the same code
+again, with an author-facing docstring, as the SHIPPED first example. That makes
+three copies, and the byte compare below covers all three: the parametrized
+anti-drift test gained a row for `examples/counter.py` against
+`sandbox/counter.py` rather than this fixture being turned into a re-export,
+because this path is named by four separate test inventories that all BUILD it
+as a contract (see that test's docstring for the accounting).
+
 **The anti-drift check is a BYTE COMPARE OF THE BUILDS**, not of the text:
 `tests/unit/test_emitter_end_to_end.py` builds both this file and
 `sandbox/counter.py` and asserts the two modules are byte-identical. That is

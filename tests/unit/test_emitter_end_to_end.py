@@ -1,4 +1,4 @@
-"""End to end: four whole contracts, built and RUN (F.2.2/F.2.3/F.2.4/F.2.7/F.2.8).
+"""End to end: every whole contract the repo has, built and RUN (F.2.2/F.2.3/F.2.4/F.2.7/F.2.8).
 
 `tests/unit/test_emitter_semantics.py` runs one expression per module. This
 file runs whole contracts -- storage, structs, error enums, events, auth, a
@@ -24,6 +24,12 @@ the headline one is anchored to Phase 0:
   `sandbox/` cannot turn the suite red. Each copy is asserted to build to a
   module byte-identical to its `sandbox/` original, which is what keeps the
   copy honest without a text compare that a reflowed comment would break.
+* **the `examples/` contracts** (M1-E, `EXAMPLES`) are the SHIPPED examples, and
+  they are fixtures of this suite for the same reason the sandbox copies are:
+  every whole-contract property in this file's last section runs over them for
+  free, so a shipped example cannot rot. Their tier-1 runs and the
+  tier-1-vs-wasm cross-checks live in `tests/unit/test_examples.py`, which
+  imports `EXAMPLES` from here so there is one list.
 
 ## `spikes/` is read-only, and `spike.wasm` is not tracked (R5, review M14)
 
@@ -85,6 +91,19 @@ TOKEN_STYLE_CANONICAL = _ROOT / "tests" / "fixtures" / "token_style_canonical.py
 SANDBOX_COUNTER = _ROOT / "tests" / "fixtures" / "sandbox_counter.py"
 SANDBOX_HELLO_WORLD = _ROOT / "tests" / "fixtures" / "sandbox_hello_world.py"
 
+#: `examples/` -- the SHIPPED contracts (M1-E sub-plan G's wave 1), which are
+#: fixtures of this suite as well as documentation. Defined here rather than in
+#: `tests/unit/test_examples.py` so that `EXAMPLES` and `FIXTURES` cannot
+#: disagree: the tier-1 legs import these names FROM here, and
+#: `test_examples_is_a_flat_directory_of_modules` asserts the tuple is the whole
+#: directory, so a new example joins the whole-contract property sweep (build,
+#: validate, size, `needed <= linked`, exports, protocol floor) by existing.
+EXAMPLES_DIR = _ROOT / "examples"
+EXAMPLE_COUNTER = EXAMPLES_DIR / "counter.py"
+EXAMPLE_ERRORS = EXAMPLES_DIR / "errors.py"
+EXAMPLE_STRUCTS = EXAMPLES_DIR / "structs.py"
+EXAMPLES: tuple[Path, ...] = (EXAMPLE_COUNTER, EXAMPLE_ERRORS, EXAMPLE_STRUCTS)
+
 #: THE fixture list this sub-plan's whole-contract properties run over. Defined
 #: here, where the contracts are built and invoked, and imported by
 #: `tests/unit/test_emitter_fuzz.py` for the two budget-shaped properties (the
@@ -95,6 +114,7 @@ FIXTURES: tuple[Path, ...] = (
     TOKEN_STYLE_CANONICAL,
     SANDBOX_COUNTER,
     SANDBOX_HELLO_WORLD,
+    *EXAMPLES,
 )
 
 #: `pytest.mark.skipif` for every assertion that reads the deployed artifact
@@ -490,13 +510,26 @@ def test_token_style_refuses_a_transfer_larger_than_the_balance() -> None:
     [
         (SANDBOX_COUNTER, _ROOT / "sandbox" / "counter.py"),
         (SANDBOX_HELLO_WORLD, _ROOT / "sandbox" / "hello_world.py"),
+        (EXAMPLE_COUNTER, _ROOT / "sandbox" / "counter.py"),
     ],
-    ids=["counter", "hello_world"],
+    ids=["counter", "hello_world", "graduated_counter"],
 )
 def test_a_promoted_sandbox_copy_builds_the_same_module_as_its_original(
     promoted: Path, original: Path
 ) -> None:
     """The anti-drift check for F.2.8's promotion, stated on the BUILDS.
+
+    **The third row is M1-E Task 7's graduation.** `examples/counter.py` is
+    `tests/fixtures/sandbox_counter.py`'s contract verbatim, promoted out of the
+    test suite into the shipped examples, and the brief offered two ways to keep
+    the chain honest: turn the fixture into a path constant that re-exports the
+    example, or point the byte compare at the example. The second is by far the
+    smaller edit -- one parametrize row -- because the fixture is named by four
+    separate inventories (`FIXTURES` here, `FIXTURE_NAMES` and a golden in
+    `test_emitter_printer.py`, `_FIXTURES` in `test_harness_hostfns.py`, the fuzz
+    corpus in `test_frontend_fuzz.py`), every one of which builds it as a
+    contract. So the row is ADDED rather than retargeted: all three files now
+    build to the same module, and any two of them drifting apart fails here.
 
     A text compare would break on the added docstring and on `ruff format`'s
     spacing, neither of which can change a single emitted byte. A build compare
@@ -616,8 +649,8 @@ def test_sandbox_hello_world_refuses_the_unimaginative_greeting() -> None:
 
 @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)
 def test_every_fixture_instantiates_and_declares_the_protocol_floor(path: Path) -> None:
-    """Every one of the four links under the full mini host and declares the
-    computed floor. `declared_protocol == 20` for all four is not a coincidence
+    """Every fixture links under the full mini host and declares the computed
+    floor. `declared_protocol == 20` for all of them is not a coincidence
     worth hiding: none of them reaches a protocol-gated host function, so the
     floor is `BASE_PROTOCOL`, and a fixture that started declaring something
     else would mean a gated function crept into one of them."""

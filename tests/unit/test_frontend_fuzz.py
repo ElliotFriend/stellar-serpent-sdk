@@ -17,8 +17,9 @@ different directions:
    the node the dispatcher forgot, the annotation nobody resolved, the
    decorator that raised instead of reporting.
 2. **A mangled-fixture corpus** (`mangled_sources`). The 95
-   `tests/must_reject/` fixtures plus `tests/fixtures/*.py` -- every complete
-   authored contract the repo has -- put through systematic damage:
+   `tests/must_reject/` fixtures plus `tests/fixtures/*.py` and `examples/*.py`
+   -- every complete authored contract the repo has -- put through systematic
+   damage:
    truncation at line boundaries, token swaps, indentation damage, unicode
    injection. This is the "half-written file in an editor" direction, where
    the interesting inputs are *nearly* valid and the parse/exec bridge is what
@@ -852,17 +853,26 @@ def test_the_grammar_as_drawn_reaches_deep_into_the_checkers(
 # --- generator (b): the mangled-fixture corpus -------------------------------
 
 _TESTS_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = _TESTS_ROOT.parent
 
-#: Every complete contract source the repo has, as (name, text): the 95
-#: `must_reject/` fixtures (each a minimal, deliberately-invalid module) plus
-#: `tests/fixtures/*.py` (the two complete VALID contracts). Sorted so the
-#: corpus -- and therefore what `derandomize` draws from it -- is stable.
+#: Every complete contract source the repo has, as (name, text): the
+#: `must_reject/` fixtures (each a minimal, deliberately-invalid module), the
+#: complete VALID contracts in `tests/fixtures/`, and the SHIPPED contracts in
+#: `examples/` (M1-E) -- a published example is exactly the file a newcomer will
+#: half-edit in an editor, so it belongs in the "nearly valid" corpus. Names are
+#: relative to the repo root for `examples/` and to `tests/` for the rest, which
+#: is what the two inventory assertions below read. Sorted so the corpus -- and
+#: therefore what `derandomize` draws from it -- is stable.
 CORPUS: tuple[tuple[str, str], ...] = tuple(
     sorted(
-        (str(path.relative_to(_TESTS_ROOT)), path.read_text())
+        (
+            str(path.relative_to(_TESTS_ROOT if _TESTS_ROOT in path.parents else _REPO_ROOT)),
+            path.read_text(),
+        )
         for path in (
             *(_TESTS_ROOT / "must_reject").rglob("*.py"),
             *(_TESTS_ROOT / "fixtures").glob("*.py"),
+            *(_REPO_ROOT / "examples").glob("*.py"),
         )
         if path.name != "__init__.py"
     )
@@ -1022,7 +1032,7 @@ def mangled_sources(draw: st.DrawFn) -> str:
 @CI_FUZZ
 def test_mangled_fixtures_never_escape_the_diagnostic_family(source: str) -> None:
     """F.2.5, generator (b): the 95 `must_reject/` fixtures plus
-    `tests/fixtures/*.py`, systematically damaged."""
+    `tests/fixtures/*.py` and `examples/*.py`, systematically damaged."""
     check_robust(source)
 
 
@@ -1032,14 +1042,15 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     skipped (the count is asserted as a floor: Task 11b's 95, less the SPT1032
     fixture M1-E deleted when `Event.publish(env)` became supported).
 
-    The `fixtures/` list is asserted EXACTLY rather than as a floor, so adding a
-    contract fixture is a deliberate act: Task 13 promoted the two `sandbox/`
-    contracts into `tests/fixtures/` (F.2.8), and they joined this corpus
-    automatically -- which is the intended behavior, and updating this line is
-    how it gets acknowledged.
+    The `fixtures/` and `examples/` lists are asserted EXACTLY rather than as a
+    floor, so adding a contract is a deliberate act: Task 13 promoted the two
+    `sandbox/` contracts into `tests/fixtures/` (F.2.8) and M1-E added
+    `examples/`, and each joined this corpus automatically -- which is the
+    intended behavior, and updating these lines is how it gets acknowledged.
     """
     must_reject = [name for name, _ in CORPUS if name.startswith("must_reject/")]
     fixtures = [name for name, _ in CORPUS if name.startswith("fixtures/")]
+    examples = [name for name, _ in CORPUS if name.startswith("examples/")]
     assert len(must_reject) >= 94, len(must_reject)
     assert sorted(fixtures) == [
         "fixtures/sandbox_counter.py",
@@ -1047,6 +1058,11 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
         "fixtures/spike1_reauthored.py",
         "fixtures/token_style.py",
         "fixtures/token_style_canonical.py",
+    ]
+    assert sorted(examples) == [
+        "examples/counter.py",
+        "examples/errors.py",
+        "examples/structs.py",
     ]
 
 

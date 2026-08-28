@@ -984,9 +984,16 @@ def _in_scope(case: SemCase) -> bool:
 
 
 #: The whole-contract fixtures Task 13 builds (M1-E added the fifth,
-#: `token_style_canonical.py`, with the canonical publish spelling). The two sandbox contracts
+#: `token_style_canonical.py`, with the canonical publish spelling, and then the
+#: three `examples/` contracts of sub-plan G's wave 1). The two sandbox contracts
 #: are read from `sandbox/` -- the same source Task 13 promotes into
 #: `tests/fixtures/` (F.2.8) -- because `sandbox/` itself must not be touched.
+#:
+#: This is this FILE's own inventory, deliberately not
+#: `test_emitter_end_to_end.py`'s `FIXTURES` (review M8): the question here is
+#: "does `FullHost` bind every callback these modules need", which is about the
+#: callback table, and it is answered for `sandbox/`'s own two files rather than
+#: for the promoted copies. Adding a contract anywhere means adding it here too.
 _ROOT = Path(__file__).resolve().parents[2]
 _FIXTURES = (
     _ROOT / "tests" / "fixtures" / "token_style.py",
@@ -994,7 +1001,20 @@ _FIXTURES = (
     _ROOT / "tests" / "fixtures" / "spike1_reauthored.py",
     _ROOT / "sandbox" / "counter.py",
     _ROOT / "sandbox" / "hello_world.py",
+    _ROOT / "examples" / "counter.py",
+    _ROOT / "examples" / "errors.py",
+    _ROOT / "examples" / "structs.py",
 )
+
+
+def _fixture_id(path: Path) -> str:
+    """The test id: the path RELATIVE TO THE REPO ROOT, not the bare filename.
+
+    `sandbox/counter.py` and `examples/counter.py` are two different files with
+    the same name, and a bare-name id would leave pytest disambiguating them as
+    `counter.py0`/`counter.py1` -- which says nothing about which file failed.
+    """
+    return str(path.relative_to(_ROOT))
 
 
 def _needed(source: str, path: str) -> set[str]:
@@ -1008,7 +1028,7 @@ def _needed(source: str, path: str) -> set[str]:
     return set(compiled.host_fns_reachable) | set(built.imports)
 
 
-@pytest.mark.parametrize("path", _FIXTURES, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _FIXTURES, ids=_fixture_id)
 def test_every_task13_fixture_is_fully_bound(path: Path) -> None:
     missing = sorted(
         _needed(path.read_text(encoding="utf-8"), str(path)) - set(FullHost().bindings())
@@ -1032,7 +1052,7 @@ def test_every_in_scope_semantics_case_is_fully_bound() -> None:
     assert missing == {}
 
 
-@pytest.mark.parametrize("path", _FIXTURES, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _FIXTURES, ids=_fixture_id)
 def test_every_task13_fixture_instantiates_under_the_full_host(path: Path) -> None:
     """The stronger half of the inventory: the module actually LINKS.
 

@@ -31,12 +31,16 @@ jobs:
       - name: Lint (ruff check)
         run: uv run ruff check .
 
-      # Format-check is scoped to src/tests (mirrors mypy's `files` scope), not
-      # `.`: spikes/ is frozen historical evidence and must not be reformatted,
-      # and the docs/ planning markdown contains verbatim-transcribed code
-      # fences that ruff's formatter also reaches into and would rewrite.
+      # Format-check is scoped to src/tests/examples (mirrors mypy's `files`
+      # scope), not `.`: spikes/ is frozen historical evidence and must not be
+      # reformatted, and the docs/ planning markdown contains
+      # verbatim-transcribed code fences that ruff's formatter also reaches into
+      # and would rewrite. `examples/` joined both scopes with M1-E's shipped
+      # examples (ruling E6): a published example is the SDK's zero-plugin pitch
+      # in executable form, so it is held to the same formatting and typing bar
+      # as src/.
       - name: Format check (ruff format)
-        run: uv run ruff format --check src tests
+        run: uv run ruff format --check src tests examples
 
       - name: Type check (mypy --strict)
         run: uv run mypy --strict

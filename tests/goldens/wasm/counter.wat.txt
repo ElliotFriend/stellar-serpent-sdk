@@ -1,0 +1,149 @@
+;; SELF-SNAPSHOT (tests/goldens/README.md's third class, the `wasm/` rows):
+;; this is what `serpent.emitter.printer.disassemble` currently renders for
+;; `serpent.emitter.build_file("examples/counter.py")`.
+;; It must NEVER be cited as evidence the wasm bytes -- or this rendering of
+;; them -- are CORRECT (B12). Regenerate with
+;;     SERPENT_REGEN_GOLDENS=1 uv run pytest tests/unit/test_emitter_printer.py
+;; and READ THE DIFF: a change here is a behavioral change to what sub-plan D
+;; emits, not noise.
+;; wasm module: 713 byte(s), 8 section(s)
+;; type section: 4 entry(ies)
+;; import section: 4 entry(ies)
+(import "x" "5" (func $fail_with_error (param i64) (result i64)))
+(import "l" "0" (func $has_contract_data (param i64 i64) (result i64)))
+(import "l" "1" (func $get_contract_data (param i64 i64) (result i64)))
+(import "l" "_" (func $put_contract_data (param i64 i64 i64) (result i64)))
+;; export section: 2 entry(ies)
+(export "increment" (func $increment))
+(export "total" (func $total))
+;; code section: 2 defined function(s)
+
+;; func[0] (combined index 4)
+(func $increment (param i64) (result i64)
+  (local i64 i64 i64 i64 i64 i64)
+  local.get 0
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  i64.const 134921525006
+  local.set 2
+  i64.const 1
+  local.set 3
+  local.get 2
+  local.get 3
+  call $has_contract_data
+  i32.wrap_i64
+  if (result i64)
+    local.get 2
+    local.get 3
+    call $get_contract_data
+    local.tee 4
+    local.get 4
+    i64.const 4294967295
+    i64.and
+    i64.const 4
+    i64.ne
+    if
+      i64.const -21474836477
+      call $fail_with_error
+      drop
+    end
+  else
+    i64.const 4
+  end
+  local.set 1
+  local.get 1
+  i64.const 32
+  i64.shr_u
+  local.get 0
+  i64.const 32
+  i64.shr_u
+  i64.add
+  local.tee 5
+  i64.const 4294967295
+  i64.gt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 5
+  local.tee 6
+  i64.const 4294967295
+  i64.gt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 6
+  i64.const 32
+  i64.shl
+  i64.const 4
+  i64.or
+  local.set 1
+  local.get 1
+  i64.const 32
+  i64.shr_u
+  i64.const 1000
+  i64.gt_u
+  i64.extend_i32_u
+  i32.wrap_i64
+  if
+    i64.const 4294967299
+    call $fail_with_error
+    drop
+  end
+  i64.const 134921525006
+  local.get 1
+  i64.const 1
+  call $put_contract_data
+  drop
+  local.get 1
+  return
+end
+)
+
+;; func[1] (combined index 5)
+(func $total (result i64)
+  (local i64 i64 i64)
+  i64.const 134921525006
+  local.set 0
+  i64.const 1
+  local.set 1
+  local.get 0
+  local.get 1
+  call $has_contract_data
+  i32.wrap_i64
+  if (result i64)
+    local.get 0
+    local.get 1
+    call $get_contract_data
+    local.tee 2
+    local.get 2
+    i64.const 4294967295
+    i64.and
+    i64.const 4
+    i64.ne
+    if
+      i64.const -21474836477
+      call $fail_with_error
+      drop
+    end
+  else
+    i64.const 4
+  end
+  return
+end
+)
+
+;; custom sections: 3
+(custom "contractenvmetav0" 12 payload byte(s))
+(custom "contractspecv0" 236 payload byte(s))
+(custom "contractmetav0" 56 payload byte(s))

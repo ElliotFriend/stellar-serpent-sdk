@@ -112,9 +112,10 @@ also carries the class label and the regeneration command as an in-file
 header comment: WAT's `;;` comment syntax makes that free, where the `ir/`
 renderer's dataclass-style dump has no comment syntax to carry it in.
 
-- Source of truth: `tests/unit/test_emitter_printer.py` -- `FIXTURE_NAMES`
-  names the four fixtures, `render_golden` builds each one through
-  `serpent.emitter.build_file` and renders it with
+- Source of truth: `tests/unit/test_emitter_printer.py` -- `FIXTURE_SOURCES`
+  pairs every snapshotted source (in `tests/fixtures/` and, since M1-E, in
+  `examples/`) with its golden stem, and `render_golden` builds each one
+  through `serpent.emitter.build_file` and renders it with
   `serpent.emitter.printer.disassemble`.
 - Regenerate all of them with:
 

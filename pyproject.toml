@@ -33,6 +33,14 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+# `examples/` is deliberately NOT added here. `src` is ruff's first-party
+# resolution root list, and adding a fourth entry changes how isort resolves
+# imports in the OTHER roots: it makes `ruff check .` start reporting I001 on
+# `spikes/spike1/test_local_run.py`, which is frozen historical evidence that
+# must not be reformatted (R5). The examples import `serpent` and nothing else,
+# so they need no resolution root; the gate that covers them is
+# `ruff format --check src tests examples` (ci.yml) plus `ruff check .`, which
+# already reaches every file in the repo.
 src = ["src", "tests", "spikes"]
 # `tests/must_reject/` fixtures (M1-C Task 2) are deliberately invalid-as-
 # formatted Python -- excluded from `ruff format --check` too, not just lint
@@ -59,7 +67,12 @@ extend-exclude = ["tests/must_reject"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src", "tests"]
+# `examples/` is in scope (M1-E ruling E6): the shipped examples are the
+# executable proof of the zero-plugin `mypy --strict` pitch, so an example that
+# only type-checks with a plugin -- or not at all -- must fail the gate. It is a
+# FLAT directory of modules, not a package (no `__init__.py`), which is all mypy
+# needs; `tests/unit/test_examples.py` loads each one by path.
+files = ["src", "tests", "examples"]
 # `tests/must_reject/` fixtures (M1-C Task 2) are deliberately invalid-as-
 # typed Python -- the executable must_reject/ subset spec, compiled AS TEXT
 # by the runner and never imported (dossier E15, BL-2; precedent for the
