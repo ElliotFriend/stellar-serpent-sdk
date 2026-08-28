@@ -309,6 +309,21 @@ def test_every_ratified_part_builds_and_validates() -> None:
     assert host.invoke("u64_add", 2, 3) == 5
 
 
+def test_the_inventory_covers_every_name_the_frontend_can_ask_for_at_64_bits() -> None:
+    # The narrow half of Task 13's `runtime_parts_needed <= parts D links`,
+    # pinned here because ruling E3 renamed BOTH sides in one task: a typo in
+    # either `_collect_runtime_parts` or `PART_BUILDERS` would otherwise only
+    # surface as an `EmitError` in whichever contract happened to use that
+    # operator first.
+    wanted = {f"{prefix}_{op.name.lower()}" for prefix in ("u64", "i64") for op in BinaryOp}
+    assert wanted <= set(arith.PART_BUILDERS)
+    # And nothing 32-bit or `neg`-shaped crept back in at a native width.
+    assert not {n for n in arith.PART_BUILDERS if n.startswith(("u32_", "i32_"))}
+    assert "u64_neg" not in arith.PART_BUILDERS
+    assert "i64_neg" not in arith.PART_BUILDERS
+    assert "overflow_check" not in arith.PART_BUILDERS
+
+
 def test_ensure_part_indices_survive_a_real_call() -> None:
     # Review B1's bug class: a call to the WRONG function of the same type
     # validates perfectly, so this asserts a returned VALUE. The probe is
