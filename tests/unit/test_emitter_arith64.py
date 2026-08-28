@@ -11,7 +11,7 @@ What is being protected, in order of how badly it would bite:
   the DIVIDEND's sign, `MIN % -1 == 0`, and every out-of-range result reaches
   `fail_with_error(ArithmeticOverflow)` rather than wrapping. Wrapping output
   validates and deploys, so the expectations here are written out as integers
-  computed under A4's rules (spelled inline, `_a4_floordiv`/`_a4_mod`), never
+  computed under A4's rules (spelled inline, `a4_floordiv`/`a4_mod`), never
   as Python's own `//`/`%` -- Python floors and takes the divisor's sign, and
   reusing it would encode the wrong contract in the very test meant to pin it.
 * **Review B10's unbox recipe.** The small form's 56-bit body already carries
@@ -52,7 +52,7 @@ from serpent.emitter import arith, frame
 from serpent.emitter.arith import EmitCtx
 from serpent.emitter.layout import Memory
 from serpent.errors import CODE_ARITHMETIC_OVERFLOW
-from tests.harness import engine, testmod
+from tests.harness import engine, i256, testmod
 
 # --- the values every vector is written against -------------------------------
 
@@ -71,20 +71,23 @@ OVERFLOW = object()
 
 
 # --- A4's arithmetic, written out rather than borrowed from Python -----------
+# Public (no leading underscore) because `test_emitter_arith128.py` imports
+# them: one oracle for A4's rules across both files, so a "fix" to one cannot
+# leave the other pinning the opposite contract.
 
 
-def _a4_floordiv(a: int, b: int) -> int:
+def a4_floordiv(a: int, b: int) -> int:
     """`//` TRUNCATED TOWARD ZERO (A4) -- not Python's floor division."""
     q = abs(a) // abs(b)
     return -q if (a < 0) != (b < 0) else q
 
 
-def _a4_mod(a: int, b: int) -> int:
+def a4_mod(a: int, b: int) -> int:
     """`%` taking the DIVIDEND's sign (A4) -- not Python's divisor's sign."""
-    return a - _a4_floordiv(a, b) * b
+    return a - a4_floordiv(a, b) * b
 
 
-def _a4_apply(op: BinaryOp, a: int, b: int) -> int:
+def a4_apply(op: BinaryOp, a: int, b: int) -> int:
     if op is BinaryOp.ADD:
         return a + b
     if op is BinaryOp.SUB:
@@ -92,8 +95,8 @@ def _a4_apply(op: BinaryOp, a: int, b: int) -> int:
     if op is BinaryOp.MUL:
         return a * b
     if op is BinaryOp.FLOORDIV:
-        return _a4_floordiv(a, b)
-    return _a4_mod(a, b)
+        return a4_floordiv(a, b)
+    return a4_mod(a, b)
 
 
 # --- the host's integer bridges, as Python callbacks --------------------------
@@ -140,8 +143,17 @@ def _part_specs(ctx: EmitCtx) -> list[_Spec]:
 
 
 def _module(ctx: EmitCtx, head: Sequence[_Spec] = ()) -> bytes:
-    """Assemble `head` (the module's own functions) followed by `ctx`'s parts."""
-    return testmod.build_test_module([*head, *_part_specs(ctx)], imports=ctx.import_order)
+    """Assemble `head` (the module's own functions) followed by `ctx`'s parts.
+
+    A page of memory is added iff a linked part reserved scratch (review B8):
+    the two-result 128-bit parts write their `lo` limb there, so linking one
+    forces memory even though nothing in this file interns a literal.
+    """
+    return testmod.build_test_module(
+        [*head, *_part_specs(ctx)],
+        imports=ctx.import_order,
+        memory_pages=1 if ctx.needs_memory else None,
+    )
 
 
 @functools.cache
@@ -376,10 +388,14 @@ def test_parts_read_mid_build_says_so_instead_of_raising_keyerror(
 
 def test_every_ratified_part_builds_and_validates() -> None:
     # Building the whole inventory into one module also proves the parts do not
-    # collide in the index space and that every import they name is bindable.
+    # collide in the index space and that every import they name is bindable --
+    # which is why the 128-bit bindings are merged in here rather than the
+    # 128-bit parts being excluded: an unbindable import is exactly the kind of
+    # break this test exists to catch.
     names = tuple(sorted(arith.PART_BUILDERS))
     store = _ObjectStore()
-    host = engine.MiniHost(_parts_wasm(names), imports=store.bridges())
+    wide = i256.Wide256Host()
+    host = engine.MiniHost(_parts_wasm(names), imports=store.bridges() | wide.bindings())
     assert host.invoke("u64_add", 2, 3) == 5
 
 
@@ -844,7 +860,7 @@ _FUZZ = settings(
 def _fuzz_binary(ty: Ty, op: BinaryOp, part: str | None, a: int, b: int, lo: int, hi: int) -> None:
     if op in (BinaryOp.FLOORDIV, BinaryOp.MOD) and b == 0:
         return  # A4 leaves this to the wasm trap; covered by its own test
-    exact = _a4_apply(op, a, b)
+    exact = a4_apply(op, a, b)
     want: object = exact if lo <= exact <= hi else OVERFLOW
     if part is not None:
         _check_part(part, (a, b), want)

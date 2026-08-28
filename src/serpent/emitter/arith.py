@@ -49,6 +49,52 @@ range-checks first.
 so the error path is ``i64.const <error Val>``, ``call fail_with_error``,
 ``drop``, and **no ``unreachable`` after it**. The code that follows is
 statically reachable and must stay well-typed, but no execution reaches it.
+
+## 128-bit values: two limbs, and the two-result convention (review m4)
+
+A 128-bit value travels as **two raw i64 limbs, ``(hi, lo)``** -- never as a
+``Val``, and never as one word. A wasm function returns one value, so a part
+that produces a 128-bit result writes ``lo`` to a fixed scratch slot
+(``EmitCtx.lo_slot``, one slot PER PART, reserved at build time -- P12) and
+returns ``hi``.
+
+**That convention is safe under exactly two invariants. Both are load-bearing
+and neither is locally visible from a call site:**
+
+1. **No part ever reaches itself**, directly or through another part. C12
+   rejects recursion at tier 1 and ``ensure_part`` refuses a self-linking
+   part, so "one slot per part" is also "one LIVE slot per part": there is
+   never a second activation of ``u128_mul`` holding a different ``lo``.
+2. **The caller loads ``lo`` IMMEDIATELY** -- into a local, before any other
+   part call can be emitted. ``call_wide_part`` is the only sanctioned way to
+   call a two-result part and it emits that load itself, which is what makes
+   ``(a*b) + (c*d)`` safe: each product's ``lo`` is already in a local before
+   the next call exists.
+
+**Consequence for Task 10 (review B8):** linking any two-result part forces
+linear memory even when ``compiled.needs_memory`` is ``False`` -- a contract
+that only multiplies ``U128``s has no literals and no linear-memory host call
+and still needs a page. ``EmitCtx.needs_memory`` and ``PARTS_NEEDING_MEMORY``
+are the markers to read; do not re-derive the fact from the IR.
+
+## The 128-bit division route (S13, F.1.2, review B4)
+
+There is no ``i128.div`` and no wide-arithmetic proposal on chain, so ``//``
+and ``%`` go out to the host's 256-bit integers: sign-extend the pair into
+four limbs (**all-ones words for a negative i128** -- F.1.12; zero for u128),
+``obj_from_{i,u}256_pieces``, ``{i,u}256_div``, then back. Two traps in that
+sentence:
+
+* ``i256_rem_euclid``/``u256_rem_euclid`` are **never used** (F.1.2). Their
+  documented modulo is EUCLIDEAN and A4's ``%`` follows the DIVIDEND's sign,
+  so they disagree at ``-7 % 2`` -- ``+1`` against A4's ``-1``. ``%`` is
+  computed as ``lhs - (lhs // rhs) * rhs`` from this route's own division.
+* The division RESULT is an ``I256Val``/``U256Val``, and the host returns the
+  **small form** for any quotient inside the 56-bit body -- which is almost
+  every real quotient (``U128(100) // U128(5)`` among them). ``obj_to_*``
+  accepts an object and nothing else, so the result is TAG-BRANCHED: small
+  tag -> one ``shr_s``/``shr_u`` 8 IS the low limb and its extension IS the
+  other three; object tag -> the four accessors (review B4).
 """
 
 from collections.abc import Callable
@@ -58,19 +104,26 @@ from serpent import val
 from serpent._host import functions_by_name
 from serpent.compiler.ir import BinaryOp
 from serpent.compiler.types_ import Ty, TyTag
-from serpent.emitter import opcodes
+from serpent.emitter import encode, opcodes
 from serpent.emitter.frame import CodeItem, EmitError, Fn
 from serpent.emitter.layout import Memory
 from serpent.errors import CODE_ARITHMETIC_OVERFLOW
 
 __all__ = [
+    "PARTS_NEEDING_MEMORY",
     "PART_BUILDERS",
     "EmitCtx",
     "Part",
+    "call_wide_part",
     "lower_binary",
     "lower_neg",
     "rebox",
+    "rebox_wide",
     "unbox",
+    "unbox_wide",
+    "wide_binary",
+    "wide_cmp",
+    "wide_neg",
 ]
 
 
@@ -98,6 +151,23 @@ _TAG_BITS = 8
 #: Where a U32/I32 immediate's payload sits: `body = major << 24 | minor` and
 #: `val = body << 8 | tag`, with `minor == 0`, so the payload starts at bit 32.
 _IMMEDIATE_SHIFT = 32
+
+#: The low 32 bits of a limb -- the half a 32x32->64 partial product takes.
+_MASK32 = (1 << 32) - 1
+
+#: Half a limb: how far the high 32 bits of a 64-bit word sit.
+_HALF_LIMB = 32
+
+#: Where a limb's sign bit is. `x >>s 63` is therefore `x`'s sign extension:
+#: all-ones for a negative limb, zero otherwise (F.1.12).
+_SIGN_SHIFT = 63
+
+#: `i64.load`/`i64.store`'s natural alignment, as the memarg's log2 form.
+_ALIGN_8 = encode.uleb(3)
+
+#: The memarg's static offset. Every scratch access here puts the whole
+#: address in the `i32.const` instead, so this is always zero.
+_OFFSET_0 = encode.uleb(0)
 
 
 # --- one linked runtime part --------------------------------------------------
@@ -817,6 +887,1009 @@ def _build_box_i64(ctx: EmitCtx) -> Fn:
     return fn
 
 
+# ==============================================================================
+# 128-bit limb arithmetic
+# ==============================================================================
+#
+# Everything below works on RAW limb PAIRS. A four-parameter part reads
+# ``(a_hi, a_lo, b_hi, b_lo)`` from locals 0-3; a two-parameter one reads
+# ``(hi, lo)`` from locals 0-1. Nothing here ever sees a ``Val`` except the
+# box/unbox pair, and nothing here ever returns two values -- see the module
+# docstring's two-result convention and its two safety invariants.
+
+
+# --- small emission helpers, limb flavour --------------------------------------
+
+
+def _truthy(fn: Fn) -> None:
+    """An i64 0/1 flag on the stack -> the i32 boolean an ``if`` wants."""
+    fn.i64_const(0)
+    fn.relop_i64(opcodes.I64_NE)
+
+
+def _flag(fn: Fn, a: int, b: int, opcode: int) -> None:
+    """``a <op> b`` over two locals, left on the stack as an i64 0/1 flag.
+
+    i64 rather than i32 so flags compose with ``i64.and``/``i64.or`` -- the
+    overflow criteria below are conjunctions of three and four of them.
+    """
+    fn.local_get(a)
+    fn.local_get(b)
+    fn.relop_i64(opcode)
+    _extend_u(fn)
+
+
+def _flag_const(fn: Fn, a: int, value: int, opcode: int) -> None:
+    """``a <op> value``, left on the stack as an i64 0/1 flag."""
+    fn.local_get(a)
+    fn.i64_const(value)
+    fn.relop_i64(opcode)
+    _extend_u(fn)
+
+
+def _limbs_eq(fn: Fn, hi: int, lo: int, want_hi: int, want_lo: int) -> None:
+    """``(hi, lo) == (want_hi, want_lo)``, as an i64 0/1 flag.
+
+    Both limbs, always: ``MIN`` is ``hi == 2**63`` AND ``lo == 0``, and a test
+    that checked only the hi limb would call every value in
+    ``[MIN, MIN + 2**64)`` ``MIN``.
+    """
+    _flag_const(fn, hi, want_hi, opcodes.I64_EQ)
+    _flag_const(fn, lo, want_lo, opcodes.I64_EQ)
+    fn.binop_i64(opcodes.I64_AND)
+
+
+def _store_lo(fn: Fn, addr: int, slot: int) -> None:
+    """``i64.store`` local ``slot`` at scratch address ``addr``."""
+    fn.i32_const(addr)
+    fn.local_get(slot)
+    fn.pop("i64")
+    fn.pop("i32")
+    fn.op(opcodes.I64_STORE, _ALIGN_8, _OFFSET_0)
+
+
+def _load_lo(fn: Fn, addr: int) -> None:
+    """``i64.load`` from scratch address ``addr``, leaving the word on the stack."""
+    fn.i32_const(addr)
+    fn.pop("i32")
+    fn.op(opcodes.I64_LOAD, _ALIGN_8, _OFFSET_0)
+    fn.push("i64")
+
+
+def _return_wide(fn: Fn, ctx: EmitCtx, hi: int, lo: int) -> None:
+    """The two-result return: ``lo`` to THIS part's slot, ``hi`` on the stack.
+
+    The slot is looked up from ``fn.name`` rather than passed in, so a part
+    cannot be given the wrong one by a copy-paste -- writing another part's
+    ``lo`` slot would be silent, and the caller would read a stale limb.
+    """
+    _store_lo(fn, ctx.lo_slot(fn.name), lo)
+    fn.local_get(hi)
+    fn.ret()
+
+
+def call_wide_part(fn: Fn, ctx: EmitCtx, name: str, nargs: int) -> tuple[int, int]:
+    """Call two-result part ``name`` (args already on the stack); return its limbs.
+
+    **The only sanctioned way to call one.** The ``i64.load`` of ``lo`` is
+    emitted here, immediately after the call and before any other instruction
+    the caller might want -- which is invariant (2) of the module docstring's
+    two-result convention (review m4). A caller that hand-rolled the call could
+    interleave a second part call before the load and read the wrong limb, and
+    that would validate.
+    """
+    defidx = ctx.ensure_part(name)
+    slot = ctx.lo_slot(name)
+    fn.call_defined(defidx, nargs, ("i64",))
+    hi = fn.new_local()
+    fn.local_set(hi)
+    lo = fn.new_local()
+    _load_lo(fn, slot)
+    fn.local_set(lo)
+    return hi, lo
+
+
+def _copy128_into(fn: Fn, hi: int, lo: int, hi_dst: int, lo_dst: int) -> None:
+    fn.local_get(hi)
+    fn.local_set(hi_dst)
+    fn.local_get(lo)
+    fn.local_set(lo_dst)
+
+
+def _neg128_into(fn: Fn, hi: int, lo: int, hi_dst: int, lo_dst: int) -> None:
+    """``(hi_dst, lo_dst) = -(hi, lo)``, two's complement, WRAPPING.
+
+    ``lo' = 0 - lo`` and ``hi' = 0 - hi - borrow``, where the borrow is "the
+    low limb was nonzero". Wrapping is correct for every input except ``MIN``,
+    whose negation is itself; callers check for ``MIN`` first.
+
+    The high limb is written FIRST so that aliasing ``lo_dst`` onto ``lo`` (a
+    caller negating in place) still reads the original low limb for the borrow.
+    """
+    borrow = fn.new_local()
+    _flag_const(fn, lo, 0, opcodes.I64_NE)
+    fn.local_set(borrow)
+    fn.i64_const(0)
+    fn.local_get(hi)
+    fn.binop_i64(opcodes.I64_SUB)
+    fn.local_get(borrow)
+    fn.binop_i64(opcodes.I64_SUB)
+    fn.local_set(hi_dst)
+    fn.i64_const(0)
+    fn.local_get(lo)
+    fn.binop_i64(opcodes.I64_SUB)
+    fn.local_set(lo_dst)
+
+
+def _magnitude_into(fn: Fn, hi: int, lo: int, hi_dst: int, lo_dst: int) -> int:
+    """``(hi_dst, lo_dst) = |(hi, lo)|``; returns the local holding "was negative".
+
+    Exact only because every caller has already answered ``MIN`` (``0 - MIN``
+    wraps back to ``MIN``, so a magnitude route cannot represent it).
+    """
+    negative = fn.new_local()
+    _flag_const(fn, hi, 0, opcodes.I64_LT_S)
+    fn.local_set(negative)
+    fn.local_get(negative)
+    _truthy(fn)
+    fn.begin_if(None)
+    _neg128_into(fn, hi, lo, hi_dst, lo_dst)
+    fn.else_()
+    _copy128_into(fn, hi, lo, hi_dst, lo_dst)
+    fn.end_if()
+    return negative
+
+
+# --- addition and subtraction ---------------------------------------------------
+
+
+def _add_limbs(fn: Fn, hi_dst: int, lo_dst: int) -> int:
+    """``(hi_dst, lo_dst) = a + b``, WRAPPING; returns the CARRY-OUT flag's local.
+
+    The carry out of the LOW limb is "the sum came out below the addend", the
+    same unsigned-wrap test ``u64_add`` uses.
+
+    The HIGH limb then sums THREE values -- ``a_hi``, ``b_hi``, and that carry
+    -- so it can wrap in either step and **both** are tested. One test is not
+    enough, and the vector that proves it is ``U128_MAX + U128_MAX``: the first
+    addition wraps to ``2**64 - 2`` and folding the carry in brings it back to
+    ``2**64 - 1``, which is exactly ``a_hi``, so a lone ``hi <u a_hi`` reports
+    no overflow for a sum that plainly escaped.
+    """
+    carry = fn.new_local()
+    partial = fn.new_local()
+    carry_out = fn.new_local()
+    fn.local_get(1)
+    fn.local_get(3)
+    fn.binop_i64(opcodes.I64_ADD)
+    fn.local_set(lo_dst)
+    _flag(fn, lo_dst, 1, opcodes.I64_LT_U)
+    fn.local_set(carry)
+    fn.local_get(0)
+    fn.local_get(2)
+    fn.binop_i64(opcodes.I64_ADD)
+    fn.local_set(partial)
+    _flag(fn, partial, 0, opcodes.I64_LT_U)
+    fn.local_get(partial)
+    fn.local_get(carry)
+    fn.binop_i64(opcodes.I64_ADD)
+    fn.local_set(hi_dst)
+    _flag(fn, hi_dst, partial, opcodes.I64_LT_U)
+    fn.binop_i64(opcodes.I64_OR)
+    fn.local_set(carry_out)
+    return carry_out
+
+
+def _sub_limbs(fn: Fn, hi_dst: int, lo_dst: int) -> None:
+    """``(hi_dst, lo_dst) = a - b``, WRAPPING, with the borrow propagated."""
+    borrow = fn.new_local()
+    _flag(fn, 1, 3, opcodes.I64_LT_U)
+    fn.local_set(borrow)
+    fn.local_get(1)
+    fn.local_get(3)
+    fn.binop_i64(opcodes.I64_SUB)
+    fn.local_set(lo_dst)
+    fn.local_get(0)
+    fn.local_get(2)
+    fn.binop_i64(opcodes.I64_SUB)
+    fn.local_get(borrow)
+    fn.binop_i64(opcodes.I64_SUB)
+    fn.local_set(hi_dst)
+
+
+def _build_u128_add(ctx: EmitCtx) -> Fn:
+    """``a + b``; overflow iff the 128-bit sum carried out of the HIGH limb.
+
+    Which is exactly ``_add_limbs``' carry-out flag -- see its docstring for
+    why that flag is the OR of two wrap tests and not one.
+    """
+    fn = _part_fn("u128_add", 4)
+    hi = fn.new_local()
+    lo = fn.new_local()
+    carry_out = _add_limbs(fn, hi, lo)
+    fn.local_get(carry_out)
+    _truthy(fn)
+    _fail_if(fn, ctx)
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+def _build_i128_add(ctx: EmitCtx) -> Fn:
+    """``a + b``; overflow iff ``((a_hi ^ hi) & (b_hi ^ hi)) < 0``.
+
+    ``i64_add``'s sign analysis, applied to the HIGH limb -- which is where a
+    128-bit two's-complement value keeps its sign. The carry from the low limb
+    does not change the criterion: it only changes what the hi limb sums to.
+    """
+    fn = _part_fn("i128_add", 4)
+    hi = fn.new_local()
+    lo = fn.new_local()
+    _add_limbs(fn, hi, lo)
+    fn.local_get(0)
+    fn.local_get(hi)
+    fn.binop_i64(opcodes.I64_XOR)
+    fn.local_get(2)
+    fn.local_get(hi)
+    fn.binop_i64(opcodes.I64_XOR)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.i64_const(0)
+    fn.relop_i64(opcodes.I64_LT_S)
+    _fail_if(fn, ctx)
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+def _build_u128_sub(ctx: EmitCtx) -> Fn:
+    """``a - b``; overflow iff ``a < b`` (there are no negative U128s).
+
+    The 128-bit unsigned compare, written out: the hi limbs decide unless they
+    are equal, and then the lo limbs do -- UNSIGNED, always, a low limb having
+    no sign of its own.
+    """
+    fn = _part_fn("u128_sub", 4)
+    hi = fn.new_local()
+    lo = fn.new_local()
+    _flag(fn, 0, 2, opcodes.I64_LT_U)
+    _flag(fn, 0, 2, opcodes.I64_EQ)
+    _flag(fn, 1, 3, opcodes.I64_LT_U)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.binop_i64(opcodes.I64_OR)
+    _truthy(fn)
+    _fail_if(fn, ctx)
+    _sub_limbs(fn, hi, lo)
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+def _build_i128_sub(ctx: EmitCtx) -> Fn:
+    """``a - b``; overflow iff ``((a_hi ^ b_hi) & (a_hi ^ hi)) < 0``.
+
+    ``i64_sub``'s analysis one limb up: the operands' signs must differ AND
+    the result's sign must differ from the minuend's.
+    """
+    fn = _part_fn("i128_sub", 4)
+    hi = fn.new_local()
+    lo = fn.new_local()
+    _sub_limbs(fn, hi, lo)
+    fn.local_get(0)
+    fn.local_get(2)
+    fn.binop_i64(opcodes.I64_XOR)
+    fn.local_get(0)
+    fn.local_get(hi)
+    fn.binop_i64(opcodes.I64_XOR)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.i64_const(0)
+    fn.relop_i64(opcodes.I64_LT_S)
+    _fail_if(fn, ctx)
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+# --- multiplication -------------------------------------------------------------
+
+
+def _build_mul64_wide(ctx: EmitCtx) -> Fn:
+    """``a * b`` as a FULL 128-bit product, from four 32x32->64 partials (S13).
+
+    ``i64.mul_wide_s`` is **banned**: the chain's wasmi 0.31 has no
+    wide-arithmetic proposal, so a module using it would run in a laxer
+    harness and trap on chain -- the one direction a lowering must never be
+    wrong in. The harness pins the feature off for the same reason.
+
+    Splitting each operand into 32-bit halves makes every partial product
+    exact in 64 bits, and so is every accumulation below:
+
+    * ``mid`` is one 32-bit value plus two more, so it stays under ``2**34``;
+    * ``hi`` is ``a1*b1 <= (2**32 - 1)**2`` plus three values under ``2**32``,
+      which is still under ``2**64``.
+
+    Two-result: ``lo`` goes to this part's scratch slot, ``hi`` is returned.
+    """
+    fn = _part_fn("mul64_wide", 2)
+    a0 = fn.new_local()
+    a1 = fn.new_local()
+    b0 = fn.new_local()
+    b1 = fn.new_local()
+    p00 = fn.new_local()
+    p01 = fn.new_local()
+    p10 = fn.new_local()
+    mid = fn.new_local()
+    hi = fn.new_local()
+    lo = fn.new_local()
+
+    for src, low, high in ((0, a0, a1), (1, b0, b1)):
+        fn.local_get(src)
+        fn.i64_const(_MASK32)
+        fn.binop_i64(opcodes.I64_AND)
+        fn.local_set(low)
+        fn.local_get(src)
+        fn.i64_const(_HALF_LIMB)
+        fn.binop_i64(opcodes.I64_SHR_U)
+        fn.local_set(high)
+
+    for dst, left, right in ((p00, a0, b0), (p01, a0, b1), (p10, a1, b0)):
+        fn.local_get(left)
+        fn.local_get(right)
+        fn.binop_i64(opcodes.I64_MUL)
+        fn.local_set(dst)
+
+    # mid = high(p00) + low(p01) + low(p10) -- the column at 2**32.
+    fn.local_get(p00)
+    fn.i64_const(_HALF_LIMB)
+    fn.binop_i64(opcodes.I64_SHR_U)
+    fn.local_get(p01)
+    fn.i64_const(_MASK32)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.binop_i64(opcodes.I64_ADD)
+    fn.local_get(p10)
+    fn.i64_const(_MASK32)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.binop_i64(opcodes.I64_ADD)
+    fn.local_set(mid)
+
+    # lo = low(p00) | (low(mid) << 32)
+    fn.local_get(p00)
+    fn.i64_const(_MASK32)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.local_get(mid)
+    fn.i64_const(_HALF_LIMB)
+    fn.binop_i64(opcodes.I64_SHL)
+    fn.binop_i64(opcodes.I64_OR)
+    fn.local_set(lo)
+
+    # hi = a1*b1 + high(p01) + high(p10) + high(mid)
+    fn.local_get(a1)
+    fn.local_get(b1)
+    fn.binop_i64(opcodes.I64_MUL)
+    for src in (p01, p10, mid):
+        fn.local_get(src)
+        fn.i64_const(_HALF_LIMB)
+        fn.binop_i64(opcodes.I64_SHR_U)
+        fn.binop_i64(opcodes.I64_ADD)
+    fn.local_set(hi)
+
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+def _mul64_wide(fn: Fn, ctx: EmitCtx, a: int, b: int) -> tuple[int, int]:
+    """``mul64_wide(a, b)`` over two locals; returns its ``(hi, lo)`` locals."""
+    fn.local_get(a)
+    fn.local_get(b)
+    return call_wide_part(fn, ctx, "mul64_wide", 2)
+
+
+def _umul128_checked(
+    fn: Fn, ctx: EmitCtx, a_hi: int, a_lo: int, b_hi: int, b_lo: int
+) -> tuple[int, int]:
+    """The 128-bit product of two UNSIGNED limb pairs, or ArithmeticOverflow.
+
+    Overflow iff **any bit escapes the 128-bit window** (review B9's unsigned
+    criterion). The four cross products sit at weights ``2**0``, ``2**64``,
+    ``2**64`` and ``2**128``::
+
+        a_lo*b_lo -> (h0, l0)      a_lo*b_hi -> (h1, l1)
+        a_hi*b_lo -> (h2, l2)      a_hi*b_hi -> entirely above the window
+
+    so the answer is ``(h0 + l1 + l2, l0)`` and a bit escapes iff ``a_hi`` and
+    ``b_hi`` are both nonzero, or either of ``h1``/``h2`` is nonzero, or one of
+    the two high-limb additions carries out. ``a_hi * b_hi`` is never computed:
+    as an exact integer it is zero iff one of its operands is.
+    """
+    h0, l0 = _mul64_wide(fn, ctx, a_lo, b_lo)
+    h1, l1 = _mul64_wide(fn, ctx, a_lo, b_hi)
+    h2, l2 = _mul64_wide(fn, ctx, a_hi, b_lo)
+
+    _flag_const(fn, a_hi, 0, opcodes.I64_NE)
+    _flag_const(fn, b_hi, 0, opcodes.I64_NE)
+    fn.binop_i64(opcodes.I64_AND)
+    _truthy(fn)
+    _fail_if(fn, ctx)
+
+    _flag_const(fn, h1, 0, opcodes.I64_NE)
+    _flag_const(fn, h2, 0, opcodes.I64_NE)
+    fn.binop_i64(opcodes.I64_OR)
+    _truthy(fn)
+    _fail_if(fn, ctx)
+
+    partial = fn.new_local()
+    fn.local_get(h0)
+    fn.local_get(l1)
+    fn.binop_i64(opcodes.I64_ADD)
+    fn.local_tee(partial)
+    fn.local_get(h0)
+    fn.relop_i64(opcodes.I64_LT_U)
+    _fail_if(fn, ctx)
+
+    hi = fn.new_local()
+    fn.local_get(partial)
+    fn.local_get(l2)
+    fn.binop_i64(opcodes.I64_ADD)
+    fn.local_tee(hi)
+    fn.local_get(partial)
+    fn.relop_i64(opcodes.I64_LT_U)
+    _fail_if(fn, ctx)
+    return hi, l0
+
+
+def _mul128_wrapping(
+    fn: Fn, ctx: EmitCtx, a_hi: int, a_lo: int, b_hi: int, b_lo: int
+) -> tuple[int, int]:
+    """``a * b`` truncated to 128 bits, UNCHECKED -- the ``%`` reconstruction.
+
+    Used only for ``lhs - (lhs // rhs) * rhs``, where the product is
+    mathematically no larger in magnitude than ``lhs`` (the quotient came out
+    of an exactness-checked division), so nothing can escape and there is
+    nothing to check. Signedness does not enter: two's-complement multiply is
+    the same operation for both.
+    """
+    h0, l0 = _mul64_wide(fn, ctx, a_lo, b_lo)
+    hi = fn.new_local()
+    fn.local_get(h0)
+    fn.local_get(a_lo)
+    fn.local_get(b_hi)
+    fn.binop_i64(opcodes.I64_MUL)
+    fn.binop_i64(opcodes.I64_ADD)
+    fn.local_get(a_hi)
+    fn.local_get(b_lo)
+    fn.binop_i64(opcodes.I64_MUL)
+    fn.binop_i64(opcodes.I64_ADD)
+    fn.local_set(hi)
+    return hi, l0
+
+
+def _build_u128_mul(ctx: EmitCtx) -> Fn:
+    """``a * b``; overflow iff any bit escapes the 128-bit window (review B9)."""
+    fn = _part_fn("u128_mul", 4)
+    hi, lo = _umul128_checked(fn, ctx, 0, 1, 2, 3)
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+def _min128_arm(fn: Fn, ctx: EmitCtx, other_hi: int, other_lo: int) -> None:
+    """The ``MIN * other`` arm of ``i128_mul`` -- ``i64_mul``'s M7 arm, widened.
+
+    ``MIN`` has no positive twin, so the magnitude route below cannot handle
+    it. Only two products involving it are representable -- ``MIN * 0 == 0``
+    and ``MIN * 1 == MIN`` -- so they are answered here and everything else,
+    ``MIN * -1`` included, is the overflow.
+
+    The trailing return is never executed (the host traps inside
+    ``fail_with_error``); it is there so the arm returns on paper rather than
+    falling through into the magnitude code, which is exactly the code that
+    cannot represent ``MIN``.
+    """
+    out_hi = fn.new_local()
+    out_lo = fn.new_local()
+    for other_wanted_lo, result_hi in ((0, 0), (1, _I64_MIN)):
+        _limbs_eq(fn, other_hi, other_lo, 0, other_wanted_lo)
+        _truthy(fn)
+        fn.begin_if(None)
+        fn.i64_const(result_hi)
+        fn.local_set(out_hi)
+        fn.i64_const(0)
+        fn.local_set(out_lo)
+        _return_wide(fn, ctx, out_hi, out_lo)
+        fn.end_if()
+    _fail_overflow(fn, ctx)
+    fn.i64_const(0)
+    fn.local_set(out_hi)
+    fn.i64_const(0)
+    fn.local_set(out_lo)
+    _return_wide(fn, ctx, out_hi, out_lo)
+
+
+def _build_i128_mul(ctx: EmitCtx) -> Fn:
+    """``a * b`` over MAGNITUDES, with the sign applied last (review B9).
+
+    The unsigned criterion is **wrong** for signed operands and the review
+    names the vector: ``I128(-1) * I128(-1)`` has limbs ``hi = lo = 2**64 - 1``
+    on both sides, whose 256-bit unsigned product has a nonzero high half --
+    "a bit escaped the window" would report overflow for an answer of ``1``.
+
+    So: answer ``MIN`` first (it has no magnitude), take magnitudes, multiply
+    them with the unsigned check, then compare against the bound for the
+    RESULT's own sign -- ``2**127 - 1`` when non-negative, ``2**127`` when
+    negative, because ``2**126 * -2`` is exactly ``MIN`` and legal while
+    ``2**126 * 2`` is not -- and only then apply the sign.
+    """
+    fn = _part_fn("i128_mul", 4)
+    for operand_hi, operand_lo, other_hi, other_lo in ((0, 1, 2, 3), (2, 3, 0, 1)):
+        _limbs_eq(fn, operand_hi, operand_lo, _I64_MIN, 0)
+        _truthy(fn)
+        fn.begin_if(None)
+        _min128_arm(fn, ctx, other_hi, other_lo)
+        fn.end_if()
+
+    lhs_hi = fn.new_local()
+    lhs_lo = fn.new_local()
+    rhs_hi = fn.new_local()
+    rhs_lo = fn.new_local()
+    lhs_negative = _magnitude_into(fn, 0, 1, lhs_hi, lhs_lo)
+    rhs_negative = _magnitude_into(fn, 2, 3, rhs_hi, rhs_lo)
+
+    product_hi, product_lo = _umul128_checked(fn, ctx, lhs_hi, lhs_lo, rhs_hi, rhs_lo)
+
+    negative = fn.new_local()
+    fn.local_get(lhs_negative)
+    fn.local_get(rhs_negative)
+    fn.binop_i64(opcodes.I64_XOR)
+    fn.local_set(negative)
+
+    # The magnitude's top bit set means it is at least 2**127; the ONE such
+    # magnitude that is still representable is exactly 2**127, and only when
+    # the result is negative (it is |MIN|).
+    exactly_min = fn.new_local()
+    fn.local_get(negative)
+    _limbs_eq(fn, product_hi, product_lo, _I64_MIN, 0)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.local_set(exactly_min)
+    _flag_const(fn, product_hi, 0, opcodes.I64_LT_S)
+    _flag_const(fn, exactly_min, 0, opcodes.I64_EQ)
+    fn.binop_i64(opcodes.I64_AND)
+    _truthy(fn)
+    _fail_if(fn, ctx)
+
+    hi = fn.new_local()
+    lo = fn.new_local()
+    fn.local_get(negative)
+    _truthy(fn)
+    fn.begin_if(None)
+    _neg128_into(fn, product_hi, product_lo, hi, lo)
+    fn.else_()
+    _copy128_into(fn, product_hi, product_lo, hi, lo)
+    fn.end_if()
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+# --- negation and comparison ----------------------------------------------------
+
+
+def _build_u128_neg(ctx: EmitCtx) -> Fn:
+    """``-x``: there is no negative U128, so anything nonzero is the overflow."""
+    fn = _part_fn("u128_neg", 2)
+    hi = fn.new_local()
+    lo = fn.new_local()
+    fn.local_get(0)
+    fn.local_get(1)
+    fn.binop_i64(opcodes.I64_OR)
+    fn.i64_const(0)
+    fn.relop_i64(opcodes.I64_NE)
+    _fail_if(fn, ctx)
+    fn.i64_const(0)
+    fn.local_set(hi)
+    fn.i64_const(0)
+    fn.local_set(lo)
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+def _build_i128_neg(ctx: EmitCtx) -> Fn:
+    """``-x``: ``MIN`` is the overflow (no positive twin), else limb-wise negate."""
+    fn = _part_fn("i128_neg", 2)
+    hi = fn.new_local()
+    lo = fn.new_local()
+    _limbs_eq(fn, 0, 1, _I64_MIN, 0)
+    _truthy(fn)
+    _fail_if(fn, ctx)
+    _neg128_into(fn, 0, 1, hi, lo)
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+def _wide_cmp_fn(name: str, hi_lt: int) -> Fn:
+    """``cmp(a, b)`` -> raw ``-1``/``0``/``1`` (ruling E16).
+
+    ``hi_lt`` is ``i64.lt_s`` for I128 and ``i64.lt_u`` for U128 -- the HIGH
+    limb is where a 128-bit value's sign lives. The LOW limbs are compared
+    UNSIGNED at both signednesses: a low limb is a magnitude, not a number,
+    and comparing it signed inverts the order of every pair whose low limbs
+    straddle ``2**63``.
+    """
+    fn = _part_fn(name, 4)
+    for left, right, less_than in ((0, 2, hi_lt), (1, 3, opcodes.I64_LT_U)):
+        fn.local_get(left)
+        fn.local_get(right)
+        fn.relop_i64(opcodes.I64_NE)
+        fn.begin_if(None)
+        fn.local_get(left)
+        fn.local_get(right)
+        fn.relop_i64(less_than)
+        fn.begin_if("i64")
+        fn.i64_const(-1)
+        fn.else_()
+        fn.i64_const(1)
+        fn.end_if()
+        fn.ret()
+        fn.end_if()
+    fn.i64_const(0)
+    fn.ret()
+    return fn
+
+
+def _build_u128_cmp(_ctx: EmitCtx) -> Fn:
+    return _wide_cmp_fn("u128_cmp", opcodes.I64_LT_U)
+
+
+def _build_i128_cmp(_ctx: EmitCtx) -> Fn:
+    return _wide_cmp_fn("i128_cmp", opcodes.I64_LT_S)
+
+
+# --- the i256 division route (S13, F.1.2, F.1.12, review B4) --------------------
+
+
+def _pack_256(fn: Fn, ctx: EmitCtx, hi: int, lo: int, *, signed: bool) -> int:
+    """Widen a 128-bit limb pair to a 256-bit ``Val``; returns its local.
+
+    **F.1.12:** the two new limbs are the pair's SIGN EXTENSION, which for a
+    negative I128 is two all-ones words -- ``hi >>s 63`` produces exactly
+    that, and produces zero for a non-negative one. Zero-filling them instead
+    would turn every negative dividend into a colossal positive number, which
+    divides perfectly well and returns a plausible wrong answer.
+
+    ``obj_from_i256_pieces``' first argument is the pin's one SIGNED
+    parameter (``('i64', 'u64', 'u64', 'u64')``); the guest passes raw words
+    either way, so the note is for the reader, not the encoder.
+    """
+    extension = fn.new_local()
+    if signed:
+        fn.local_get(hi)
+        fn.i64_const(_SIGN_SHIFT)
+        fn.binop_i64(opcodes.I64_SHR_S)
+    else:
+        fn.i64_const(0)
+    fn.local_set(extension)
+    fn.local_get(extension)
+    fn.local_get(extension)
+    fn.local_get(hi)
+    fn.local_get(lo)
+    constructor = "obj_from_i256_pieces" if signed else "obj_from_u256_pieces"
+    fn.call_import(ctx.host_import_name(constructor), 4, has_result=True)
+    packed = fn.new_local()
+    fn.local_set(packed)
+    return packed
+
+
+def _unpack_256(fn: Fn, ctx: EmitCtx, packed: int, *, signed: bool) -> tuple[int, int, int, int]:
+    """A 256-bit ``Val`` -> its four raw limbs, TAG-BRANCHED (review B4).
+
+    ``{i,u}256_div`` returns an ``I256Val``/``U256Val``, and the host hands
+    back the SMALL form for any value inside the 56-bit body -- which is
+    almost every real quotient, ``U128(100) // U128(5)`` included. The four
+    ``obj_to_*`` accessors take an OBJECT and nothing else, so calling one on
+    a small-form result is a host conversion error rather than a contract
+    error: the wrong failure, on the common path.
+
+    On the small path one shift IS the low limb (review B10's recipe: the
+    56-bit body's sign bit already sits at word bit 63), and its sign or zero
+    extension IS the other three limbs -- no host call at all.
+    """
+    hi_hi = fn.new_local()
+    hi_lo = fn.new_local()
+    lo_hi = fn.new_local()
+    lo_lo = fn.new_local()
+    small_tag = val.TAG_I256_SMALL if signed else val.TAG_U256_SMALL
+    prefix = "i" if signed else "u"
+
+    fn.local_get(packed)
+    fn.i64_const(_TAG_MASK)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.i64_const(small_tag)
+    fn.relop_i64(opcodes.I64_EQ)
+    fn.begin_if(None)
+    fn.local_get(packed)
+    fn.i64_const(_TAG_BITS)
+    fn.binop_i64(opcodes.I64_SHR_S if signed else opcodes.I64_SHR_U)
+    fn.local_set(lo_lo)
+    if signed:
+        fn.local_get(lo_lo)
+        fn.i64_const(_SIGN_SHIFT)
+        fn.binop_i64(opcodes.I64_SHR_S)
+    else:
+        fn.i64_const(0)
+    fn.local_set(lo_hi)
+    for src, dst in ((lo_hi, hi_lo), (lo_hi, hi_hi)):
+        fn.local_get(src)
+        fn.local_set(dst)
+    fn.else_()
+    for slot, limb in ((hi_hi, "hi_hi"), (hi_lo, "hi_lo"), (lo_hi, "lo_hi"), (lo_lo, "lo_lo")):
+        fn.local_get(packed)
+        fn.call_import(ctx.host_import_name(f"obj_to_{prefix}256_{limb}"), 1, has_result=True)
+        fn.local_set(slot)
+    fn.end_if()
+    return hi_hi, hi_lo, lo_hi, lo_lo
+
+
+def _check_extension(
+    fn: Fn, ctx: EmitCtx, hi_hi: int, hi_lo: int, lo_hi: int, *, signed: bool
+) -> None:
+    """Refuse a 256-bit result whose top two limbs are not pure extension.
+
+    A quotient of two 128-bit values only leaves the 128-bit range at
+    ``MIN // -1``, which the signed route already answered -- so this never
+    fires today. It is here because "the result narrows" is an assumption the
+    route makes on every single division, and an unchecked narrowing is the
+    F.1.3 anti-pattern one width up: it would validate, deploy, and return the
+    low half of the wrong number.
+    """
+    extension = fn.new_local()
+    if signed:
+        fn.local_get(lo_hi)
+        fn.i64_const(_SIGN_SHIFT)
+        fn.binop_i64(opcodes.I64_SHR_S)
+    else:
+        fn.i64_const(0)
+    fn.local_set(extension)
+    _flag(fn, hi_hi, extension, opcodes.I64_NE)
+    _flag(fn, hi_lo, extension, opcodes.I64_NE)
+    fn.binop_i64(opcodes.I64_OR)
+    _truthy(fn)
+    _fail_if(fn, ctx)
+
+
+def _min_over_minus_one(fn: Fn) -> None:
+    """``a == MIN && b == -1``, as an i32 boolean -- A4's one special pair."""
+    _limbs_eq(fn, 0, 1, _I64_MIN, 0)
+    _limbs_eq(fn, 2, 3, -1, -1)
+    fn.binop_i64(opcodes.I64_AND)
+    _truthy(fn)
+
+
+def _wide_floordiv(ctx: EmitCtx, prefix: str, *, signed: bool) -> Fn:
+    """``a // b`` through the host's 256-bit division (S13).
+
+    ``b == 0`` is NOT tested here: with no 128-bit division instruction to
+    trap, the zero divisor reaches ``{i,u}256_div``, which answers ``ScError``
+    and aborts the invocation. That is a different trap class from the 32/64-bit
+    widths, where A4 leaves ``//0`` to wasm's own trap -- recorded in the task
+    report as a divergence for A10's mapping rather than papered over here.
+
+    ``MIN // -1`` IS tested first, and for the opposite reason: A4 makes it
+    ``ArithmeticOverflow``, and letting the host answer it would produce the
+    host's own error class instead.
+    """
+    fn = _part_fn(f"{prefix}_floordiv", 4)
+    if signed:
+        _min_over_minus_one(fn)
+        _fail_if(fn, ctx)
+    lhs = _pack_256(fn, ctx, 0, 1, signed=signed)
+    rhs = _pack_256(fn, ctx, 2, 3, signed=signed)
+    fn.local_get(lhs)
+    fn.local_get(rhs)
+    divider = "i256_div" if signed else "u256_div"
+    fn.call_import(ctx.host_import_name(divider), 2, has_result=True)
+    quotient = fn.new_local()
+    fn.local_set(quotient)
+    hi_hi, hi_lo, lo_hi, lo_lo = _unpack_256(fn, ctx, quotient, signed=signed)
+    _check_extension(fn, ctx, hi_hi, hi_lo, lo_hi, signed=signed)
+    _return_wide(fn, ctx, lo_hi, lo_lo)
+    return fn
+
+
+def _wide_mod(ctx: EmitCtx, prefix: str, *, signed: bool) -> Fn:
+    """``a % b`` as ``a - (a // b) * b``, in guest limb code (F.1.2).
+
+    **Never ``{i,u}256_rem_euclid``.** Their documented modulo is EUCLIDEAN
+    and always non-negative; A4's ``%`` follows the DIVIDEND, so the two
+    disagree on ``-7 % 2`` (``+1`` against ``-1``) and agree everywhere a
+    casual test would look. The quotient comes from this route's own division
+    part, and the multiply-subtract that reconstructs the remainder cannot
+    overflow: ``|q * b| <= |a|`` because ``q`` truncates.
+
+    ``MIN % -1`` is answered as ``0`` first (A4). It has to be: the quotient
+    part would correctly call ``MIN // -1`` an overflow.
+    """
+    fn = _part_fn(f"{prefix}_mod", 4)
+    if signed:
+        zero_hi = fn.new_local()
+        zero_lo = fn.new_local()
+        _min_over_minus_one(fn)
+        fn.begin_if(None)
+        fn.i64_const(0)
+        fn.local_set(zero_hi)
+        fn.i64_const(0)
+        fn.local_set(zero_lo)
+        _return_wide(fn, ctx, zero_hi, zero_lo)
+        fn.end_if()
+    for i in range(4):
+        fn.local_get(i)
+    quotient_hi, quotient_lo = call_wide_part(fn, ctx, f"{prefix}_floordiv", 4)
+    product_hi, product_lo = _mul128_wrapping(fn, ctx, quotient_hi, quotient_lo, 2, 3)
+
+    borrow = fn.new_local()
+    hi = fn.new_local()
+    lo = fn.new_local()
+    _flag(fn, 1, product_lo, opcodes.I64_LT_U)
+    fn.local_set(borrow)
+    fn.local_get(1)
+    fn.local_get(product_lo)
+    fn.binop_i64(opcodes.I64_SUB)
+    fn.local_set(lo)
+    fn.local_get(0)
+    fn.local_get(product_hi)
+    fn.binop_i64(opcodes.I64_SUB)
+    fn.local_get(borrow)
+    fn.binop_i64(opcodes.I64_SUB)
+    fn.local_set(hi)
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+def _build_u128_floordiv(ctx: EmitCtx) -> Fn:
+    return _wide_floordiv(ctx, "u128", signed=False)
+
+
+def _build_i128_floordiv(ctx: EmitCtx) -> Fn:
+    return _wide_floordiv(ctx, "i128", signed=True)
+
+
+def _build_u128_mod(ctx: EmitCtx) -> Fn:
+    return _wide_mod(ctx, "u128", signed=False)
+
+
+def _build_i128_mod(ctx: EmitCtx) -> Fn:
+    return _wide_mod(ctx, "i128", signed=True)
+
+
+# --- the 128-bit boxing bridge (S14, review m7) ---------------------------------
+
+
+def _build_unbox_u128(ctx: EmitCtx) -> Fn:
+    """``Val`` -> raw limbs: tag 10 is the small form, anything else an object."""
+    fn = _part_fn("unbox_u128", 1)
+    hi = fn.new_local()
+    lo = fn.new_local()
+    fn.local_get(0)
+    fn.i64_const(_TAG_MASK)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.i64_const(val.TAG_U128_SMALL)
+    fn.relop_i64(opcodes.I64_EQ)
+    fn.begin_if(None)
+    fn.local_get(0)
+    fn.i64_const(_TAG_BITS)
+    fn.binop_i64(opcodes.I64_SHR_U)
+    fn.local_set(lo)
+    fn.i64_const(0)
+    fn.local_set(hi)
+    _return_wide(fn, ctx, hi, lo)
+    fn.end_if()
+    for slot, accessor in ((hi, "obj_to_u128_hi64"), (lo, "obj_to_u128_lo64")):
+        fn.local_get(0)
+        fn.call_import(ctx.host_import_name(accessor), 1, has_result=True)
+        fn.local_set(slot)
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+def _build_unbox_i128(ctx: EmitCtx) -> Fn:
+    """``Val`` -> raw limbs: tag 11 small (SIGN-EXTENDED into hi, m7), else object.
+
+    The small path is ``shr_s 8`` for the low limb -- review B10's one-shift
+    recipe -- and then ``>> 63`` for the high limb, because a small ``I128``
+    body is a 56-bit signed number and its two's-complement 128-bit form has
+    an all-ones high limb when it is negative. Zero-filling hi instead turns
+    ``I128(-1)`` into ``2**64 - 1``.
+    """
+    fn = _part_fn("unbox_i128", 1)
+    hi = fn.new_local()
+    lo = fn.new_local()
+    fn.local_get(0)
+    fn.i64_const(_TAG_MASK)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.i64_const(val.TAG_I128_SMALL)
+    fn.relop_i64(opcodes.I64_EQ)
+    fn.begin_if(None)
+    fn.local_get(0)
+    fn.i64_const(_TAG_BITS)
+    fn.binop_i64(opcodes.I64_SHR_S)
+    fn.local_set(lo)
+    fn.local_get(lo)
+    fn.i64_const(_SIGN_SHIFT)
+    fn.binop_i64(opcodes.I64_SHR_S)
+    fn.local_set(hi)
+    _return_wide(fn, ctx, hi, lo)
+    fn.end_if()
+    for slot, accessor in ((hi, "obj_to_i128_hi64"), (lo, "obj_to_i128_lo64")):
+        fn.local_get(0)
+        fn.call_import(ctx.host_import_name(accessor), 1, has_result=True)
+        fn.local_set(slot)
+    _return_wide(fn, ctx, hi, lo)
+    return fn
+
+
+def _build_box_u128(ctx: EmitCtx) -> Fn:
+    """Raw limbs -> ``Val``: the small form when it fits, else the object form.
+
+    The runtime ``fits_small_u`` on a PAIR is ``hi == 0 && lo <=u MASK56``
+    (review m7). The ``hi == 0`` half is not optional: without it every value
+    above ``2**64`` would box as a perfectly valid small form of its low limb.
+    """
+    fn = _part_fn("box_u128", 2)
+    _flag_const(fn, 0, 0, opcodes.I64_EQ)
+    _flag_const(fn, 1, val.MAX_SMALL_U64, opcodes.I64_LE_U)
+    fn.binop_i64(opcodes.I64_AND)
+    _truthy(fn)
+    fn.begin_if("i64")
+    _pack_small(fn, 1, val.TAG_U128_SMALL)
+    fn.else_()
+    fn.local_get(0)
+    fn.local_get(1)
+    fn.call_import(ctx.host_import_name("obj_from_u128_pieces"), 2, has_result=True)
+    fn.end_if()
+    fn.ret()
+    return fn
+
+
+def _build_box_i128(ctx: EmitCtx) -> Fn:
+    """Raw limbs -> ``Val``: the small form when it fits, else the object form.
+
+    The runtime ``fits_small_i`` on a PAIR (review m7) is ``hi == (lo >>s 63)``
+    -- the high limb must BE the low limb's sign extension, or the value does
+    not fit in 56 bits whatever the low limb says -- AND ``lo`` inside
+    ``[MIN_SMALL_I64, MAX_SMALL_I64]`` signed.
+    """
+    fn = _part_fn("box_i128", 2)
+    extension = fn.new_local()
+    fn.local_get(1)
+    fn.i64_const(_SIGN_SHIFT)
+    fn.binop_i64(opcodes.I64_SHR_S)
+    fn.local_set(extension)
+    _flag(fn, 0, extension, opcodes.I64_EQ)
+    _flag_const(fn, 1, val.MIN_SMALL_I64, opcodes.I64_GE_S)
+    fn.binop_i64(opcodes.I64_AND)
+    _flag_const(fn, 1, val.MAX_SMALL_I64, opcodes.I64_LE_S)
+    fn.binop_i64(opcodes.I64_AND)
+    _truthy(fn)
+    fn.begin_if("i64")
+    _pack_small(fn, 1, val.TAG_I128_SMALL)
+    fn.else_()
+    fn.local_get(0)
+    fn.local_get(1)
+    fn.call_import(ctx.host_import_name("obj_from_i128_pieces"), 2, has_result=True)
+    fn.end_if()
+    fn.ret()
+    return fn
+
+
+#: Every part that returns TWO results and therefore reserves a scratch slot.
+#: Review B8's marker in static form: Task 10 must emit linear memory for a
+#: module linking any of these, whatever `compiled.needs_memory` says.
+#: `EmitCtx.needs_memory` is the dynamic twin, and a test pins the two together.
+PARTS_NEEDING_MEMORY = frozenset(
+    {
+        "mul64_wide",
+        *(
+            f"{prefix}_{op}"
+            for prefix in ("u128", "i128")
+            for op in ("add", "sub", "mul", "neg", "floordiv", "mod")
+        ),
+        "unbox_u128",
+        "unbox_i128",
+    }
+)
+
+
 #: Every linkable runtime part, by name (ruling E3's ratified inventory for
 #: this task). Task 6 adds the ``{u,i}128_*`` family, Task 9 ``tagcheck_bytes_n``.
 PART_BUILDERS: dict[str, Callable[[EmitCtx], Fn]] = {
@@ -836,6 +1909,25 @@ PART_BUILDERS: dict[str, Callable[[EmitCtx], Fn]] = {
     "box_i64": _build_box_i64,
     "unbox_timepoint": _build_unbox_timepoint,
     "unbox_duration": _build_unbox_duration,
+    "mul64_wide": _build_mul64_wide,
+    "u128_add": _build_u128_add,
+    "u128_sub": _build_u128_sub,
+    "u128_mul": _build_u128_mul,
+    "u128_floordiv": _build_u128_floordiv,
+    "u128_mod": _build_u128_mod,
+    "u128_neg": _build_u128_neg,
+    "u128_cmp": _build_u128_cmp,
+    "i128_add": _build_i128_add,
+    "i128_sub": _build_i128_sub,
+    "i128_mul": _build_i128_mul,
+    "i128_floordiv": _build_i128_floordiv,
+    "i128_mod": _build_i128_mod,
+    "i128_neg": _build_i128_neg,
+    "i128_cmp": _build_i128_cmp,
+    "unbox_u128": _build_unbox_u128,
+    "box_u128": _build_box_u128,
+    "unbox_i128": _build_unbox_i128,
+    "box_i128": _build_box_i128,
 }
 
 
@@ -857,13 +1949,26 @@ _UNBOX_PART: dict[TyTag, str] = {
 _BOX_PART: dict[TyTag, str] = {TyTag.U64: "box_u64", TyTag.I64: "box_i64"}
 
 
+_WIDE_PREFIX: dict[TyTag, str] = {TyTag.U128: "u128", TyTag.I128: "i128"}
+
+
 def _refuse(ty: Ty, what: str) -> EmitError:
     if ty.tag in _WIDE_TAGS:
         return EmitError(
-            f"{ty.render()} has no {what} here: 128-bit values are limb code, "
-            "linked as their own runtime parts"
+            f"{ty.render()} has no {what} here: a 128-bit value travels as a limb "
+            "PAIR, not one word, so it is lowered through the wide_* helpers and "
+            "their runtime parts"
         )
     return EmitError(f"{ty.render()} has no {what}")
+
+
+def _wide_prefix(ty: Ty, what: str) -> str:
+    prefix = _WIDE_PREFIX.get(ty.tag)
+    if prefix is None:
+        raise EmitError(
+            f"{ty.render()} is not a 128-bit type; {what} is limb code and takes U128 or I128"
+        )
+    return prefix
 
 
 def _lower_u32_binary(fn: Fn, ctx: EmitCtx, op: BinaryOp) -> None:
@@ -1022,3 +2127,55 @@ def rebox(fn: Fn, ctx: EmitCtx, ty: Ty) -> None:
         # so nothing ever needs to build one from a raw word (S14).
         raise _refuse(ty, "boxing lowering")
     fn.call_defined(ctx.ensure_part(part), 1, ("i64",))
+
+
+# --- the 128-bit lowering entry points -----------------------------------------
+#
+# Separate from the four above because a 128-bit value is a limb PAIR: these
+# take and return local INDICES rather than leaving one word on the stack.
+# Every one of them routes through `call_wide_part`, which is what keeps the
+# two-result convention's "load lo immediately" invariant in one place.
+
+
+def wide_binary(fn: Fn, ctx: EmitCtx, ty: Ty, op: BinaryOp) -> tuple[int, int]:
+    """Lower a 128-bit ``lhs <op> rhs``; four RAW limbs already on the stack.
+
+    Push order is ``a_hi, a_lo, b_hi, b_lo``. Returns the ``(hi, lo)`` locals
+    holding the result -- boxing is the caller's business, as at every other
+    width.
+    """
+    prefix = _wide_prefix(ty, "checked arithmetic")
+    return call_wide_part(fn, ctx, f"{prefix}_{op.name.lower()}", 4)
+
+
+def wide_neg(fn: Fn, ctx: EmitCtx, ty: Ty) -> tuple[int, int]:
+    """Lower a 128-bit unary ``-``; two RAW limbs (``hi``, ``lo``) on the stack.
+
+    A CALL, unlike review M6's inline negation at 32 and 64 bits: the limb
+    negation plus its ``MIN`` check does not fit under S25's break-even, and
+    the frontend's ratified inventory names ``{u,i}128_neg`` for exactly this.
+    """
+    prefix = _wide_prefix(ty, "checked negation")
+    return call_wide_part(fn, ctx, f"{prefix}_neg", 2)
+
+
+def wide_cmp(fn: Fn, ctx: EmitCtx, ty: Ty) -> None:
+    """Lower a 128-bit compare; four RAW limbs on the stack, raw -1/0/1 out.
+
+    Single-result, so no scratch is involved: the caller compares the answer
+    against zero with whichever relop the source operator asked for.
+    """
+    prefix = _wide_prefix(ty, "comparison")
+    fn.call_defined(ctx.ensure_part(f"{prefix}_cmp"), 4, ("i64",))
+
+
+def unbox_wide(fn: Fn, ctx: EmitCtx, ty: Ty) -> tuple[int, int]:
+    """128-bit ``Val`` word on the stack -> the ``(hi, lo)`` locals holding it."""
+    prefix = _wide_prefix(ty, "unboxing")
+    return call_wide_part(fn, ctx, f"unbox_{prefix}", 1)
+
+
+def rebox_wide(fn: Fn, ctx: EmitCtx, ty: Ty) -> None:
+    """Two RAW limbs (``hi``, ``lo``) on the stack -> one 128-bit ``Val`` word."""
+    prefix = _wide_prefix(ty, "boxing")
+    fn.call_defined(ctx.ensure_part(f"box_{prefix}"), 2, ("i64",))
