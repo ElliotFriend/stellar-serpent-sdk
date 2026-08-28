@@ -14,6 +14,19 @@ artifact exercised end to end; the extensions are the ones §C.1 names.
   ``pop`` become no-ops and every height check is skipped.
 * ``_check_frame`` asserting ``len(stack) == base + (1 if result else 0)`` at
   **both** ``else`` and ``end``.
+
+  **A deliberate divergence from the wasm algorithm, recorded here:** the
+  spec's ``unreachable`` is *per control frame* -- a frame opened inside dead
+  code is still validated as reachable, because its body is well-typed
+  independently of whether anything jumps to it. Ours (like the spike's) is
+  **function-global**: once the function goes unreachable, every height check
+  inside every frame opened after that point is skipped, until the frame
+  whose ``entry_unreachable`` was ``False`` restores reachability. The
+  consequence is that this tracker is *more permissive* than wasm inside dead
+  code -- it never rejects a module wasm would accept, it just declines to
+  catch a lowering bug in a region no execution can reach. Kept because it is
+  the on-chain-verified behavior (P13) and because dead-code regions are
+  produced by, not consumed by, D's lowerings.
 * ``else_``/``end`` **restoring** the enclosing frame's ``entry_unreachable``.
 * **The balance check at ``ret()``, not at ``finish()``** (P2) -- see
   ``ret``'s docstring, which is the single most important paragraph here.
@@ -27,7 +40,12 @@ artifact exercised end to end; the extensions are the ones §C.1 names.
 * Frames carry a ``kind`` (``BLOCK``/``LOOP``/``IF``) so ``br_break`` and
   ``br_continue`` compute their **relative** depth from the frame stack
   rather than from an ad-hoc counter -- "this is where an off-by-one becomes
-  a silently wrong branch".
+  a silently wrong branch". A block is a `break` target only if it was opened
+  ``breakable=True``, so an unrelated block inside a loop body cannot capture
+  the branch.
+* An ``if`` frame records whether its ``else`` arm ran, so a result-bearing
+  ``if`` cannot be closed one-armed (invalid wasm) and a second ``else``
+  cannot be emitted.
 * A **br-target arity check**: a ``br`` to a block with a result type must
   leave exactly that value on the stack; a ``br`` to a loop targets the loop
   *header*, whose branch arity is the loop's parameter types (none), so it
@@ -145,8 +163,9 @@ class FrameKind(Enum):
 
     A ``br`` to a ``BLOCK`` or ``IF`` frame jumps **forward** to its ``end``;
     a ``br`` to a ``LOOP`` frame jumps **backward** to its header. `while` is
-    lowered as ``block { loop { ... } }``, so `break` targets the nearest
-    ``BLOCK`` and `continue` the nearest ``LOOP``.
+    lowered as ``block { loop { ... } }``, so `continue` targets the nearest
+    ``LOOP`` and `break` targets that loop's **breakable** exit block (see
+    ``Frame.breakable``).
     """
 
     BLOCK = auto()
@@ -164,6 +183,15 @@ class Frame:
     # Whether the code *around* the frame was already unreachable; each arm
     # starts reachable, and the frame's end restores the enclosing state.
     entry_unreachable: bool
+    # BLOCK frames only: is this the `break` label of a loop? A plain block
+    # opened for any other reason (an expression scope, a dispatch arm) must
+    # NOT capture a `break` aimed at the enclosing loop -- retargeting one
+    # would still validate, which is the silent-wrong-branch class §C.1 names.
+    breakable: bool = False
+    # IF frames only: has `else_()` run? An `if` with a result type is
+    # invalid wasm without an `else` (the elided arm would have to be
+    # `[] -> [i64]`), and a second `else` is invalid outright.
+    saw_else: bool = False
 
 
 # --- One function body under construction --------------------------------------
@@ -221,10 +249,25 @@ class Fn:
             self.stack.append(t)
 
     def pop(self, t: str) -> None:
+        """Pop one operand of type ``t``, never reaching below the current frame.
+
+        wasm's ``pop_val`` refuses to see past the innermost control frame's
+        height: operands pushed *outside* a block are not addressable from
+        inside it. Without that rule an instruction inside a block could
+        "borrow" a value belonging to the enclosing code and the frame's own
+        height check at ``end`` would still balance.
+        """
         if self.unreachable:
             return
         if not self.stack:
             raise EmitError(f"{self.name}: pop {t} from an empty operand stack")
+        base = self.ctrl[-1].base if self.ctrl else 0
+        if len(self.stack) <= base:
+            raise EmitError(
+                f"{self.name}: pop {t} below the innermost control frame's base "
+                f"{base} (operand stack {self.stack}); operands pushed outside a "
+                "frame are not visible inside it"
+            )
         got = self.stack.pop()
         if got != t:
             raise EmitError(f"{self.name}: expected {t} on the operand stack, found {got}")
@@ -249,8 +292,34 @@ class Fn:
         self.push("i64")
 
     def i32_const(self, v: int) -> None:
-        self.op(opcodes.I32_CONST, encode.sleb(v))
+        """Push an i32 immediate, accepting either signed or unsigned spelling.
+
+        ``i32.const``'s operand is a **signed** LEB of a 32-bit word, but the
+        i32s this emitter builds are addresses and masks, naturally written
+        unsigned. Normalize the unsigned half of the range the way ``i64_const``
+        leans on ``val.as_i64`` (A3), and refuse anything that is not a 32-bit
+        word at all -- ``sleb`` would otherwise happily encode a 40-bit
+        "address" that wasm rejects much later, or never terminate on a value
+        this function had no business accepting.
+        """
+        if not -(1 << 31) <= v < (1 << 32):
+            raise EmitError(
+                f"{self.name}: i32 constant {v} is not a 32-bit word "
+                f"(expected {-(1 << 31)} <= v < {1 << 32})"
+            )
+        self.op(opcodes.I32_CONST, encode.sleb(v - (1 << 32) if v >= 1 << 31 else v))
         self.push("i32")
+
+    def drop(self, t: str = "i64") -> None:
+        """Discard the top operand: pop the type **and** emit ``drop``, together.
+
+        The two halves are one operation and are exposed as one, so a caller
+        cannot emit the byte without the accounting (or vice versa). P2's bug
+        -- a missing ``drop`` after a void host call -- is caught by ``ret()``;
+        this makes the *inverse* slip, a ``drop`` byte with no pop, unforgeable.
+        """
+        self.pop(t)
+        self.op(opcodes.DROP)
 
     def binop_i64(self, opcode: int) -> None:
         self.pop("i64")
@@ -334,8 +403,16 @@ class Fn:
         )
         self.op(opcodes.IF, bytes([blocktype]))
 
-    def begin_block(self, result: str | None) -> None:
-        """Open a ``block``: a forward label, which is what `break` targets."""
+    def begin_block(self, result: str | None, *, breakable: bool = False) -> None:
+        """Open a ``block``: a forward label, ending at its ``end``.
+
+        Pass ``breakable=True`` **only** for a loop's exit block -- the label
+        `break` is meant to reach. ``br_break`` scans for the nearest frame so
+        marked and skips every other block, so a block opened inside a loop
+        body for an unrelated reason cannot silently steal a `break`. That
+        retargeted branch would still *validate*; nothing downstream would
+        catch it (§C.1's "an off-by-one here is a silently wrong branch").
+        """
         blocktype = self._blocktype(result)
         self.ctrl.append(
             Frame(
@@ -343,6 +420,7 @@ class Fn:
                 base=len(self.stack),
                 result=result,
                 entry_unreachable=self.unreachable,
+                breakable=breakable,
             )
         )
         self.op(opcodes.BLOCK, bytes([blocktype]))
@@ -379,7 +457,10 @@ class Fn:
         if not self.ctrl or self.ctrl[-1].kind is not FrameKind.IF:
             raise EmitError(f"{self.name}: else with no open if frame")
         frame = self.ctrl[-1]
+        if frame.saw_else:
+            raise EmitError(f"{self.name}: a second else on one if frame")
         self._check_frame(frame, "else")
+        frame.saw_else = True
         del self.stack[frame.base :]
         # The `then` arm may have diverged; the `else` arm starts from the
         # reachability the code *around* the `if` had.
@@ -404,7 +485,16 @@ class Fn:
                 f"{self.ctrl[-1].kind.name.lower()}; end_if() closes an if frame and "
                 "end() closes a block or loop frame"
             )
-        frame = self.ctrl.pop()
+        frame = self.ctrl[-1]
+        if frame.kind is FrameKind.IF and frame.result is not None and not frame.saw_else:
+            # wasm elides a missing `else` into an empty arm, which would have
+            # to have type [] -> [i64]: impossible, so the module is rejected.
+            # Caught here, at the node that built it.
+            raise EmitError(
+                f"{self.name}: an if with result {frame.result} was closed with no "
+                "else arm; a result-bearing if needs both arms"
+            )
+        self.ctrl.pop()
         self._check_frame(frame, "end")
         del self.stack[frame.base :]
         self.unreachable = frame.entry_unreachable
@@ -415,7 +505,13 @@ class Fn:
     # -- branches ------------------------------------------------------------
 
     def br_break(self) -> None:
-        """``br`` to the nearest enclosing ``block`` -- what `break` lowers to."""
+        """``br`` to the nearest enclosing **breakable** block -- `break`.
+
+        Precondition: the loop being broken out of was opened as
+        ``begin_block(None, breakable=True)`` around its ``loop``. Blocks
+        opened for any other reason are skipped, so a block nested inside a
+        loop body cannot capture the branch.
+        """
         self._br(FrameKind.BLOCK, "br_break")
 
     def br_continue(self) -> None:
@@ -426,11 +522,14 @@ class Fn:
         target: Frame | None = None
         depth = 0
         for i, frame in enumerate(reversed(self.ctrl)):
-            if frame.kind is kind:
+            # A BLOCK is only a `break` label if it was marked as one; every
+            # other block between here and the loop is jumped over.
+            if frame.kind is kind and (kind is not FrameKind.BLOCK or frame.breakable):
                 target, depth = frame, i
                 break
         if target is None:
-            raise EmitError(f"{self.name}: {where} with no enclosing {kind.name.lower()} frame")
+            what = "breakable block" if kind is FrameKind.BLOCK else kind.name.lower()
+            raise EmitError(f"{self.name}: {where} with no enclosing {what} frame")
 
         # Branch arity. A `br` to a BLOCK targets that block's `end`, so it
         # must supply the block's result type. A `br` to a LOOP targets the

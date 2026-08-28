@@ -100,7 +100,7 @@ def test_pop_from_an_empty_stack() -> None:
 
 def test_br_break_outside_any_block() -> None:
     fn = _fn()
-    with pytest.raises(EmitError, match="no enclosing block"):
+    with pytest.raises(EmitError, match="no enclosing breakable block"):
         fn.br_break()
 
 
@@ -108,7 +108,7 @@ def test_br_break_inside_a_loop_with_no_block_outside_it() -> None:
     """A `loop` is not a `break` target: `br 0` there jumps to the loop head."""
     fn = _fn()
     fn.begin_loop()
-    with pytest.raises(EmitError, match="no enclosing block"):
+    with pytest.raises(EmitError, match="no enclosing breakable block"):
         fn.br_break()
 
 
@@ -122,8 +122,7 @@ def test_br_continue_outside_any_loop() -> None:
 def test_local_index_past_the_declared_count() -> None:
     fn = _fn(nparams=1, nlocals_declared=2)  # valid indices: 0, 1, 2
     fn.local_get(2)
-    fn.op(opcodes.DROP)
-    fn.pop("i64")
+    fn.drop()
     # The range check runs before any stack effect, on all three accessors.
     for accessor in (fn.local_get, fn.local_set, fn.local_tee):
         with pytest.raises(EmitError, match="local index 3"):
@@ -218,8 +217,7 @@ def test_expr_scope_accepts_the_two_legal_shapes() -> None:
         fn.i64_const(1)
     with fn.expr_scope(is_void=True):
         fn.i64_const(2)
-        fn.op(opcodes.DROP)
-        fn.pop("i64")
+        fn.drop()
     assert fn.stack == ["i64"]
 
 
@@ -293,6 +291,44 @@ def test_push_and_pop_are_no_ops_when_unreachable() -> None:
     assert fn.stack == []
 
 
+def test_pop_cannot_reach_below_the_innermost_frames_base() -> None:
+    """wasm's `pop_val` rule: a block cannot borrow the enclosing code's operands."""
+    fn = _fn()
+    fn.i64_const(1)  # belongs to the code AROUND the block
+    fn.begin_block(None)
+    with pytest.raises(EmitError, match="below the innermost control frame"):
+        fn.pop("i64")
+    assert fn.stack == ["i64"], "the borrowed operand is still there"
+
+
+def test_pop_below_a_frame_base_is_allowed_once_the_frame_closes() -> None:
+    fn = _fn()
+    fn.i64_const(1)
+    fn.begin_block(None)
+    fn.end()
+    fn.pop("i64")
+    assert fn.stack == []
+
+
+def test_drop_pairs_the_pop_and_the_byte() -> None:
+    """review (Minor 5): the two halves are one operation, so expose them as one."""
+    fn = _fn(results=())
+    fn.i64_const(1)
+    fn.drop()
+    assert fn.stack == []
+    assert _bytes_of(fn.finish()) == bytes([opcodes.I64_CONST, 0x01, opcodes.DROP, opcodes.END])
+
+
+def test_drop_type_checks_what_it_discards() -> None:
+    fn = _fn()
+    fn.i32_const(1)
+    with pytest.raises(EmitError, match="expected i64 .* found i32"):
+        fn.drop()
+    fn2 = _fn()
+    with pytest.raises(EmitError, match="empty operand stack"):
+        fn2.drop()
+
+
 def test_binop_and_relop_typing() -> None:
     fn = _fn()
     fn.i64_const(1)
@@ -308,8 +344,7 @@ def test_i64_const_encodes_the_val_bit_pattern_as_signed_leb() -> None:
     """A3: the operand is ``sleb(val.as_i64(v))``, not ``sleb(v)``."""
     fn = _fn(results=())
     fn.i64_const(0xFFFF_FFFF_FFFF_FF07)
-    fn.op(opcodes.DROP)
-    fn.pop("i64")
+    fn.drop()
     body = _bytes_of(fn.finish())
     # sleb(as_i64(0xFFFF_FFFF_FFFF_FF07)) == sleb(-249) == 87 7E (test_emitter_encode).
     assert body == bytes([opcodes.I64_CONST, 0x87, 0x7E, opcodes.DROP, opcodes.END])
@@ -318,10 +353,32 @@ def test_i64_const_encodes_the_val_bit_pattern_as_signed_leb() -> None:
 def test_i32_const_encodes_a_plain_signed_leb() -> None:
     fn = _fn(results=())
     fn.i32_const(-1)
-    fn.op(opcodes.DROP)
-    fn.pop("i32")
+    fn.drop("i32")
     body = _bytes_of(fn.finish())
     assert body == bytes([opcodes.I32_CONST, 0x7F, opcodes.DROP, opcodes.END])
+
+
+def test_i32_const_normalizes_the_unsigned_half_of_the_range() -> None:
+    """An address written unsigned encodes as the same 32-bit word (Minor 6)."""
+    fn = _fn(results=())
+    fn.i32_const(0xFFFF_FFFF)
+    fn.drop("i32")
+    assert _bytes_of(fn.finish()) == bytes([opcodes.I32_CONST, 0x7F, opcodes.DROP, opcodes.END])
+
+    fn2 = _fn(results=())
+    fn2.i32_const(0x8000_0000)
+    fn2.drop("i32")
+    assert _bytes_of(fn2.finish())[1:-2] == encode.sleb(-(1 << 31))
+
+
+def test_i32_const_rejects_anything_wider_than_32_bits() -> None:
+    fn = _fn()
+    for v in (1 << 32, -(1 << 31) - 1, 0x1_0000_0000_0000):
+        with pytest.raises(EmitError, match="not a 32-bit word"):
+            fn.i32_const(v)
+    # The boundaries themselves are fine.
+    fn.i32_const(-(1 << 31))
+    fn.i32_const((1 << 32) - 1)
 
 
 # ===========================================================================
@@ -381,8 +438,7 @@ def test_local_accessor_bytes_and_stack_effects() -> None:
 def test_local_index_is_uleb_encoded() -> None:
     fn = _fn(nparams=200, nlocals_declared=0, results=())
     fn.local_get(199)
-    fn.op(opcodes.DROP)
-    fn.pop("i64")
+    fn.drop()
     body = _bytes_of(fn.finish())
     assert body == bytes([opcodes.LOCAL_GET]) + encode.uleb(199) + bytes(
         [opcodes.DROP, opcodes.END]
@@ -417,8 +473,7 @@ def test_if_blocktypes() -> None:
     fn.i64_const(2)
     fn.end_if()
     assert fn.stack == ["i64"], "an if with a result pushes it at end"
-    fn.op(opcodes.DROP)
-    fn.pop("i64")
+    fn.drop()
     body = _bytes_of(fn.finish())
     assert body == bytes(
         [
@@ -468,6 +523,40 @@ def test_else_with_no_open_if() -> None:
         fn.else_()
 
 
+def test_a_result_bearing_if_cannot_be_closed_with_no_else() -> None:
+    """review (Important 1): `if (result i64)` with one arm is invalid wasm.
+
+    The elided `else` arm would have to have type `[] -> [i64]`, which nothing
+    inhabits, so the module is rejected -- but `_check_frame` alone is happy,
+    because the single arm did leave exactly one i64.
+    """
+    fn = _fn()
+    fn.i32_const(1)
+    fn.begin_if("i64")
+    fn.i64_const(7)
+    with pytest.raises(EmitError, match="no else arm"):
+        fn.end_if()
+
+
+def test_a_void_if_may_be_closed_with_no_else() -> None:
+    fn = _fn(results=())
+    fn.i32_const(1)
+    fn.begin_if(None)
+    fn.end_if()
+    fn.finish()
+
+
+def test_a_second_else_on_one_if_frame() -> None:
+    fn = _fn()
+    fn.i32_const(1)
+    fn.begin_if("i64")
+    fn.i64_const(1)
+    fn.else_()
+    fn.i64_const(2)
+    with pytest.raises(EmitError, match="second else"):
+        fn.else_()
+
+
 def test_end_and_end_if_are_not_interchangeable() -> None:
     fn = _fn()
     fn.i32_const(1)
@@ -513,7 +602,7 @@ def test_loop_frames_are_void() -> None:
 def test_while_shape_br_depths() -> None:
     """`while` is block{loop{...}}: `break` is br 1, `continue` is br 0."""
     fn = _fn(results=())
-    fn.begin_block(None)
+    fn.begin_block(None, breakable=True)
     fn.begin_loop()
     fn.br_continue()
     fn.end()
@@ -533,7 +622,7 @@ def test_while_shape_br_depths() -> None:
     )
 
     fn2 = _fn(results=())
-    fn2.begin_block(None)
+    fn2.begin_block(None, breakable=True)
     fn2.begin_loop()
     fn2.br_break()
     fn2.end()
@@ -544,7 +633,7 @@ def test_while_shape_br_depths() -> None:
 def test_br_depths_from_inside_a_nested_if() -> None:
     """block{loop{if{break}else{continue}}}: br 2 and br 1."""
     fn = _fn(results=())
-    fn.begin_block(None)
+    fn.begin_block(None, breakable=True)
     fn.begin_loop()
     fn.i32_const(1)
     fn.begin_if(None)
@@ -579,14 +668,41 @@ def test_br_depths_from_inside_a_nested_if() -> None:
 
 def test_br_break_targets_the_nearest_enclosing_block_not_the_outermost() -> None:
     fn = _fn(results=())
-    fn.begin_block(None)  # outer
-    fn.begin_block(None)  # inner: the nearest block
+    fn.begin_block(None, breakable=True)  # outer
+    fn.begin_block(None, breakable=True)  # inner: the nearest one
     fn.begin_loop()
     fn.br_break()
     fn.end()
     fn.end()
     fn.end()
     assert _bytes_of(fn.finish())[6:8] == bytes([opcodes.BR, 0x01])
+
+
+def test_a_non_breakable_block_does_not_capture_a_break() -> None:
+    """review (Important 2): only a loop's own exit block is a `break` label.
+
+    ``block(breakable) { loop { block { break } } }`` -- the inner plain block
+    is jumped OVER, so the branch is `br 2`, not the `br 0` a kind-only scan
+    would produce. Both are valid wasm; only one is the right branch.
+    """
+    fn = _fn(results=())
+    fn.begin_block(None, breakable=True)  # the loop's exit label
+    fn.begin_loop()
+    fn.begin_block(None)  # some unrelated block in the loop body
+    fn.br_break()
+    fn.end()
+    fn.end()
+    fn.end()
+    assert _bytes_of(fn.finish())[6:8] == bytes([opcodes.BR, 0x02])
+
+
+def test_a_break_with_only_non_breakable_blocks_in_scope_raises() -> None:
+    fn = _fn(results=())
+    fn.begin_block(None)
+    fn.begin_loop()
+    fn.begin_block(None)
+    with pytest.raises(EmitError, match="no enclosing breakable block"):
+        fn.br_break()
 
 
 def test_br_continue_targets_the_nearest_enclosing_loop() -> None:
@@ -603,14 +719,14 @@ def test_br_continue_targets_the_nearest_enclosing_loop() -> None:
 
 def test_br_break_to_a_block_with_a_result_needs_the_value() -> None:
     fn = _fn()
-    fn.begin_block("i64")
+    fn.begin_block("i64", breakable=True)
     with pytest.raises(EmitError, match="at br_break"):
         fn.br_break()
 
 
 def test_br_break_to_a_block_with_a_result_accepts_the_value() -> None:
     fn = _fn()
-    fn.begin_block("i64")
+    fn.begin_block("i64", breakable=True)
     fn.i64_const(1)
     fn.br_break()
     assert fn.unreachable is True, "code after an unconditional br is dead"
@@ -618,7 +734,7 @@ def test_br_break_to_a_block_with_a_result_accepts_the_value() -> None:
 
 def test_br_break_rejects_a_leaked_operand() -> None:
     fn = _fn()
-    fn.begin_block(None)
+    fn.begin_block(None, breakable=True)
     fn.i64_const(1)
     with pytest.raises(EmitError, match="at br_break"):
         fn.br_break()
@@ -635,7 +751,7 @@ def test_br_continue_requires_an_empty_to_base_stack() -> None:
 
 def test_br_arity_checks_are_skipped_when_unreachable() -> None:
     fn = _fn(results=())
-    fn.begin_block(None)
+    fn.begin_block(None, breakable=True)
     fn.begin_loop()
     fn.unreachable_()
     fn.br_break()  # heights are meaningless here
@@ -673,16 +789,23 @@ def test_call_import_is_symbolic_and_does_full_stack_accounting() -> None:
     ]
 
 
-def test_no_call_opcode_or_index_byte_is_baked_at_lowering_time() -> None:
-    """review B1: the 0x10 and its uleb index are pass-2's job, not ours."""
+def test_every_call_is_an_item_never_bytes() -> None:
+    """review B1: the 0x10 and its uleb index are pass-2's job, not ours.
+
+    Asserted on the item TYPES rather than on the absence of the byte value
+    0x10 -- an operand byte can legitimately equal 0x10 (`i64_const(16)`
+    below), so a value scan would false-fail (review, Minor 7). The exact
+    item list in the test above is the real guarantee; this pins the shape
+    when the two call kinds are interleaved with ordinary instructions.
+    """
     fn = _fn()
-    fn.i64_const(1)
+    fn.i64_const(16)  # an operand byte of exactly 0x10
     fn.call_import("obj_len", 1, has_result=True)
     fn.call_defined(3, 1, ("i64",))
     fn.ret()
-    for item in fn.finish():
-        if isinstance(item, bytes):
-            assert opcodes.CALL not in item
+    items = fn.finish()
+    assert [type(item) for item in items] == [bytes, CallImport, CallDefined, bytes]
+    assert items[0] == bytes([opcodes.I64_CONST, opcodes.CALL]), "0x10 as data, not a call"
 
 
 def test_call_import_with_no_result_pushes_nothing() -> None:
@@ -831,8 +954,7 @@ def test_adjacent_bytes_are_coalesced() -> None:
     fn = _fn()
     for v in range(5):
         fn.i64_const(v)
-        fn.op(opcodes.DROP)
-        fn.pop("i64")
+        fn.drop()
     fn.i64_const(1)
     fn.ret()
     items = fn.finish()
@@ -861,7 +983,7 @@ def test_negative_shape_parameters_are_rejected() -> None:
 def test_a_realistic_body_tracks_end_to_end() -> None:
     """`def f(x): while True: if x == 0: break; return x` shaped lowering."""
     fn = _fn(name="f", nparams=1, nlocals_declared=0)
-    fn.begin_block(None)
+    fn.begin_block(None, breakable=True)
     fn.begin_loop()
     fn.local_get(0)
     fn.i64_const(0)
