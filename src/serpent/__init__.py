@@ -18,11 +18,19 @@ through every existing `from serpent.env import ChainValue` in the test suite
 for a purely cosmetic gain; re-exporting keeps one canonical definition and
 still gives contract authors the single-import root they expect.
 
+**`Annotated` is RE-EXPORTED from `typing`, not redefined.** A contract module
+may import from `serpent` and nowhere else (the compiler's SPT2005), so the
+event convention's spelling -- `frm: Annotated[Address, topic]` -- would be
+unauthorable without it. It is the same `typing.Annotated` a type checker
+already understands; `topic` beside it is serpent's own marker object.
+
 **Not exported (by design):**
 * `U256`/`I256` -- deferred to M2 (amended spec).
 * `BytesN` -- never the name; the fixed-length family is `Bytes32`, `Bytes64`,
   and the `bytes_n(n)` factory for other lengths.
 """
+
+from typing import Annotated
 
 from serpent.decorators import (
     contract,
@@ -30,6 +38,7 @@ from serpent.decorators import (
     contractevent,
     contracttype,
     errorcode,
+    topic,
 )
 from serpent.env import ChainValue, Env, Event
 from serpent.errors import (
@@ -71,6 +80,7 @@ __all__ = [
     "U128",
     "AbiCheckFailed",
     "Address",
+    "Annotated",
     "ArithmeticOverflow",
     "BadArgument",
     "Bool",
@@ -95,4 +105,5 @@ __all__ = [
     "contractevent",
     "contracttype",
     "errorcode",
+    "topic",
 ]

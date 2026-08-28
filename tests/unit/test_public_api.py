@@ -12,9 +12,12 @@ U256/I256 are deliberately absent (deferred to M2, per the amended spec).
 `Bytes64` and the `bytes_n(n)` factory.
 """
 
+import typing
+
 import pytest
 
 import serpent
+from serpent import decorators as decorators_module
 from tests.fixtures import token_style
 
 #: Ordered by ruff's `RUF022` `__all__`-sort convention (which `ruff check
@@ -31,6 +34,7 @@ EXPECTED_ALL = [
     "U128",
     "AbiCheckFailed",
     "Address",
+    "Annotated",
     "ArithmeticOverflow",
     "BadArgument",
     "Bool",
@@ -55,11 +59,23 @@ EXPECTED_ALL = [
     "contractevent",
     "contracttype",
     "errorcode",
+    "topic",
 ]
 
 
 def test_public_all_is_exactly_the_frozen_export_list() -> None:
     assert serpent.__all__ == EXPECTED_ALL
+
+
+def test_annotated_and_topic_are_authorable_off_the_root() -> None:
+    """A contract module may import ONLY from `serpent` (SPT2005), so the event
+    convention's two spellings -- `typing.Annotated` and serpent's own `topic`
+    marker -- have to be reachable there. `Annotated` is re-exported, never
+    re-defined: `Annotated[Address, topic]` must be the same object a type
+    checker already understands."""
+    assert serpent.Annotated is typing.Annotated
+    assert repr(serpent.topic) == "topic"
+    assert serpent.topic is decorators_module.topic
 
 
 def test_every_name_in_all_is_actually_importable() -> None:

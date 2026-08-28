@@ -932,15 +932,16 @@ def test_the_spec_stream_decoder_round_trips(examples: dict[str, CompiledModule]
 def test_events_stay_out_of_the_declared_type_inventory(
     examples: dict[str, CompiledModule],
 ) -> None:
-    """MJ-9/B14: `spec_inputs.events` is a SEPARATE field, and handing an event
-    to `types=` is a hard failure rather than a silent wrong spec."""
+    """MJ-9: `spec_inputs.events` is a SEPARATE field, and handing an event to
+    `types=` is a hard failure rather than a silent wrong spec. The refusal now
+    points at the `events=` keyword that DOES take one (M1-E Task 5)."""
     compiled = examples["token_style"]
     (event,) = compiled.spec_inputs.events
     assert event.__name__ == "Transfer"
     assert event not in compiled.spec_inputs.declared_types_in_order
     contract_cls = compiled.spec_inputs.contract_cls
     assert contract_cls is not None
-    with pytest.raises(SpecTypeError, match="deferred to sub-plan E"):
+    with pytest.raises(SpecTypeError, match=r"pass it in `events=`"):
         build_spec_entries(
             contract_cls, types=(*compiled.spec_inputs.declared_types_in_order, event)
         )

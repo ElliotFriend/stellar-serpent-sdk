@@ -10,6 +10,7 @@ decorator also catches at runtime.
 
 import dataclasses
 import pathlib
+from typing import Annotated
 
 import pytest
 
@@ -23,6 +24,7 @@ from serpent.decorators import (
     contractevent,
     contracttype,
     errorcode,
+    topic,
 )
 from serpent.env import (
     ChainValue,
@@ -333,10 +335,195 @@ def test_contracttype_reports_unresolvable_annotation() -> None:
 
 
 def test_contractevent_publishes_under_sub_plan_e() -> None:
-    assert _meta(Bumped) == {"kind": "event", "fields": [("count", U32)]}
+    assert _meta(Bumped) == {
+        "kind": "event",
+        "fields": [("count", U32)],
+        "locations": {"count": "data"},
+        "prefix_topics": ("bumped",),
+        "data_format": "map",
+    }
     event = Bumped(count=U32(1))
     with pytest.raises(NotImplementedError, match="sub-plan E"):
         event.publish(Env())
+
+
+# --- the topic convention (M1-E Task 5) -------------------------------------
+
+
+def test_the_topic_marker_is_a_named_sentinel_not_a_bare_object() -> None:
+    """A bare `object()` would render as `<object object at 0x...>` in every
+    error message and repr an author ever sees."""
+    assert repr(topic) == "topic"
+    assert type(topic) is not object
+
+
+def test_a_marked_field_is_a_topic_and_the_annotation_is_stripped() -> None:
+    """The one seam: `_build_record` reads hints with `include_extras=True`,
+    records the marker, and stores the STRIPPED annotation -- so every
+    downstream consumer (`typemap`, the compiler's `resolve_annotation`) sees a
+    plain chain type and needs no edit."""
+
+    @contractevent
+    class Sent(Event):
+        frm: Annotated[Address, topic]
+        to: Annotated[Address, topic]
+        amount: U32
+
+    metadata = _meta(Sent)
+    assert metadata["fields"] == [("frm", Address), ("to", Address), ("amount", U32)]
+    # Identity, not equality: an `Annotated[...]` alias compares equal to
+    # nothing here, but a leak would show up as a non-`type` object.
+    fields = metadata["fields"]
+    assert isinstance(fields, list)
+    assert all(isinstance(annotation, type) for _name, annotation in fields)
+    assert metadata["locations"] == {"frm": "topic", "to": "topic", "amount": "data"}
+    assert metadata["prefix_topics"] == ("sent",)
+    assert metadata["data_format"] == "map"
+
+
+def test_an_annotated_field_without_the_marker_is_still_stripped() -> None:
+    """`Annotated` is a general-purpose seam; only serpent's own marker means
+    anything to the event convention."""
+
+    @contractevent
+    class Documented(Event):
+        count: Annotated[U32, "not serpent's marker"]
+
+    assert _meta(Documented)["fields"] == [("count", U32)]
+    assert _meta(Documented)["locations"] == {"count": "data"}
+
+    @contracttype
+    class Struct:
+        count: Annotated[U32, "not serpent's marker"]
+
+    assert _meta(Struct) == {"kind": "struct", "fields": [("count", U32)]}
+
+
+def test_the_default_prefix_topic_is_the_snake_case_class_name() -> None:
+    """The three vectors the algorithm has to get right: a plain CamelCase
+    name, an acronym run in the middle, and an acronym run at the front."""
+
+    @contractevent
+    class MyEvent(Event):
+        amount: U32
+
+    @contractevent
+    class MyHTTPEvent(Event):
+        amount: U32
+
+    @contractevent
+    class HTTPEvent(Event):
+        amount: U32
+
+    assert _meta(MyEvent)["prefix_topics"] == ("my_event",)
+    assert _meta(MyHTTPEvent)["prefix_topics"] == ("my_http_event",)
+    assert _meta(HTTPEvent)["prefix_topics"] == ("http_event",)
+
+
+def test_explicit_topics_and_data_format_are_recorded() -> None:
+    @contractevent(topics=("token", "transfer"), data_format="vec")
+    class Renamed(Event):
+        amount: U32
+
+    metadata = _meta(Renamed)
+    assert metadata["prefix_topics"] == ("token", "transfer")
+    assert metadata["data_format"] == "vec"
+    # Still a frozen dataclass, and still kwargs-constructible under
+    # `mypy --strict` (`dataclass_transform` survives the factory form).
+    assert Renamed(amount=U32(1)) == Renamed(amount=U32(1))
+
+
+def test_a_prefix_topic_longer_than_nine_characters_is_legal() -> None:
+    """`fits_symbol_small` (<=9) is the WRONG cap here: a longer prefix topic is
+    a perfectly valid Symbol that pools via linear memory at the publish site
+    (S19)."""
+
+    @contractevent(topics=("transfer_from",))
+    class Long(Event):
+        amount: U32
+
+    assert _meta(Long)["prefix_topics"] == ("transfer_from",)
+
+
+def test_three_prefix_topics_are_refused_at_the_declaration_site() -> None:
+    """The XDR caps `prefix_topics` at 2 (R5's negative control: a serpent error
+    naming the class, never a bare `stellar_sdk` ValueError from deep inside an
+    XDR constructor)."""
+    with pytest.raises(ValueError, match="Three.*at most 2"):
+
+        @contractevent(topics=("a", "b", "c"))
+        class Three(Event):
+            amount: U32
+
+
+def test_a_prefix_topic_that_is_not_a_valid_symbol_is_refused() -> None:
+    with pytest.raises(ValueError, match="valid Symbol"):
+
+        @contractevent(topics=("not a symbol",))
+        class Spaced(Event):
+            amount: U32
+
+    with pytest.raises(ValueError, match="valid Symbol"):
+
+        @contractevent(topics=("t" * 33,))
+        class TooLong(Event):
+            amount: U32
+
+    with pytest.raises(ValueError, match="valid Symbol"):
+
+        @contractevent(topics=("",))
+        class Empty(Event):
+            amount: U32
+
+
+def test_single_value_requires_exactly_one_non_topic_field() -> None:
+    @contractevent(data_format="single-value")
+    class Fine(Event):
+        who: Annotated[Address, topic]
+        amount: U32
+
+    assert _meta(Fine)["data_format"] == "single-value"
+
+    with pytest.raises(ValueError, match="single-value"):
+
+        @contractevent(data_format="single-value")
+        class Two(Event):
+            amount: U32
+            fee: U32
+
+    with pytest.raises(ValueError, match="single-value"):
+
+        @contractevent(data_format="single-value")
+        class NoneAtAll(Event):
+            who: Annotated[Address, topic]
+
+
+def test_an_unknown_data_format_is_refused() -> None:
+    with pytest.raises(ValueError, match="data_format"):
+
+        @contractevent(data_format="tuple")
+        class Odd(Event):
+            amount: U32
+
+
+def test_the_topic_marker_is_meaningless_on_a_struct_field() -> None:
+    """Silently accepting it would let an author believe a struct field is a
+    topic; nothing in the pipeline would ever read it."""
+    with pytest.raises(ValueError, match="topic"):
+
+        @contracttype
+        class Marked:
+            who: Annotated[Address, topic]
+
+
+def test_the_topic_marker_must_wrap_the_WHOLE_field_annotation() -> None:
+    """`Annotated[Address, topic] | None` hides the marker inside a union, where
+    the strip would not find it -- refused rather than silently untopicked."""
+    with pytest.raises(ValueError, match="whole"):
+
+        @contractevent
+        class Nested(Event):
+            who: Annotated[Address, topic] | None
 
 
 def test_contract_metadata_lists_constructor_and_public_methods() -> None:

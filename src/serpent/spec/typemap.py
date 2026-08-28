@@ -27,8 +27,9 @@ whitelist of the two named classes would silently mis-emit plain `BYTES` for
   mapping here for a caller to reach for by mistake.
 * `Env` -- the host handle. Every contract method takes `env: Env` second and
   the spec has no input for it, so `spec.sections` DROPS that parameter.
-* `Event` and `@contractevent` classes -- `SCSpecEventV0` emission is deferred
-  to sub-plan E (the M1-A event metadata carries no topic/data split).
+* `Event` and `@contractevent` classes -- an event is a spec *entry*
+  (`EVENT_V0`, built by `spec.sections` from `events=`), not a type an author
+  can annotate with.
 * `@contracterror` enums -- a spec *entry* (`UDT_ERROR_ENUM_V0`), not a type.
 * `@contract` classes -- the contract is not a value.
 * `U256`/`I256` (M2-deferred), `MuxedAddress`, `Val`, `Result`, `Tuple`: no
@@ -121,9 +122,8 @@ _REFUSED_KINDS: Final[dict[str, str]] = {
         "type -- pass it to build_spec_entries, do not annotate with it"
     ),
     "event": (
-        "@contractevent classes have no spec type: SCSpecEventV0 emission is "
-        "deferred to sub-plan E (M1-A event metadata carries no topic/data "
-        "split)"
+        "an @contractevent class is a spec ENTRY (SCSpecEventV0), not a type -- "
+        "pass it to build_spec_entries(events=...), do not annotate with it"
     ),
     "contract": ("a @contract class is the contract itself, not a value it can pass or return"),
 }

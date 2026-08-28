@@ -25,6 +25,7 @@ from serpent import (
     U64,
     U128,
     Address,
+    Annotated,
     Bool,
     Bytes,
     Bytes32,
@@ -43,6 +44,7 @@ from serpent import (
     contractevent,
     contracttype,
     errorcode,
+    topic,
 )
 from serpent.spec import SpecTypeError, to_spec_type
 
@@ -268,9 +270,20 @@ def test_bare_container_error_shows_the_parameterized_form() -> None:
         to_spec_type(Map)
 
 
-def test_event_error_points_at_sub_plan_e() -> None:
-    with pytest.raises(SpecTypeError, match="sub-plan E"):
+def test_event_error_points_at_the_events_keyword() -> None:
+    """An event is a spec ENTRY (`EVENT_V0`, emitted from `events=`), never a
+    type an author can annotate with."""
+    with pytest.raises(SpecTypeError, match="events="):
         to_spec_type(Transfer)
+
+
+def test_an_annotated_annotation_has_no_spec_type() -> None:
+    """The seam is in `decorators`, which stores the STRIPPED annotation, so an
+    `Annotated[...]` alias must never reach here. Pinned as a refusal rather
+    than a silent unwrap: a leak is a bug in the decorator, and unwrapping it
+    here would hide it."""
+    with pytest.raises(SpecTypeError):
+        to_spec_type(Annotated[U32, topic])
 
 
 def test_deferred_wide_integers_have_no_authoring_surface() -> None:
