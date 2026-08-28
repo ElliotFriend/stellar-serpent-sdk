@@ -84,6 +84,7 @@ from typing import Any
 
 from serpent import val
 from serpent._host._protocol import (
+    BASE_PROTOCOL,
     CONSTRUCTOR_MIN_PROTOCOL,
     DEFAULT_TARGET_PROTOCOL,
     ProtocolGateError,
@@ -699,12 +700,22 @@ def _resolve_protocol(
     only ever sees names from `HOST_FUNCTIONS`. A FEATURE gate is a capability
     the module uses that is NOT a host-function import, so no binding carries
     it and only the frontend knows whether the module used it; such gates are
-    applied HERE, on top of the import answer, by `_apply_feature_gates`.
-    `__constructor` (spec SS 13, protocol >= 22, CAP-0058) is the first and
-    currently the only one -- a future gate joins that function rather than
+    contributed HERE, by `_feature_gate_floor`, and folded into the import
+    answer. `__constructor` (spec SS 13, protocol >= 22, CAP-0058) is the first
+    and currently the only one -- a future gate joins that function rather than
     re-deriving this composition.
+
+    `_feature_gate_floor` runs FIRST and UNCONDITIONALLY, before the import
+    check that may fail. That order is the whole point: a contract's `__init__`
+    does not stop needing protocol 22 because some import is ALSO gated outside
+    the target, so E16's collect-all requires both diagnostics from one pass.
+    Running the feature check on the import check's success path instead
+    silently drops it whenever the import side fails first -- which is a real
+    shape (a gated import at target 21, or any target below `BASE_PROTOCOL`),
+    not a hypothetical.
     """
     names = sorted(reachable)
+    feature_floor = _feature_gate_floor(target_protocol, sink, constructor_loc=constructor_loc)
     try:
         resolved = declared_protocol(names, target_protocol)
     except KeyError as exc:
@@ -731,44 +742,57 @@ def _resolve_protocol(
             help=_GATE_HELP,
         )
     else:
-        return _apply_feature_gates(
-            resolved, target_protocol, sink, constructor_loc=constructor_loc
-        )
+        # "Users may raise, never lower" (B4/S6): an explicit target is
+        # returned verbatim -- one below a feature gate was already reported
+        # above, and `declared_protocol` already refused one below the import
+        # floor. With no target, the COMPUTED floor is the max over both kinds
+        # of gate, which is what keeps S18 honest.
+        return resolved if target_protocol is not None else max(resolved, feature_floor)
     # A gated compile never reaches sub-plan D (the sink is non-empty, so
     # `compile_module` raises), and returning the floor-ignoring target keeps
     # this function total rather than inventing a protocol.
     return target_protocol if target_protocol is not None else DEFAULT_TARGET_PROTOCOL
 
 
-def _apply_feature_gates(
-    resolved: int,
+def _feature_gate_floor(
     target_protocol: int | None,
     sink: Diagnostics,
     *,
     constructor_loc: Loc | None,
 ) -> int:
-    """The import-gate answer, raised (or rejected) by the FEATURE gates.
+    """The floor the FEATURE gates impose, reporting any explicit target below one.
 
     One gate today, `__constructor` (spec SS 13's reserved-name row, dossier
     S26, CAP-0058): the host only honors the reserved export from protocol
     `CONSTRUCTOR_MIN_PROTOCOL`, so bytes declaring less than that with a
     `__constructor` in them would deploy on an older network and simply never
-    run the constructor. Three arms, matching the import gates' own shape:
+    run the constructor.
 
-    * no explicit target -- the computed floor RISES to the gate, since S18's
-      "computed, never hand-set" only stays honest if the computation sees
-      every gated capability the module uses, not only its imports;
-    * an explicit target at or above the gate -- returned verbatim; the target
-      already clears it, and "users may raise, never lower" (B4/S6) holds;
-    * an explicit target below the gate -- a located `SPT6001` at the
-      `__init__` that needs the higher protocol, exactly as a gated host
-      function is reported at the call that reached it.
+    Both halves of a gate live here, so there is ONE place a future gate is
+    added and one place it can be reported from:
+
+    * the CONTRIBUTION -- the returned floor, which the caller folds into the
+      import answer with a `max` when no explicit target was given, since
+      S18's "computed, never hand-set" only stays honest if the computation
+      sees every gated capability the module uses, not only its imports;
+    * the REJECTION -- an explicit target below the gate is a located
+      `SPT6001` at the `__init__` that needs the higher protocol, exactly as a
+      gated host function is reported at the call that reached it. An explicit
+      target at or above the gate is no diagnostic at all: it already clears
+      it.
+
+    `BASE_PROTOCOL` is the identity when no gate applies -- never 0 -- because
+    the caller `max`es this against a floor that is itself never below
+    `BASE_PROTOCOL`, so a 0 would be a silently-harmless wrong answer that
+    stopped being harmless the moment anything else consumed it.
+
+    This is called exactly once per compile, unconditionally, which is also
+    what makes the rejection un-duplicatable: there is no second call site to
+    report the same gate twice.
     """
     if constructor_loc is None:
-        return resolved
-    if target_protocol is None:
-        return max(resolved, CONSTRUCTOR_MIN_PROTOCOL)
-    if target_protocol < CONSTRUCTOR_MIN_PROTOCOL:
+        return BASE_PROTOCOL
+    if target_protocol is not None and target_protocol < CONSTRUCTOR_MIN_PROTOCOL:
         sink.error(
             "SPT6001",
             constructor_loc,
@@ -778,7 +802,7 @@ def _apply_feature_gates(
             f"which the host does not honor below {CONSTRUCTOR_MIN_PROTOCOL}",
             help=_CONSTRUCTOR_GATE_HELP,
         )
-    return resolved
+    return CONSTRUCTOR_MIN_PROTOCOL
 
 
 def _report_gate_offenders(

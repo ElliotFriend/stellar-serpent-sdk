@@ -680,6 +680,101 @@ def test_a_constructor_less_module_still_declares_the_import_floor() -> None:
     assert compiled.declared_protocol == BASE_PROTOCOL
 
 
+# --- the feature gate COMPOSES with the import gate (E16 collect-all) --------
+#
+# Review finding: the feature-gate check must run UNCONDITIONALLY, not on the
+# import check's success path, or the constructor diagnostic is silently
+# dropped whenever the import side fails first. Both shapes below have an
+# import-side failure AND a constructor-side one, and E16's collect-all means
+# one `CompileError` must carry both -- a contract's `__init__` does not stop
+# needing protocol 22 because some import is also gated outside the target.
+
+_RAISES_WITH_CONSTRUCTOR = """
+from serpent import Env, U32, Symbol, contract, contracterror, errorcode
+
+
+@contracterror
+class E:
+    Nope = errorcode(1)
+
+
+@contract
+class C:
+    def __init__(self, env: Env, start: U32) -> None:
+        env.storage().instance().set(Symbol("N"), start)
+
+    def go(self, env: Env) -> U32:
+        raise E.Nope
+"""
+
+
+def _constructor_gate(exc: CompileError) -> Diagnostic:
+    """The one located constructor-gate SPT6001 in `exc`, or fail saying so."""
+    gates = [d for d in exc.diagnostics if d.code == "SPT6001" and "constructor" in d.message]
+    assert len(gates) == 1, [(d.code, d.message) for d in exc.diagnostics]
+    return gates[0]
+
+
+def test_a_target_below_the_base_protocol_reports_the_floor_AND_the_constructor() -> None:
+    """Target 19 with a constructor: TWO independent facts, two diagnostics.
+
+    19 is below `BASE_PROTOCOL`, so `declared_protocol` raises its
+    below-the-floor `ValueError` -- a module-scoped fact reported at the whole
+    file. 19 is also below the constructor gate, which is a fact about the
+    `__init__` and is reported there. Neither subsumes the other, and the
+    import failure must not swallow the feature one.
+    """
+    exc = _expect_reject_kwargs(_RAISES_WITH_CONSTRUCTOR, "SPT6001", target_protocol=19)
+
+    gate = _constructor_gate(exc)
+    assert gate.loc.kind is LocKind.NODE
+    assert "22" in gate.message and "CAP-0058" in gate.message
+
+    below_floor = [
+        d
+        for d in exc.diagnostics
+        if d.code == "SPT6001" and "below the computed floor" in d.message
+    ]
+    assert len(below_floor) == 1, [(d.code, d.message) for d in exc.diagnostics]
+    assert below_floor[0].loc.kind is LocKind.WHOLE_FILE
+
+
+def test_a_gated_import_and_a_constructor_both_report_in_one_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gated import AND a constructor, both outside target 21.
+
+    `protocol_gated_dummy` is a real pinned binding with `max_protocol=19`, so
+    at target 21 the import side raises `ProtocolGateError` and reports the
+    offender at the `raise` that reached it. The constructor gate is a separate
+    offender at a separate location, and E16 means the author sees both
+    problems from one compile rather than one per run.
+    """
+    monkeypatch.setattr(frontend, "_RAISE_HOST_FN", "protocol_gated_dummy")
+    exc = _expect_reject_kwargs(_RAISES_WITH_CONSTRUCTOR, "SPT6001", target_protocol=21)
+
+    gate = _constructor_gate(exc)
+    assert gate.loc.line == (
+        _RAISES_WITH_CONSTRUCTOR.strip()
+        .splitlines()
+        .index("    def __init__(self, env: Env, start: U32) -> None:")
+        + 1
+    )
+
+    imports = [d for d in exc.diagnostics if d.code == "SPT6001" and "max_protocol=19" in d.message]
+    assert len(imports) == 1, [(d.code, d.message) for d in exc.diagnostics]
+    assert "protocol_gated_dummy" in imports[0].message
+    # Two SPT6001s at two different locations, which is exactly what E16 buys.
+    assert imports[0].loc != gate.loc
+
+
+def test_the_feature_gate_does_not_double_report_when_it_is_the_only_offender() -> None:
+    # The composition must not cost a duplicate: target 21 with a constructor
+    # and no gated import is still exactly ONE diagnostic.
+    exc = _expect_reject_kwargs(_WITH_CONSTRUCTOR, "SPT6001", target_protocol=21)
+    assert len(exc.diagnostics) == 1, [(d.code, d.message) for d in exc.diagnostics]
+
+
 # --- SPT6xxx wired end to end through a fake gated HostFn -------------------
 
 _RAISES = """
