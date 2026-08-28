@@ -17,8 +17,26 @@ B.1's table) and only then resolves the symbolic call sites (review B1):
 section, ``CallDefined(d)`` becomes ``call`` + ``n_imports + d``. No index is
 ever baked into a body before the section that defines it is frozen, so the
 "calls the wrong function and still validates" class is structurally impossible
-rather than merely avoided -- and ``recompute_import_names`` re-derives the map
-from the emitted bytes afterwards as the net under that.
+rather than merely avoided.
+
+**The net under that** is two checks over the finished bytes, and it is worth
+being precise about what each one can catch, because every host function shares
+the all-i64 shape (B3) -- so a call to the WRONG function of the right arity
+validates perfectly, in this emitter and in wasm-tools alike:
+
+* ``recompute_import_names`` re-derives the import NAME order from the emitted
+  import section, through the pin, and ``assemble`` refuses when it disagrees
+  with the order pass 2 resolved against. This catches a reordered or
+  mis-encoded import section. On its own it says nothing about any call
+  immediate.
+* ``check_call_targets`` DECODES every code body -- a real walk over the
+  emitter's instruction vocabulary, so it lands on each ``call``'s immediate --
+  and checks every target is in range. ``assemble`` then compares the decoded
+  target sequence of each body, position by position, against the sequence
+  re-derived from that body's symbolic items using the index map and import
+  count read back out of the BYTES. An off-by-one, a dropped ``n_imports``, a
+  corrupted LEB, or a body serialized against the wrong map all fail there
+  rather than in a mini-host test that happens to exercise that one call.
 
 What this module deliberately does NOT emit (B.1, row by row): a table (4 -- no
 indirect calls; C12 rejects recursion, and there are no closures or function
@@ -50,11 +68,12 @@ from serpent.emitter import encode, opcodes, sections
 from serpent.emitter.frame import CallDefined, CallImport, CodeItem, EmitError
 from serpent.emitter.layout import Memory
 from serpent.emitter.lower import LowerCtx, compile_function
-from serpent.emitter.validate import iter_sections, read_name, read_uleb
+from serpent.emitter.validate import iter_sections, read_byte, read_name, read_uleb
 
 __all__ = [
     "MEMORY_EXPORT_NAME",
     "assemble",
+    "check_call_targets",
     "check_linear_memory_abi",
     "check_no_bulk_memory",
     "recompute_import_names",
@@ -194,12 +213,12 @@ def check_linear_memory_abi(
 def recompute_import_names(wasm: bytes) -> tuple[str, ...]:
     """The host-function names an assembled module imports, re-read from its bytes.
 
-    Review B1's net: pass 2 resolved every ``CallImport`` against an index map
-    built from ``EmitCtx.import_order``, and this recomputes the same map from
-    the FINAL import section -- ``(module, field)`` pairs mapped back through the
-    pin -- so ``assemble`` can assert the two agree. A pair the pin does not know
-    means the section and the registry have diverged, which is the whole bug
-    class the symbolic call sites exist to rule out.
+    Half of review B1's net (see this module's docstring for the split): pass 2
+    resolved every ``CallImport`` against an index map built from
+    ``EmitCtx.import_order``, and this recomputes the same map from the FINAL
+    import section -- ``(module, field)`` pairs mapped back through the pin -- so
+    ``assemble`` can assert the two agree. It says nothing about any call
+    immediate; ``check_call_targets`` is the half that reads those.
     """
     by_pair = {(fn.module, fn.export): fn.name for fn in HOST_FUNCTIONS}
     names: list[str] = []
@@ -210,7 +229,7 @@ def recompute_import_names(wasm: bytes) -> tuple[str, ...]:
         for _ in range(count):
             module_name, i = read_name(payload, i)
             field, i = read_name(payload, i)
-            kind = payload[i]
+            kind = read_byte(payload, i, f"import ({module_name!r}, {field!r})'s descriptor")
             _index, i = read_uleb(payload, i + 1)
             if kind != _KIND_FUNC:
                 raise EmitError(
@@ -226,6 +245,197 @@ def recompute_import_names(wasm: bytes) -> tuple[str, ...]:
                 )
             names.append(name)
     return tuple(names)
+
+
+# --- decoding the emitted bodies (the other half of B1's net) -------------------
+
+#: Immediate shapes, keyed by instruction NAME. Every name in `opcodes`' two
+#: provenance sets that is not a valtype/blocktype appears here exactly once,
+#: and `_INSTRUCTION_IMMEDIATES` below asserts that partition -- so a later task
+#: adding an opcode fails loudly here instead of desynchronizing this decoder
+#: (which would then report a bogus call target three instructions later).
+_IMM_NONE = "none"
+_IMM_BLOCKTYPE = "blocktype"  # one byte: 0x40 (void) or a valtype
+_IMM_ULEB = "uleb"  # a label, local, or function index
+_IMM_SLEB = "sleb"  # a const operand
+_IMM_MEMARG = "memarg"  # two ulebs: alignment then offset
+
+_IMMEDIATE_BY_NAME: dict[str, str] = {
+    "UNREACHABLE": _IMM_NONE,
+    "BLOCK": _IMM_BLOCKTYPE,
+    "LOOP": _IMM_BLOCKTYPE,
+    "IF": _IMM_BLOCKTYPE,
+    "ELSE": _IMM_NONE,
+    "END": _IMM_NONE,
+    "BR": _IMM_ULEB,
+    "BR_IF": _IMM_ULEB,
+    "RETURN": _IMM_NONE,
+    "CALL": _IMM_ULEB,
+    "DROP": _IMM_NONE,
+    "LOCAL_GET": _IMM_ULEB,
+    "LOCAL_SET": _IMM_ULEB,
+    "LOCAL_TEE": _IMM_ULEB,
+    "I32_CONST": _IMM_SLEB,
+    "I64_CONST": _IMM_SLEB,
+    "I64_EQZ": _IMM_NONE,
+    "I64_EQ": _IMM_NONE,
+    "I64_NE": _IMM_NONE,
+    "I64_LT_S": _IMM_NONE,
+    "I64_LT_U": _IMM_NONE,
+    "I64_GT_S": _IMM_NONE,
+    "I64_GT_U": _IMM_NONE,
+    "I64_LE_S": _IMM_NONE,
+    "I64_LE_U": _IMM_NONE,
+    "I64_GE_S": _IMM_NONE,
+    "I64_GE_U": _IMM_NONE,
+    "I64_ADD": _IMM_NONE,
+    "I64_SUB": _IMM_NONE,
+    "I64_MUL": _IMM_NONE,
+    "I64_DIV_S": _IMM_NONE,
+    "I64_DIV_U": _IMM_NONE,
+    "I64_REM_S": _IMM_NONE,
+    "I64_REM_U": _IMM_NONE,
+    "I64_AND": _IMM_NONE,
+    "I64_OR": _IMM_NONE,
+    "I64_XOR": _IMM_NONE,
+    "I64_SHL": _IMM_NONE,
+    "I64_SHR_S": _IMM_NONE,
+    "I64_SHR_U": _IMM_NONE,
+    "I32_WRAP_I64": _IMM_NONE,
+    "I64_EXTEND_I32_U": _IMM_NONE,
+    "I64_EXTEND32_S": _IMM_NONE,
+    "I64_LOAD": _IMM_MEMARG,
+    "I64_STORE": _IMM_MEMARG,
+}
+
+
+def _instruction_immediates() -> dict[int, str]:
+    """``opcode byte -> immediate shape``, built from the provenance sets.
+
+    Valtype and blocktype names are excluded by prefix: their bytes are not
+    instructions, and `0x7E` really is `i64.mul`, the `i64` valtype, AND an
+    `if (result i64)` blocktype at once (B.2's named trap). Two instruction names
+    sharing a byte, on the other hand, would make this table ambiguous, so it is
+    refused.
+    """
+    names = {
+        name
+        for name in opcodes.ON_CHAIN_VERIFIED | opcodes.SPEC_PINNED
+        if not name.startswith(("VALTYPE_", "BLOCKTYPE_"))
+    }
+    if names != set(_IMMEDIATE_BY_NAME):
+        missing = sorted(names - set(_IMMEDIATE_BY_NAME))
+        extra = sorted(set(_IMMEDIATE_BY_NAME) - names)
+        raise EmitError(
+            "the immediate table and the opcode vocabulary disagree: "
+            f"missing {missing}, unknown {extra}. A body decoder that does not know "
+            "an instruction's operand length desynchronizes silently, so this table "
+            "must be extended in the same commit as the opcode"
+        )
+    table: dict[int, str] = {}
+    for name, shape in _IMMEDIATE_BY_NAME.items():
+        byte = getattr(opcodes, name)
+        if byte in table:
+            raise EmitError(f"two instructions share byte {byte:#04x}; the table is ambiguous")
+        table[byte] = shape
+    return table
+
+
+def _call_targets(entry: bytes, where: str) -> list[int]:
+    """Every ``call`` immediate in one CODE-SECTION ENTRY, in body order.
+
+    Walks the locals declaration first, then the instruction stream. This is a
+    real decode over the emitter's whole instruction vocabulary rather than a
+    scan for ``0x10`` bytes: ``0x10`` occurs constantly inside `i64.const`
+    operands and local indices, so a scan would report call targets that are not
+    calls (and miss the check entirely on the ones that are).
+    """
+    immediates = _instruction_immediates()
+    groups, i = read_uleb(entry, 0)
+    for _ in range(groups):
+        _count, i = read_uleb(entry, i)
+        read_byte(entry, i, f"{where}'s locals declaration")
+        i += 1
+
+    targets: list[int] = []
+    while i < len(entry):
+        opcode = entry[i]
+        at = i
+        i += 1
+        shape = immediates.get(opcode)
+        if shape is None:
+            raise EmitError(
+                f"{where}: byte {opcode:#04x} at offset {at} is not an instruction the "
+                "emitter can produce; the body and the opcode table have diverged"
+            )
+        if shape == _IMM_NONE:
+            continue
+        if shape == _IMM_BLOCKTYPE:
+            read_byte(entry, i, f"{where}'s blocktype at offset {at}")
+            i += 1
+        elif shape == _IMM_ULEB:
+            value, i = read_uleb(entry, i)
+            if opcode == opcodes.CALL:
+                targets.append(value)
+        elif shape == _IMM_SLEB:
+            i = _skip_leb(entry, i, f"{where}'s const operand at offset {at}")
+        else:  # _IMM_MEMARG
+            _align, i = read_uleb(entry, i)
+            _offset, i = read_uleb(entry, i)
+    return targets
+
+
+def _skip_leb(data: bytes, i: int, what: str) -> int:
+    """Step past one LEB128 operand, signed or not (the framing is identical)."""
+    while True:
+        byte = read_byte(data, i, what)
+        i += 1
+        if not byte & 0x80:
+            return i
+
+
+def _decode_code_section(wasm: bytes) -> list[list[int]]:
+    """The ``call`` targets of every function body, in definition order."""
+    bodies: list[list[int]] = []
+    for sid, payload in iter_sections(wasm):
+        if sid != _SEC_CODE:
+            continue
+        count, i = read_uleb(payload, 0)
+        for index in range(count):
+            size, i = read_uleb(payload, i)
+            if i + size > len(payload):
+                raise EmitError(
+                    f"truncated code section: body {index} declares {size} bytes but "
+                    f"only {len(payload) - i} remain"
+                )
+            bodies.append(_call_targets(payload[i : i + size], f"body {index}"))
+            i += size
+    return bodies
+
+
+def check_call_targets(wasm: bytes) -> None:
+    """Every ``call`` in every body names a function the module really has.
+
+    The other half of review B1's net, and the half that reads the immediates:
+    each target either indexes the import section (and so resolves, through the
+    pin, to a registered host function) or lands inside the defined range
+    ``[n_imports, n_imports + n_defined)``. A target past the end is the
+    wrong-target class -- and note it is a class wasm-tools cannot narrow for us
+    beyond "in range", because every host function shares the all-i64 shape (B3),
+    so a call to the wrong function of the right arity type-checks.
+    """
+    imports = recompute_import_names(wasm)
+    n_imports = len(imports)
+    bodies = _decode_code_section(wasm)
+    total = n_imports + len(bodies)
+    for index, targets in enumerate(bodies):
+        for target in targets:
+            if target >= total:
+                raise EmitError(
+                    f"body {index} calls function {target}, but the module has "
+                    f"{n_imports} imports and {len(bodies)} defined functions "
+                    f"({total} in the combined index space)"
+                )
 
 
 # --- pass 2 helpers -------------------------------------------------------------
@@ -497,4 +707,48 @@ def assemble(compiled: CompiledModule, *, meta: Mapping[str, str], version: str 
             f"the emitted import section reads back as {recomputed} but pass 2 resolved "
             f"call targets against {import_order}: every baked call index is wrong"
         )
+    check_call_targets(wasm)
+    _check_call_sites_agree(wasm, defined, recomputed)
     return wasm
+
+
+def _check_call_sites_agree(
+    wasm: bytes, defined: Sequence[_Defined], imports: Sequence[str]
+) -> None:
+    """Every baked call index equals what the SYMBOLIC site says it should be.
+
+    The closing half of review B1's net. The expected sequence is rebuilt from
+    the symbolic items -- which carry a NAME and a defined-space index, never a
+    combined-space one -- against the index map and import count read back out
+    of the emitted bytes. So a serializer that resolved a body against a stale
+    map, dropped ``n_imports`` from a defined target, or mis-encoded an LEB
+    disagrees here, at the function and position where it happened, instead of
+    surfacing as one mini-host test that happens to exercise that call.
+
+    What it cannot catch, stated plainly: a lowering that recorded the wrong NAME
+    in the first place. Every host function shares the all-i64 shape (B3), so
+    that call validates everywhere -- the defence against it is that the name is
+    the return value of ``EmitCtx.host_import_name``, not a literal at the call
+    site.
+    """
+    index_of = {name: index for index, name in enumerate(imports)}
+    n_imports = len(imports)
+    decoded = _decode_code_section(wasm)
+    if len(decoded) != len(defined):
+        raise EmitError(
+            f"the emitted code section holds {len(decoded)} bodies but the module "
+            f"defines {len(defined)} functions"
+        )
+    for entry, targets in zip(defined, decoded, strict=True):
+        expected: list[int] = []
+        for item in entry.body:
+            if isinstance(item, CallImport):
+                expected.append(index_of[item.name])
+            elif isinstance(item, CallDefined):
+                expected.append(n_imports + item.defidx)
+        if targets != expected:
+            raise EmitError(
+                f"{entry.name}: the emitted body calls {targets} but its symbolic call "
+                f"sites resolve to {expected} against the index space the module "
+                "actually shipped"
+            )

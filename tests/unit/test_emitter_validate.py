@@ -164,6 +164,114 @@ def test_a_section_id_the_binary_format_does_not_define_is_refused() -> None:
         validate.validate_internal(forged, expect_memory=False)
 
 
+def test_a_type_entry_that_does_not_open_with_the_functype_tag_is_refused() -> None:
+    """The uncovered branch at the top of `_check_types`: a type section entry
+    must open with `0x60`. Anything else means the section is not a type section,
+    whatever its id claims."""
+    forged = _passing(
+        type=encode.section(_SEC_TYPE, encode.vec([b"\x61" + encode.vec([]) + encode.vec([])]))
+    )
+    with pytest.raises(EmitError, match="functype tag"):
+        validate.validate_internal(forged, expect_memory=False)
+
+
+def test_a_type_section_claiming_more_entries_than_it_carries_is_refused() -> None:
+    """One truncated-section control per checker. A well-FRAMED section (its
+    declared byte length matches) whose internal vector count over-claims used to
+    escape as `IndexError` from the decoder rather than `EmitError` from the
+    validator -- which a caller handling `EmitError` would not catch."""
+    payload = encode.uleb(2) + _functype(0, 0)  # says two functypes, carries one
+    forged = _passing(type=encode.section(_SEC_TYPE, payload))
+    with pytest.raises(EmitError, match="truncated"):
+        validate.validate_internal(forged, expect_memory=False)
+
+
+def test_a_type_entry_whose_types_run_off_the_end_is_refused() -> None:
+    """The bulk-skip guard, on the case nothing else can see: the LAST functype's
+    result types run past the payload. Its arity is inside the cap, the section's
+    framing is right, and the decode loop simply ends -- so without the explicit
+    cursor check the over-claim is silently accepted. (An over-claim in any
+    EARLIER entry is caught when the next entry's tag byte is read.)"""
+    payload = (
+        encode.uleb(1)
+        + bytes([_FUNCTYPE])
+        + encode.uleb(0)  # no parameters
+        + encode.uleb(4)  # ... and four results, of which one byte is present
+        + b"\x7e"
+    )
+    forged = _passing(type=encode.section(_SEC_TYPE, payload))
+    with pytest.raises(EmitError, match="result types"):
+        validate.validate_internal(forged, expect_memory=False)
+
+
+def test_an_import_section_claiming_more_entries_than_it_carries_is_refused() -> None:
+    entry = encode.wasm_name("x") + encode.wasm_name("5")  # names, then nothing
+    forged = (
+        _MAGIC
+        + _type_section([(0, 0)])
+        + encode.section(_SEC_IMPORT, encode.uleb(1) + entry)
+        + _function_section([0])
+        + _export_section([("go", _KIND_FUNC, 1)])
+        + _code_section([_END])
+    )
+    with pytest.raises(EmitError, match="truncated"):
+        validate.validate_internal(forged, expect_memory=False)
+
+
+def test_an_export_section_claiming_more_entries_than_it_carries_is_refused() -> None:
+    payload = encode.uleb(2) + encode.wasm_name("go") + bytes([_KIND_FUNC]) + encode.uleb(0)
+    forged = _passing(export=encode.section(_SEC_EXPORT, payload))
+    with pytest.raises(EmitError, match="truncated"):
+        validate.validate_internal(forged, expect_memory=False)
+
+
+def test_an_import_of_a_kind_other_than_a_function_or_memory_is_refused() -> None:
+    """A global import (kind `0x03`) carries a valtype byte plus a mutability
+    byte where a function import carries a uleb type index. Skipping it "past the
+    index" would read the valtype AS an index and then decode the next import
+    from the wrong offset -- so the descriptor is refused outright, the way
+    `module.recompute_import_names` refuses it."""
+    entry = (
+        encode.wasm_name("x")
+        + encode.wasm_name("5")
+        + b"\x03"
+        + b"\x7e\x00"  # an i64 global, immutable
+    )
+    forged = (
+        _MAGIC
+        + _type_section([(0, 0)])
+        + encode.section(_SEC_IMPORT, encode.vec([entry]))
+        + _function_section([0])
+        + _export_section([("go", _KIND_FUNC, 0)])
+        + _code_section([_END])
+    )
+    with pytest.raises(EmitError, match="descriptor kind 0x03"):
+        validate.validate_internal(forged, expect_memory=False)
+
+
+def test_an_IMPORTED_memory_counts_toward_the_one_memory_budget() -> None:
+    """The memory-count check reads section 5 AND the import section: a module
+    could reach its page by importing one, and "at most one memory" is about the
+    module, not about one section."""
+    entry = (
+        encode.wasm_name("x")
+        + encode.wasm_name("5")
+        + bytes([_KIND_MEMORY])
+        + b"\x00"  # limits: a minimum, no maximum
+        + encode.uleb(1)
+    )
+    forged = (
+        _MAGIC
+        + _type_section([(0, 0)])
+        + encode.section(_SEC_IMPORT, encode.vec([entry]))
+        + _function_section([0])
+        + _export_section([("go", _KIND_FUNC, 0)])
+        + _code_section([_END])
+    )
+    with pytest.raises(EmitError, match="memoryless"):
+        validate.validate_internal(forged, expect_memory=False)
+
+
 # ===========================================================================
 # Section order (B.1: fixed by id; customs anywhere)
 # ===========================================================================

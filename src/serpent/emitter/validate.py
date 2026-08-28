@@ -54,6 +54,7 @@ __all__ = [
     "MAX_MODULE_SIZE",
     "WASM_FEATURES",
     "iter_sections",
+    "read_byte",
     "read_name",
     "read_uleb",
     "validate_external",
@@ -95,6 +96,12 @@ _SEC_EXPORT = 7
 _SEC_START = 8
 
 _FUNCTYPE_TAG = 0x60
+
+#: Import/export descriptor kinds. A serpent module imports only functions and
+#: exports only functions and the one memory; the other two kinds (table 0x01,
+#: global 0x03) carry differently-shaped descriptors, which is why an import
+#: naming one is refused rather than skipped.
+_KIND_FUNC = 0x00
 _KIND_MEMORY = 0x02
 
 #: The host looks the guest's linear memory up under this exact name. Spelled
@@ -182,14 +189,35 @@ def _check_order(sections: list[tuple[int, bytes]]) -> None:
         raise EmitError("the module has a start section; S23 forbids one outright")
 
 
+def read_byte(data: bytes, i: int, what: str) -> int:
+    """One byte at ``i``, or a truncation ``EmitError`` naming ``what``.
+
+    Every raw index into a section payload goes through this. Bare ``data[i]``
+    raises ``IndexError`` on a section that claims more entries than it carries,
+    which is a *decoder* crash rather than the "this module is malformed"
+    diagnosis the caller asked for -- and an ``IndexError`` escaping
+    ``validate_internal`` would not be caught by a caller handling
+    ``EmitError``.
+    """
+    if i >= len(data):
+        raise EmitError(f"truncated module: {what} runs past the end of its section")
+    return data[i]
+
+
+def _require_within(payload: bytes, i: int, what: str) -> None:
+    """The cursor must still be inside the payload after a bulk skip."""
+    if i > len(payload):
+        raise EmitError(f"truncated module: {what} runs past the end of its section")
+
+
 def _check_types(payload: bytes) -> None:
     """Every functype is well-formed and within S23/C18's arity cap."""
     count, i = read_uleb(payload, 0)
     for index in range(count):
-        if payload[i] != _FUNCTYPE_TAG:
+        tag = read_byte(payload, i, f"type {index}")
+        if tag != _FUNCTYPE_TAG:
             raise EmitError(
-                f"type {index} starts with {payload[i]:#04x}, not the functype tag "
-                f"{_FUNCTYPE_TAG:#04x}"
+                f"type {index} starts with {tag:#04x}, not the functype tag {_FUNCTYPE_TAG:#04x}"
             )
         nparams, i = read_uleb(payload, i + 1)
         if nparams > MAX_FUNCTYPE_ARITY:
@@ -198,39 +226,50 @@ def _check_types(payload: bytes) -> None:
                 f"function at {MAX_FUNCTYPE_ARITY}"
             )
         i += nparams
+        _require_within(payload, i, f"type {index}'s parameter types")
         nresults, i = read_uleb(payload, i)
         if nresults > MAX_FUNCTYPE_ARITY:
             raise EmitError(
                 f"type {index} returns {nresults} results; the cap is {MAX_FUNCTYPE_ARITY}"
             )
         i += nresults
-        if i > len(payload):
-            raise EmitError(f"truncated type section: type {index} runs past the payload")
+        _require_within(payload, i, f"type {index}'s result types")
 
 
 def _check_imports(payload: bytes) -> int:
     """Check each import's field-name length; return how many memories it imports."""
     count, i = read_uleb(payload, 0)
     memories = 0
-    for _ in range(count):
-        _module_name, i = read_name(payload, i)
+    for index in range(count):
+        module_name, i = read_name(payload, i)
         field, i = read_name(payload, i)
         if len(field) > MAX_IMPORT_FIELD_CHARS:
             raise EmitError(
                 f"import field name {field!r} is {len(field)} characters; S23 caps an "
                 f"import symbol at {MAX_IMPORT_FIELD_CHARS}"
             )
-        kind = payload[i]
+        where = f"import {index} ({module_name!r}, {field!r})"
+        kind = read_byte(payload, i, f"{where}'s descriptor")
         i += 1
-        if kind == _KIND_MEMORY:
+        if kind == _KIND_FUNC:
+            _index, i = read_uleb(payload, i)
+        elif kind == _KIND_MEMORY:
             memories += 1
             # limits: a flags byte, a minimum, and a maximum when the flag says so.
-            flags = payload[i]
+            flags = read_byte(payload, i, f"{where}'s memory limits")
             _minimum, i = read_uleb(payload, i + 1)
             if flags & 0x01:
                 _maximum, i = read_uleb(payload, i)
         else:
-            _index, i = read_uleb(payload, i)
+            # A table (0x01) or global (0x03) import. Rejected rather than
+            # skipped: the two descriptors have DIFFERENT shapes, so a decoder
+            # that guessed would desynchronize and then report whatever the next
+            # bytes happened to look like -- and a serpent module imports
+            # nothing but functions anyway (B.1 rows 4 and 6).
+            raise EmitError(
+                f"{where} has descriptor kind {kind:#04x}; a serpent module imports "
+                "functions and nothing else"
+            )
     return memories
 
 
@@ -249,7 +288,7 @@ def _check_exports(payload: bytes) -> list[str]:
         if name in seen:
             raise EmitError(f"duplicate export name {name!r}: the ABI would be ambiguous")
         seen.add(name)
-        kind = payload[i]
+        kind = read_byte(payload, i, f"export {name!r}'s descriptor")
         _index, i = read_uleb(payload, i + 1)
         if kind == _KIND_MEMORY:
             memory_exports.append(name)

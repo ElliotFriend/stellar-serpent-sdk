@@ -17,6 +17,7 @@ There is no golden for the code section or `contractmetav0` -- S8 forbids both.
 import dataclasses
 import importlib.metadata
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,7 @@ from serpent import errors, val
 from serpent._host import HOST_FUNCTIONS
 from serpent.compiler.frontend import CompiledModule, compile_module
 from serpent.emitter import encode, module, opcodes, sections
-from serpent.emitter.frame import BuildLimitError, EmitError
+from serpent.emitter.frame import BuildLimitError, CodeItem, EmitError
 from serpent.spec import build_env_meta, build_meta, build_spec_entries
 from serpent.types import String
 from tests.harness.engine import HostError, MiniHost
@@ -126,6 +127,10 @@ class Big:
 _TOKEN_STYLE = Path(__file__).parent.parent / "fixtures" / "token_style.py"
 
 _MAGIC = b"\x00asm\x01\x00\x00\x00"
+
+#: `0xFC` opens every bulk-memory instruction, so it is the byte the emitter's
+#: vocabulary must never carry -- and therefore a byte no body can hold.
+_BULK_MEMORY_PREFIX = 0xFC
 
 
 def compiled(src: str, path: str = "contracts/t.py") -> CompiledModule:
@@ -431,6 +436,123 @@ def test_recompute_import_names_refuses_a_pair_the_pin_does_not_know() -> None:
 
 
 # ===========================================================================
+# Review B1's net, second half: the emitted call immediates (fix round 1, I2)
+# ===========================================================================
+
+
+def _tiny_module(body: bytes) -> bytes:
+    """The smallest module carrying one body -- no imports, one defined function."""
+    i64 = bytes([opcodes.VALTYPE_I64])
+    functype = b"\x60" + encode.vec([]) + encode.vec([i64])
+    entry = encode.vec([]) + body
+    return (
+        _MAGIC
+        + encode.section(1, encode.vec([functype]))
+        + encode.section(3, encode.vec([encode.uleb(0)]))
+        + encode.section(7, encode.vec([encode.wasm_name("go") + b"\x00" + encode.uleb(0)]))
+        + encode.section(10, encode.vec([encode.uleb(len(entry)) + entry]))
+    )
+
+
+def test_check_call_targets_accepts_every_module_the_emitter_assembles() -> None:
+    for src in (COUNTER_SRC, NAMER_SRC, WIDE_SRC, HELPED_SRC):
+        module.check_call_targets(build(src))
+
+
+def test_check_call_targets_refuses_a_call_past_the_index_space() -> None:
+    """The wrong-target class, at the only place it can be seen: the immediate.
+    Note wasm-tools would accept a call to the wrong function of the right
+    arity -- every host function shares the all-i64 shape (B3) -- so an
+    out-of-range target is the strongest statement a structural check can
+    make."""
+    body = bytes([opcodes.CALL]) + encode.uleb(9) + bytes([opcodes.END])
+    with pytest.raises(EmitError, match="calls function 9"):
+        module.check_call_targets(_tiny_module(body))
+
+
+def test_the_call_walk_is_a_DECODE_not_a_scan_for_0x10_bytes() -> None:
+    """`0x10` is `call`, and it is also a perfectly ordinary byte inside an
+    `i64.const` operand or a local index. A body whose only `0x10` is an operand
+    must yield NO call targets -- a scan would invent one and then read the next
+    instruction byte as its index."""
+    body = (
+        bytes([opcodes.I64_CONST])
+        + encode.sleb(0x10)
+        + bytes([opcodes.LOCAL_SET])
+        + encode.uleb(0x10)
+        + bytes([opcodes.END])
+    )
+    module.check_call_targets(_tiny_module(body))
+    assert module._call_targets(encode.vec([]) + body, "probe") == []
+
+
+def test_the_call_walk_refuses_a_byte_that_is_not_in_the_emitters_vocabulary() -> None:
+    """A decoder that skipped an unknown opcode would desynchronize and then
+    report whatever the following bytes looked like."""
+    body = bytes([_BULK_MEMORY_PREFIX, 0x0B]) + bytes([opcodes.END])
+    with pytest.raises(EmitError, match="not an instruction"):
+        module.check_call_targets(_tiny_module(body))
+
+
+def test_the_immediate_table_must_be_extended_with_the_opcode_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The decoder's own drift guard: an opcode whose operand length this table
+    does not know would make every later call target in that body meaningless,
+    so the mismatch is loud at the table rather than silent at the walk."""
+    monkeypatch.setattr(opcodes, "I64_CLZ", 0x79, raising=False)
+    monkeypatch.setattr(opcodes, "SPEC_PINNED", opcodes.SPEC_PINNED | {"I64_CLZ"})
+    with pytest.raises(EmitError, match="must be extended"):
+        module.check_call_targets(build(COUNTER_SRC))
+
+
+def test_a_defined_call_serialized_without_the_import_offset_is_caught(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mutation the positional half exists for: `CallDefined(d)` must bake
+    `n_imports + d`, and dropping `n_imports` produces a module that VALIDATES
+    (the target is in range, and every functype is all-i64) while calling a host
+    import where it meant to call a runtime part. Only comparing the emitted
+    immediates against the symbolic sites, position by position, sees it."""
+    original = module._serialize
+
+    def dropped_offset(
+        where: str,
+        items: Sequence[CodeItem],
+        import_index: Mapping[str, int],
+        n_imports: int,
+        n_defined: int,
+    ) -> bytes:
+        return original(where, items, import_index, 0, n_defined)
+
+    monkeypatch.setattr(module, "_serialize", dropped_offset)
+    with pytest.raises(EmitError, match="symbolic call sites resolve to"):
+        module.assemble(compiled(WIDE_SRC), meta={}, version=None)
+
+
+def test_a_body_serialized_against_a_STALE_import_map_is_caught(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same net from the import side: a map that resolves every host call to
+    index 0 keeps the module in range and structurally valid, and calls
+    `fail_with_error` everywhere the contract meant to read storage."""
+    original = module._serialize
+
+    def collapsed_map(
+        where: str,
+        items: Sequence[CodeItem],
+        import_index: Mapping[str, int],
+        n_imports: int,
+        n_defined: int,
+    ) -> bytes:
+        return original(where, items, dict.fromkeys(import_index, 0), n_imports, n_defined)
+
+    monkeypatch.setattr(module, "_serialize", collapsed_map)
+    with pytest.raises(EmitError, match="symbolic call sites resolve to"):
+        module.assemble(compiled(COUNTER_SRC), meta={}, version=None)
+
+
+# ===========================================================================
 # Sections 3/7/10: function, export, code
 # ===========================================================================
 
@@ -691,6 +813,18 @@ def test_an_ungated_contract_declares_protocol_20_not_27() -> None:
     c = compiled(COUNTER_SRC)
     assert c.declared_protocol == 20
     assert sections.env_meta_payload(c) == build_env_meta(20)
+
+
+def test_a_requested_target_protocol_is_what_the_env_meta_declares() -> None:
+    """E9's other half (B4/S6: "users may raise, never lower"). `target_protocol`
+    is a FRONTEND argument, and `declared_protocol` is what it becomes -- so
+    asking for 23 changes the section's bytes, and to exactly the bytes
+    `build_env_meta(23)` produces."""
+    c = compile_module(COUNTER_SRC, "contracts/t.py", target_protocol=23)
+    assert c.declared_protocol == 23
+    payload = _customs(module.assemble(c, meta={}, version=None))[sections.ENV_META_SECTION_NAME]
+    assert payload == build_env_meta(23)
+    assert payload != build_env_meta(20)
 
 
 # ===========================================================================
