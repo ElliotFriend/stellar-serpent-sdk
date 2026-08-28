@@ -704,6 +704,13 @@ def test_a_container_built_up_in_a_loop_compiles() -> None:
     A pre-pass that over-approximated escapes would make this a false reject,
     which would leave the diagnostics recommending something the compiler
     refuses.
+
+    Ruling E5 is what keeps this green now that tier 1 can actually run the
+    body: `env.storage().persistent().set(..., rows)` is exempt from the escape
+    rule because the model stores a DEEP COPY, so mutating `rows` afterwards
+    cannot be seen through storage at either tier. Had the model stored a
+    reference, this write would have had to become an escape and this test
+    would have had to be deleted along with the `help:` text it protects.
     """
     compiled = _compile(
         """
@@ -959,10 +966,19 @@ def test_a_container_type_cannot_be_requested_from_storage_get() -> None:
     )
 
 
-def test_a_container_in_a_keyword_position_loses_ownership() -> None:
-    # The pre-pass rule that covers the GET_DEFAULT `default=` position (and
-    # every `@contracttype` field), stated on its own.
-    _expect_reject(
+def test_a_container_in_a_serializing_calls_keyword_position_keeps_ownership() -> None:
+    """Ruling E5: the three serializing calls do not store a handle, in EITHER
+    argument position.
+
+    This test used to assert the opposite, because the pre-pass marked every
+    keyword-argument value unconditionally while `_positional_args_escape`
+    exempted `<bucket>.set`/`events().publish`/`require_auth_for_args` -- so
+    the same write escaped or not depending on whether the author spelled it
+    with keywords. The tier-1 model deep-copies at every one of those
+    boundaries, so neither spelling shares an object with the store, and the
+    asymmetry is closed in the exemption's direction.
+    """
+    compiled = _compile(
         """
         from serpent import Env, Symbol, U32, Vec, contract
 
@@ -974,9 +990,43 @@ def test_a_container_in_a_keyword_position_loses_ownership() -> None:
                 env.storage().persistent().set(key=k, value=own)
                 own.push_back(U32(2))
                 return len(own)
+        """
+    )
+    assert {"put_contract_data", "vec_push_back"} <= compiled.host_fns_used
+
+
+def test_a_container_in_a_struct_field_keyword_loses_ownership() -> None:
+    """The general keyword rule, on its own and unconfounded.
+
+    Every OTHER call's keyword arguments still escape -- a `@contracttype`
+    field STORES the handle, and after `Holder(items=own)` a later
+    `own.push_back(x)` is visible through the struct at tier 1 and cannot be on
+    chain. The straight-line shape matters: the older pin for this rule
+    (`test_mutation_before_an_escape_in_a_for_body_is_rejected`) puts the same
+    construction inside a `for` body, whose target and iterable escape too, so
+    it cannot show the keyword rule alone.
+    """
+    exc = _expect_reject(
+        """
+        from serpent import Env, U32, Vec, contract, contracttype
+
+
+        @contracttype
+        class Holder:
+            items: Vec[U32]
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> U32:
+                own = Vec(U32, [U32(1)])
+                h = Holder(items=own)
+                own.push_back(U32(2))
+                return len(own)
         """,
         "SPT1034",
     )
+    assert _codes(exc) == ["SPT1034"], _codes(exc)
 
 
 # --- recognition wired into real bodies ------------------------------------

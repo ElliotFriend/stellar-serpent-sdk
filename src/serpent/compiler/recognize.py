@@ -2170,11 +2170,18 @@ def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx, reason: str | None = No
     Three recognized container-argument positions deliberately do NOT count as
     escapes: `<bucket>.set(k, v)`, `events().publish(topics, data)`, and
     `addr.require_auth_for_args(args)`. All three serialize their argument out
-    to the host rather than storing a handle, and tier 1 has no shared-object
-    model to diverge from at any of them (every `env.py` and
-    `types/address.py` body on those paths raises `NotImplementedError`,
-    sub-plan E). If sub-plan E gives those surfaces real tier-1 behaviour, they
-    become escapes and belong in this hook.
+    to the host rather than storing a handle, and the tier-1 model
+    deep-copies at every one of those boundaries (ruling E5: `set` stores a
+    deep copy, `publish` snapshots its topics and data, `require_auth_for_args`
+    snapshots its args), so tier 1 still has no shared-object model to diverge
+    from -- not because those surfaces cannot run, but because what they keep is
+    a copy. `tests/unit/test_env_model.py`'s isolation property is what holds
+    that justification up; if a future model stored a reference at any of the
+    three, that position becomes an escape and belongs in this hook.
+
+    The exemption applies to KEYWORD arguments of those three calls as well as
+    positional ones (`collect_never_owned`'s escape-facts note): the spelling of
+    the call cannot change what the host does with the value.
 
     One further position belongs to the WIRING task rather than to this hook:
     `<bucket>.get(key, T, default=d)` lowers to an `IfExp` whose `orelse` IS
@@ -2381,6 +2388,16 @@ def collect_never_owned(body: Sequence[ast.stmt], ctx: FuncCtx) -> frozenset[str
       `@contracttype` field, `<bucket>.get`'s `default`), or in a positional
       argument of a call that can store it (`_positional_args_escape`).
 
+      The keyword rule has ONE exemption, and it is the same one
+      `_positional_args_escape` applies: the three SERIALIZING calls
+      (`<bucket>.set`, `events().publish`, `require_auth_for_args`) do not
+      store a handle in any argument position, so `set(key=k, value=own)` is
+      not an escape any more than `set(k, own)` is. Without that, the same
+      write escaped or not depending on whether the author spelled it with
+      keywords -- an asymmetry with no semantic content. Every other call's
+      keyword arguments still escape, because a `@contracttype` field and
+      `<bucket>.get`'s `default` both hold on to what they are given.
+
     One escape position deliberately has no pre-pass rule: `<bucket>.get(key,
     T, default=d)` lowers to an `IfExp` whose `orelse` IS `d`, so a container
     handed to `default` is a conditional arm of the whole expression --
@@ -2413,8 +2430,11 @@ def collect_never_owned(body: Sequence[ast.stmt], ctx: FuncCtx) -> frozenset[str
                 for element in node.elts:
                     names |= _value_names(element)
             elif isinstance(node, ast.Call):
-                for keyword in node.keywords:
-                    names |= _value_names(keyword.value)
+                func = node.func
+                serializing = isinstance(func, ast.Attribute) and _is_serializing_call(func)
+                if not serializing:
+                    for keyword in node.keywords:
+                        names |= _value_names(keyword.value)
                 if _positional_args_escape(node, ctx):
                     for arg in node.args:
                         names |= _value_names(arg)
