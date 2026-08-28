@@ -386,33 +386,48 @@ def test_contract_accepts_constructor_returning_none() -> None:
     assert _meta(Ok)["kind"] == "contract"
 
 
-def test_env_surface_is_complete_and_defers_to_sub_plan_e() -> None:
+def test_env_surface_is_complete_and_backed_by_the_tier_1_model() -> None:
+    """Every method on the surface now has a body, except the ones whose own
+    task is still open.
+
+    Rewritten (never deleted) from the assertion that every body raised
+    `NotImplementedError`: the surface stays pinned, but by what it DOES.
+    `tests/unit/test_env_model.py` is where the model's semantics are pinned;
+    this test's job is coverage of the SHAPE -- every accessor, every bucket
+    operation, once.
+    """
     env = Env()
-    for call in (env.storage, env.ledger, env.events):
-        with pytest.raises(NotImplementedError, match="sub-plan E"):
-            call()
+    storage = env.storage()
+    assert isinstance(storage, Storage)
+    assert isinstance(env.ledger(), Ledger)
+    assert isinstance(env.events(), Events)
+    assert isinstance(storage.instance(), InstanceStorage)
+    assert isinstance(storage.persistent(), PersistentStorage)
+    assert isinstance(storage.temporary(), TemporaryStorage)
+
     key = Symbol("K")
+    bucket = storage.instance()
+    assert not bucket.has(key)
+    bucket.set(key, U32(1))
+    assert bucket.has(key)
+    assert bucket.get(key, U32) == U32(1)
+    bucket.del_(key)
+    assert not bucket.has(key)
+    assert bucket.get(key, U32, U32(9)) == U32(9)
+
+    env.events().publish((Symbol("e"),), U32(1))
+    assert env.published_events == (((Symbol("e"),), U32(1)),)
+    assert isinstance(env.ledger().timestamp(), U64)
+    assert isinstance(env.ledger().sequence(), U32)
+
+    # Still open, with its own task: the TTL model (no clamp, no trap, no
+    # maximum live-until ledger is reachable in M1).
     with pytest.raises(NotImplementedError, match="sub-plan E"):
-        InstanceStorage().extend_ttl(U32(1), U32(2))
+        storage.instance().extend_ttl(U32(1), U32(2))
     with pytest.raises(NotImplementedError, match="sub-plan E"):
-        PersistentStorage().extend_ttl(key, U32(1), U32(2))
+        storage.persistent().extend_ttl(key, U32(1), U32(2))
     with pytest.raises(NotImplementedError, match="sub-plan E"):
-        TemporaryStorage().extend_ttl(key, U32(1), U32(2))
-    bucket = InstanceStorage()
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        bucket.get(key, U32)
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        bucket.set(key, U32(1))
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        bucket.has(key)
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        bucket.del_(key)
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        Storage().instance()
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        Ledger().sequence()
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        Events().publish((Symbol("e"),), U32(1))
+        storage.temporary().extend_ttl(key, U32(1), U32(2))
 
 
 # --------------------------------------------------------------------------
@@ -424,10 +439,11 @@ def test_storage_keys_accept_the_whole_chain_value_surface() -> None:
     """(a) Keys are any chain value or `@contracttype` struct.
 
     The static half of this is the `credit` method on `Example` above (a
-    struct key) plus `_key_surface_probe` below; here we only pin that the
-    widened signatures still reach the sub-plan E stub for every key shape.
+    struct key) plus `_key_surface_probe` below; the runtime half used to pin
+    that the widened signatures reached the sub-plan E stub, and now pins that
+    every key shape ROUND TRIPS through the tier-1 model.
     """
-    bucket = PersistentStorage()
+    bucket = Env().storage().persistent()
     address = Address("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ")
     keys: list[ChainValue] = [
         Symbol("SYM"),
@@ -437,9 +453,10 @@ def test_storage_keys_accept_the_whole_chain_value_surface() -> None:
         Vec(Symbol, [Symbol("a")]),
         Map(Symbol, U32),
     ]
-    for key in keys:
-        with pytest.raises(NotImplementedError, match="sub-plan E"):
-            bucket.get(key, U32)
+    for index, key in enumerate(keys):
+        bucket.set(key, U32(index))
+    for index, key in enumerate(keys):
+        assert bucket.get(key, U32) == U32(index)
         with pytest.raises(NotImplementedError, match="sub-plan E"):
             bucket.extend_ttl(key, U32(1), U32(2))
 
@@ -496,8 +513,9 @@ def test_event_topics_are_heterogeneous_tuples() -> None:
     """(c) The canonical shape is `(Symbol, Address, Address)`."""
     address = Address("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ")
     topics: tuple[ChainValue, ...] = (Symbol("transfer"), address, address)
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        Events().publish(topics, U32(1))
+    env = Env()
+    env.events().publish(topics, U32(1))
+    assert env.published_events == ((topics, U32(1)),)
 
 
 def test_metadata_is_identical_with_and_without_pep_563() -> None:
