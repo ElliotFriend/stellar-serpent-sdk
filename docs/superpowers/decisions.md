@@ -472,6 +472,40 @@ Format:
   surface becomes breaking-after-docs (D4's own note) — which is why it
   lands now, in the last cheap moment.
 
+## 2026-08-28 M1-E plan-review rulings (all findings adopted)
+- Context: adversarial review of the M1-E plan — 7 blockers, 8 majors, 10
+  minors, all probe-evidenced (triage record:
+  .superpowers/sdd/2026-08-28-m1e-env-runtime/plan-review.md). Zero
+  disputes. The blockers were all real traps: Annotated unimportable inside
+  a contract (loader restricts to serpent.__all__ → re-export topic AND
+  Annotated); get_type_hints strips Annotated without include_extras=True
+  (→ the license SHRINKS to one seam, decorators._build_record, storing
+  stripped annotations); positional event construction doesn't compile
+  (kwargs-only revert spelling); env→types→address→env circular import
+  (→ leaf serpent/_frame.py); the "map" data node is MakeStruct, not
+  MakeMap (runtime values force the chain form otherwise — and MakeStruct
+  feeds the descriptor inventory for free); the get ty-check is TAG-level
+  mirroring the emitter's abi_check (Bytes family one tag, struct↔Map one
+  tag, element types unchecked); storage_key's Map branch normalizes ITEMS
+  (keys AND values), and Struct normalizes identically to its equivalent
+  Map.
+- Also adopted: token_style's Transfer gains the convention reproducing
+  its CURRENT event shape (topic-marked from_/to, single-value amount) so
+  the both-spellings golden is provable; the printer's FIXTURE_NAMES and
+  the harness inventory _FIXTURES are separate lists Tasks 7/8 must edit;
+  tier-1 ledger defaults pinned to the harness constants via one shared
+  home; auth-args differential scenarios are tier-1-only (the harness
+  discards args); TTL live_until=None semantics + absent-key extend_ttl
+  raises (the one dead-entry rule a fixed-sequence model owns); the
+  promise-sweep census corrected to 38 mentions/9 files with typemap/ir
+  text edits inside the stale-string sanction; examples load via
+  importlib-from-path; the event-name cap is SCSymbol's 32 (not 9), >9
+  prefix topics pool via linear memory.
+- Positive evidence recorded: the E5 isolation property PROVABLY HOLDS
+  under deepcopy for every ChainValue shape probed — the escape flip's
+  four-site edit list is dead barring a Task 2 surprise.
+- Reversal cost: per-item low pre-execution.
+
 ## 2026-08-27 M1-C final-review minors folded into parked passes
 - Minors 2 and 3 from the final whole-branch review (registry intent strings
   hardcode limit numbers; frontend.py imports _host._protocol via the private
