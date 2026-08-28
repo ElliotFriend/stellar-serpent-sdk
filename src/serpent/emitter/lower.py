@@ -1,6 +1,11 @@
-"""IR expression -> wasm: all of dossier SS B.3.1, scalars and objects alike.
+"""IR -> wasm: dossier SS B.3.1 and SS B.3.2, plus one whole function.
 
-Two entry points, and the difference between them is the whole value model:
+Three layers, outermost first: ``compile_function`` (a ``FuncIR`` -> a finished
+``Fn``: ABI prologue, body, tail), ``lower_stmt`` (SS B.3.2's statements), and
+the expression pair below (SS B.3.1).
+
+Two expression entry points, and the difference between them is the whole
+value model:
 
 * ``lower_expr`` leaves **one i64 ``Val`` word** -- the tagged, host-visible
   form. Every statement position, every host-call argument, every ``obj_cmp``
@@ -99,6 +104,30 @@ the two arms independently would run its effects twice. And identity rather
 than equality is what keeps a hand-written ``a.get(k, T) if a.has(k2) else d``
 guarded (review M12) -- its two key subtrees are distinct nodes even when they
 compare ``==``, because there is no promise the two evaluations agree.
+
+## The ABI boundary is checked in ONE place, from two directions (S3/E14)
+
+A wasm export's signature is ``(i64...) -> i64`` and says nothing at all about
+what those words MEAN, so a caller can hand a ``SymbolObject`` to a method
+whose parameter is a ``U32`` and the unbox will read the handle index as a
+number and answer confidently. ``abi_check`` is the per-type tag-and-range
+table that stops it, and ``narrow_to`` applies the SAME table to a host-call
+return -- S3's second sentence, because ``map_get`` and ``get_contract_data``
+hand back an ANY-typed ``Val`` and the checker's type for that expression is a
+claim, not a proof. One table for both, per review M9: two implementations of
+one rule diverge, with nothing to say which half is the weaker check.
+
+## The only ``unreachable`` in the module is E4's guard, and it comes second
+
+After ``fail_with_error`` the emitter stops (P14): the host does not return,
+and an ``unreachable`` there would replace the contract error a client needs to
+see with a generic VM trap. The one exception is a body wasm still considers
+able to fall off its end while C proved it returns on every path (C1/C16) --
+``while True:`` with no ``break``, a body ending in ``raise``, an exhaustive
+if/else. That tail gets ``fail_with_error(CODE_UNREACHABLE_GUARD)``, ``drop``,
+then ``unreachable``, in that order. Reversed, the module still validates and
+still aborts -- with no code for a client to read, which is R3 broken in the
+one place it is checkable.
 """
 
 import struct as _struct
