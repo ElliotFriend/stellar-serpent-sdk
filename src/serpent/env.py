@@ -24,9 +24,65 @@ What is deliberately NOT modelled, named here rather than approximated:
   nonce-consuming authorization machinery;
 * **no instance-storage flush semantics** -- unobservable in M1, which has no
   cross-contract call to be re-entrant with;
-* **no TTL** -- no clamp, no trap, no dead entries, no archival. The host's
-  maximum live-until ledger is not reachable in M1, and a serpent-chosen
-  constant would be a guess.
+* **no TTL clamp and no TTL trap, and no archival** -- see the TTL section
+  below, which is deliberately half a model and says which half.
+
+## TTL: a PARTIAL model, and the half it refuses (ruling E4(c))
+
+Spec S8 states five TTL rules: "persistent extension past max **clamps**,
+temporary **traps**; live-until arithmetic carries `-1`; **extensions never
+reduce**; **extending a dead entry errors**." Three of them are arithmetic on
+numbers this model owns, and those are modelled. Two of them need the host's
+maximum live-until ledger, whose only source is `get_max_live_until_ledger` --
+an M2 host function the frontend refuses by name (`SPT1033`) and which M1
+therefore cannot read. A serpent-chosen maximum would be a guess, and a guessed
+ceiling is worse than no ceiling: a test would go green over an `extend_to`
+that TRAPS on chain for a temporary entry. So:
+
+**Modelled.** A per-entry `live_until: int | None` compared against the ledger
+sequence; `extend_ttl` on all three buckets; the threshold guard (extend only
+when `live_until - sequence < threshold`); never-reduce
+(`live_until = max(live_until or 0, sequence + extend_to)`); lazy expiry in
+`get`/`has` once the sequence is strictly past `live_until`; and S8's
+dead-entry error for both deaths a tier-1 sequence can produce -- a key that
+was never written, and an entry that has expired.
+
+**NOT modelled, named rather than approximated.** The clamp, the trap, and
+hence the whole persistent/temporary asymmetry: `extend_to` is applied exactly
+as given, at any magnitude, in every bucket. There is no archive and no
+restore, so a re-set of a lapsed persistent entry revives it here while the
+chain would refuse the write until the entry was restored.
+`tests/unit/test_env_ttl.py` holds the two rules as `pytest.skip`s, next to the
+tests, so the gap is enumerable (`pytest -rs`) instead of silent. **Named
+carried obligation to sub-plan F:** the clamp/trap asymmetry is unproven at
+every tier in this repo -- the mini-host's TTL calls are recorded no-ops
+(deliberately, and not E's to change) -- and F's tier 2b is where it gets
+proven, once `get_max_live_until_ledger` is reachable.
+
+**Four model choices, stated because they are choices and not host facts.**
+
+* a fresh `set()` entry has `live_until = None`, meaning "never extended", and
+  never expires. Every comparison guards the `None`;
+* `extend_ttl` on a `None` entry always passes the threshold guard: a
+  never-extended entry's remaining lifetime is genuinely unknowable at tier 1
+  (it is a network-configured default the model cannot read), so the first
+  extension always applies rather than being silently swallowed by a large
+  threshold;
+* `Env.advance(n)` moves the SEQUENCE only. Ledger close time is not a
+  protocol constant this model may invent, so `ledger().timestamp()` stands
+  still while entries expire -- inconsistent-looking on purpose, and cheaper
+  than a made-up seconds-per-ledger;
+* an expired entry is NOT removed from the store. Expiry is answered lazily on
+  every read, which keeps `advance` O(1) and keeps the value around for the
+  re-set path; nothing observable distinguishes the two, since an expired entry
+  reads absent through the whole surface.
+
+One code is reused rather than invented: the dead-entry error is `MissingValue`
+(`CODE_MISSING_VALUE`), which is honest about the shape of the failure -- the
+entry named is not there -- but is a TIER-1 signal only. The compiled form of
+`extend_ttl` raises no serpent code at all; the host itself errors, with its own
+`ScError`. What the two tiers promise each other here is the LOUDNESS, not the
+number.
 
 Two places tier 1 answers a question differently from the host, on purpose:
 
@@ -326,6 +382,60 @@ def _require_frame() -> None:
     """
 
 
+class _TtlState:
+    """The ledger sequence, and every live-until the model measures against it.
+
+    ONE object, held by the `Env` and threaded into every bucket it hands out,
+    for three reasons:
+
+    * `Env.advance` must move exactly one copy of the sequence. A bucket that
+      captured its own snapshot would keep answering `has` against the
+      pre-advance ledger -- and a test holding a bucket across an `advance` is
+      the normal way to write a TTL test;
+    * the instance sub-map's live-until is BUCKET-WIDE (S7: one shared TTL for
+      the whole instance entry), so it cannot live in a per-key map;
+    * `live_until` is a SEPARATE map from the value store rather than a field
+      on a wrapped entry, so the store stays `key -> ChainValue` and the
+      deep-copy law in `get`/`set` keeps working on the value itself.
+
+    A key ABSENT from `live_until` is the `None` case: never extended, never
+    expires (module docstring's first model choice).
+    """
+
+    __slots__ = ("instance_live_until", "live_until", "sequence")
+
+    def __init__(self, sequence: int) -> None:
+        self.sequence = sequence
+        self.live_until: dict[_StoreKey, int] = {}
+        self.instance_live_until: int | None = None
+
+
+def _extended_live_until(
+    live_until: int | None, sequence: int, threshold: int, extend_to: int
+) -> int | None:
+    """The live-until an extension produces, or `None` when it is a no-op.
+
+    Ruling E4(c)'s algebra, in one place because all three buckets share it:
+
+    * the THRESHOLD GUARD -- an entry with `threshold` or more ledgers of
+      lifetime left is not extended at all. A `None` live-until always passes
+      the guard (module docstring: the first extension always applies);
+    * NEVER-REDUCE -- `max(live_until or 0, sequence + extend_to)`, so a
+      smaller `extend_to` after a larger one cannot pull the live-until back;
+    * NO CLAMP and NO TRAP -- `extend_to` is used exactly as given, at any
+      magnitude. The host fact that would bound it is
+      `get_max_live_until_ledger`, which is M2 and unreachable here; sub-plan F
+      owns proving S8's clamp/trap asymmetry.
+
+    The `None` return means "leave the live-until alone", which is a different
+    `None` from the `live_until` parameter's "never extended" -- the two never
+    meet, because the caller only ever writes a non-`None` result.
+    """
+    if live_until is not None and live_until - sequence >= threshold:
+        return None
+    return max(live_until or 0, sequence + extend_to)
+
+
 class Event:
     """Base class for `@contractevent` types.
 
@@ -355,19 +465,70 @@ class _StorageBucket:
     `(durability, storage_key(key))`. The durability ints come from
     `serpent._host._scalars.STORAGE_TYPE` -- the pinned generated table the
     emitter and the mini-host also read -- never from a literal restated here.
+
+    The `Env`'s `_TtlState` is threaded in beside the store, so a bucket can
+    answer expiry against the live sequence rather than a snapshot of it.
     """
 
-    __slots__ = ("_store",)
+    __slots__ = ("_store", "_ttl")
 
     #: Set by each subclass from `STORAGE_TYPE`.
     _DURABILITY: ClassVar[int]
     _DURABILITY_NAME: ClassVar[str]
 
-    def __init__(self, store: _Store) -> None:
+    def __init__(self, store: _Store, ttl: _TtlState) -> None:
         self._store = store
+        self._ttl = ttl
 
     def _entry_key(self, key: ChainValue) -> _StoreKey:
         return (self._DURABILITY, storage_key(key))
+
+    # --- TTL: per-key here, overridden bucket-wide by `InstanceStorage` -------
+
+    def _live_until_of(self, entry: _StoreKey) -> int | None:
+        """`entry`'s live-until ledger, or `None` for a never-extended entry."""
+        return self._ttl.live_until.get(entry)
+
+    def _set_live_until(self, entry: _StoreKey, live_until: int) -> None:
+        self._ttl.live_until[entry] = live_until
+
+    def _forget_live_until(self, entry: _StoreKey) -> None:
+        """Drop `entry`'s live-until: it is a fresh (or gone) entry now."""
+        self._ttl.live_until.pop(entry, None)
+
+    def _absent(self, entry: _StoreKey) -> bool:
+        """Whether `entry` reads as not-there: never written, or expired.
+
+        ONE definition, used by `get`, `has` and `extend_ttl`, so an expired
+        entry cannot be missing from one of them and present in another.
+        Expiry is STRICTLY past the live-until ledger (`sequence > live_until`):
+        the live-until ledger is the last one the entry is live on.
+        """
+        if entry not in self._store:
+            return True
+        live_until = self._live_until_of(entry)
+        return live_until is not None and self._ttl.sequence > live_until
+
+    def _extend_entry_ttl(self, key: ChainValue, threshold: U32, extend_to: U32) -> None:
+        """The keyed `extend_ttl` body shared by persistent and temporary.
+
+        Both durabilities are extended per key and take the same algebra; the
+        difference S8 states between them is the clamp/trap asymmetry, which
+        this model refuses to invent (module docstring). Raises `MissingValue`
+        for an entry that is not there -- S8's "extending a dead entry errors",
+        for both the never-written and the expired case.
+        """
+        entry = self._entry_key(key)
+        if self._absent(entry):
+            raise MissingValue(
+                f"cannot extend the TTL of a {self._DURABILITY_NAME} storage entry "
+                f"that is not there (never written, or expired): {key!r}"
+            )
+        live_until = _extended_live_until(
+            self._live_until_of(entry), self._ttl.sequence, threshold.value, extend_to.value
+        )
+        if live_until is not None:
+            self._set_live_until(entry, live_until)
 
     def get(self, key: ChainValue, ty: type[_T], default: _T | None = None) -> _T:
         """Read `key`, decoding it as `ty`.
@@ -381,7 +542,9 @@ class _StorageBucket:
         * a hit returns a DEEP COPY, so a caller mutating the result cannot
           reach back into the store;
         * a miss with no `default` raises `MissingValue`, whose
-          `CODE_MISSING_VALUE` is the code the emitter's own guard emits;
+          `CODE_MISSING_VALUE` is the code the emitter's own guard emits. An
+          EXPIRED entry is a miss (`_absent`): TTL expiry is answered lazily,
+          here, rather than by sweeping the store on `advance`;
         * a hit is TAG-CHECKED against `ty` (`_require_ty`), failing with
           `AbiCheckFailed` exactly where the emitter's narrow check fails.
 
@@ -393,7 +556,7 @@ class _StorageBucket:
         `default=` accordingly.)
         """
         entry = self._entry_key(key)
-        if entry not in self._store:
+        if self._absent(entry):
             if default is not None:
                 return default
             raise MissingValue(f"no {self._DURABILITY_NAME} storage entry for {key!r}")
@@ -410,17 +573,26 @@ class _StorageBucket:
         mutation from storage and diverge silently. The key is normalized to a
         `storage_key` here and now, so mutating the key object afterwards
         cannot move the entry either.
+
+        A write is a FRESH entry as far as TTL goes: its live-until goes back to
+        `None`, so re-setting an expired persistent or temporary key revives it
+        (the module docstring names that as a tier-1 convenience -- the chain
+        would make you restore an archived entry first). `InstanceStorage`
+        overrides the reset away, because its live-until is bucket-wide and one
+        key's write cannot honestly resurrect the whole instance entry.
         """
-        self._store[self._entry_key(key)] = copy.deepcopy(value)
+        entry = self._entry_key(key)
+        self._store[entry] = copy.deepcopy(value)
+        self._forget_live_until(entry)
 
     def has(self, key: ChainValue) -> Bool:
-        """Whether `key` is present.
+        """Whether `key` is present -- and not expired (`_absent`).
 
         Returns the chain `Bool` the host hands back, not a Python `bool`, so
         the value stays a chain value all the way through; `Bool` is truthy in
         an `if` statement.
         """
-        return Bool(self._entry_key(key) in self._store)
+        return Bool(not self._absent(self._entry_key(key)))
 
     def del_(self, key: ChainValue) -> None:
         """Delete `key`. Named `del_` because `del` is a Python keyword.
@@ -435,8 +607,13 @@ class _StorageBucket:
         with the chain. Consistency with the other model is the only reason
         this direction was picked; sub-plan F's real-host tier is where it gets
         checked, and until then a contract must not rely on it.
+
+        The live-until goes with the value: a later `set` under the same key is
+        a genuinely fresh entry, not one that inherits a dead entry's expiry.
         """
-        self._store.pop(self._entry_key(key), None)
+        entry = self._entry_key(key)
+        self._store.pop(entry, None)
+        self._forget_live_until(entry)
 
 
 class InstanceStorage(_StorageBucket):
@@ -451,14 +628,63 @@ class InstanceStorage(_StorageBucket):
     _DURABILITY: ClassVar[int] = STORAGE_TYPE["instance"]
     _DURABILITY_NAME: ClassVar[str] = "instance"
 
+    #: The instance sub-map has ONE live-until, so every per-key TTL hook is
+    #: redirected to the bucket-wide field (S7). Overriding the three accessors
+    #: rather than special-casing the shared bodies is what keeps `get`/`has`/
+    #: `_absent` identical for all three durabilities.
+
+    def _live_until_of(self, entry: _StoreKey) -> int | None:
+        return self._ttl.instance_live_until
+
+    def _set_live_until(self, entry: _StoreKey, live_until: int) -> None:
+        self._ttl.instance_live_until = live_until
+
+    def _forget_live_until(self, entry: _StoreKey) -> None:
+        """A deliberate NO-OP: there is no per-key live-until to reset.
+
+        So a `set` does not revive an expired instance sub-map, unlike the other
+        two buckets, and a `del_` of one key does not extend the instance's life.
+        The honest reading of S7's one shared TTL, and the chain's own answer is
+        harsher still: an archived instance entry means the invocation never
+        runs.
+        """
+
     def extend_ttl(self, threshold: U32, extend_to: U32) -> None:
         """Extend the instance's TTL to `extend_to` if it falls below
-        `threshold` ledgers remaining."""
-        raise NotImplementedError("sub-plan E")
+        `threshold` ledgers remaining.
+
+        No key: the whole instance sub-map shares one live-until with the
+        contract instance itself (S7). Valid even when the sub-map is empty --
+        the instance entry exists once the contract is deployed -- and it
+        governs entries written afterwards, because there is only the one
+        live-until. (S7 also names an early flush on re-entrant self-call:
+        unobservable in M1, which has no cross-contract call, and not modelled.)
+
+        Raises `MissingValue` once the instance's TTL has LAPSED, rather than
+        quietly reviving a contract the chain would have archived -- S8's
+        dead-entry rule, for the one entry that has no key.
+
+        The algebra is `_extended_live_until`'s: threshold guard, never-reduce,
+        and no clamp (see the module docstring's TTL section).
+        """
+        ttl = self._ttl
+        live_until = ttl.instance_live_until
+        if live_until is not None and ttl.sequence > live_until:
+            raise MissingValue(
+                "cannot extend the TTL of an instance entry whose TTL has lapsed "
+                f"(live until {live_until}, now {ttl.sequence})"
+            )
+        extended = _extended_live_until(live_until, ttl.sequence, threshold.value, extend_to.value)
+        if extended is not None:
+            ttl.instance_live_until = extended
 
 
 class PersistentStorage(_StorageBucket):
-    """Persistent storage: archived when its TTL lapses, restorable."""
+    """Persistent storage: archived when its TTL lapses, restorable.
+
+    Tier 1 models neither the archive nor the restore: a lapsed entry simply
+    reads absent, and a re-set revives it (module docstring's TTL section).
+    """
 
     __slots__ = ()
 
@@ -467,12 +693,23 @@ class PersistentStorage(_StorageBucket):
 
     def extend_ttl(self, key: ChainValue, threshold: U32, extend_to: U32) -> None:
         """Extend `key`'s TTL to `extend_to` if it falls below `threshold`
-        ledgers remaining."""
-        raise NotImplementedError("sub-plan E")
+        ledgers remaining.
+
+        Threshold guard, never-reduce, and `MissingValue` for an entry that is
+        not there (never written, or expired). **NOT modelled: S8's clamp** --
+        an `extend_to` past the network maximum is taken as given here and
+        clamped on chain. The maximum is `get_max_live_until_ledger`, an M2 host
+        fact; sub-plan F owns the proof (module docstring's TTL section).
+        """
+        self._extend_entry_ttl(key, threshold, extend_to)
 
 
 class TemporaryStorage(_StorageBucket):
-    """Temporary storage: deleted outright when its TTL lapses."""
+    """Temporary storage: deleted outright when its TTL lapses.
+
+    Tier 1 does not delete it, it just reads absent -- and a re-set revives it,
+    which for this durability is a new entry on chain too.
+    """
 
     __slots__ = ()
 
@@ -481,26 +718,35 @@ class TemporaryStorage(_StorageBucket):
 
     def extend_ttl(self, key: ChainValue, threshold: U32, extend_to: U32) -> None:
         """Extend `key`'s TTL to `extend_to` if it falls below `threshold`
-        ledgers remaining."""
-        raise NotImplementedError("sub-plan E")
+        ledgers remaining.
+
+        The same body as `PersistentStorage.extend_ttl`, and that is itself the
+        model's loudest gap: **NOT modelled: S8's trap** -- an `extend_to` past
+        the network maximum TRAPS for a temporary entry, where a persistent one
+        clamps. Tier 1 accepts it, so a green test here is not evidence the call
+        survives on chain. Same missing host fact
+        (`get_max_live_until_ledger`, M2), same carried obligation to sub-plan F.
+        """
+        self._extend_entry_ttl(key, threshold, extend_to)
 
 
 class Storage:
     """`env.storage()`: the three durabilities, each its own bucket type."""
 
-    __slots__ = ("_store",)
+    __slots__ = ("_store", "_ttl")
 
-    def __init__(self, store: _Store) -> None:
+    def __init__(self, store: _Store, ttl: _TtlState) -> None:
         self._store = store
+        self._ttl = ttl
 
     def instance(self) -> InstanceStorage:
-        return InstanceStorage(self._store)
+        return InstanceStorage(self._store, self._ttl)
 
     def persistent(self) -> PersistentStorage:
-        return PersistentStorage(self._store)
+        return PersistentStorage(self._store, self._ttl)
 
     def temporary(self) -> TemporaryStorage:
-        return TemporaryStorage(self._store)
+        return TemporaryStorage(self._store, self._ttl)
 
 
 class Ledger:
@@ -583,7 +829,7 @@ class Env:
     against.
     """
 
-    __slots__ = ("_auths", "_events", "_recorded_auths", "_sequence", "_store", "_timestamp")
+    __slots__ = ("_auths", "_events", "_recorded_auths", "_store", "_timestamp", "_ttl")
 
     def __init__(
         self,
@@ -597,21 +843,52 @@ class Env:
         self._recorded_auths: list[RecordedAuth] = []
         self._auths: tuple[Address, ...] | None = None if auths is None else tuple(auths)
         self._timestamp = timestamp
-        self._sequence = sequence
+        # The sequence lives in the TTL state, not beside it: `advance` must move
+        # exactly one copy of the number both `ledger().sequence()` and every
+        # expiry comparison read (`_TtlState`).
+        self._ttl = _TtlState(sequence)
 
     def storage(self) -> Storage:
         _require_frame()
-        return Storage(self._store)
+        return Storage(self._store, self._ttl)
 
     def ledger(self) -> Ledger:
         _require_frame()
-        return Ledger(self._timestamp, self._sequence)
+        return Ledger(self._timestamp, self._ttl.sequence)
 
     def events(self) -> Events:
         _require_frame()
         return Events(self._events)
 
     # --- test-facing inspection (NOT `serpent.__all__` names) ----------------
+
+    def advance(self, n: int) -> None:
+        """Advance the ledger sequence by `n`, so TTLs can lapse. TEST-FACING.
+
+        Deliberately not in `serpent.__all__` and not something a contract can
+        reach: a contract observes the ledger, it does not move it. This is the
+        hook that makes expiry testable at tier 1 -- without it nothing ever
+        dies and S8's dead-entry rule is unreachable rather than modelled.
+
+        `n` must be positive: a ledger sequence does not go backwards, and a
+        zero advance is a test-authoring mistake worth naming rather than
+        absorbing. `ValueError`/`TypeError`, not a `ContractError`, because no
+        contract error code describes a misused test hook.
+
+        **Only the sequence moves.** `ledger().timestamp()` stands still, on
+        purpose: seconds-per-ledger is a network fact, not a protocol constant
+        this model may invent, and the module docstring would rather have an
+        obviously-frozen clock than a plausible-looking made-up one. A test that
+        needs a later timestamp constructs `Env(timestamp=...)`.
+
+        Expiry is answered lazily by `get`/`has`, so this is O(1) and no entry
+        is physically removed (module docstring's TTL section).
+        """
+        if not isinstance(n, int) or isinstance(n, bool):
+            raise TypeError(f"advance() takes an int, not {type(n).__name__}")
+        if n <= 0:
+            raise ValueError(f"advance() takes a positive number of ledgers, not {n}")
+        self._ttl.sequence += n
 
     @property
     def published_events(self) -> tuple[PublishedEvent, ...]:

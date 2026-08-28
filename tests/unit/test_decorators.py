@@ -420,14 +420,15 @@ def test_env_surface_is_complete_and_backed_by_the_tier_1_model() -> None:
     assert isinstance(env.ledger().timestamp(), U64)
     assert isinstance(env.ledger().sequence(), U32)
 
-    # Still open, with its own task: the TTL model (no clamp, no trap, no
-    # maximum live-until ledger is reachable in M1).
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        storage.instance().extend_ttl(U32(1), U32(2))
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        storage.persistent().extend_ttl(key, U32(1), U32(2))
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        storage.temporary().extend_ttl(key, U32(1), U32(2))
+    # The TTL model, which is PARTIAL by design -- no clamp and no trap, since
+    # no maximum live-until ledger is reachable in M1. Shape only here (the
+    # keyless instance form, the keyed forms); `tests/unit/test_env_ttl.py`
+    # owns the algebra, the expiry and the two enumerated non-models.
+    storage.instance().extend_ttl(U32(1), U32(2))
+    storage.persistent().set(key, U32(1))
+    storage.persistent().extend_ttl(key, U32(1), U32(2))
+    storage.temporary().set(key, U32(1))
+    storage.temporary().extend_ttl(key, U32(1), U32(2))
 
 
 # --------------------------------------------------------------------------
@@ -441,7 +442,9 @@ def test_storage_keys_accept_the_whole_chain_value_surface() -> None:
     The static half of this is the `credit` method on `Example` above (a
     struct key) plus `_key_surface_probe` below; the runtime half used to pin
     that the widened signatures reached the sub-plan E stub, and now pins that
-    every key shape ROUND TRIPS through the tier-1 model.
+    every key shape ROUND TRIPS through the tier-1 model -- including through
+    `extend_ttl`, which finds the entry a `set` of the same key wrote (a live
+    entry, so the dead-entry error does not fire).
     """
     bucket = Env().storage().persistent()
     address = Address("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ")
@@ -457,8 +460,7 @@ def test_storage_keys_accept_the_whole_chain_value_surface() -> None:
         bucket.set(key, U32(index))
     for index, key in enumerate(keys):
         assert bucket.get(key, U32) == U32(index)
-        with pytest.raises(NotImplementedError, match="sub-plan E"):
-            bucket.extend_ttl(key, U32(1), U32(2))
+        bucket.extend_ttl(key, U32(1), U32(2))
 
 
 def _key_surface_probe(env: Env, address: Address) -> None:
