@@ -537,7 +537,11 @@ def guarded_storage_get(node: IRNode) -> HostCall | None:
     has_imm, get_imm = cond.args[1], then.args[1]
     if not (isinstance(has_imm, RawScalar) and isinstance(get_imm, RawScalar)):
         return None
-    if has_imm.kind is not RawScalarKind.STORAGE_TYPE or has_imm.value != get_imm.value:
+    if has_imm.kind is not RawScalarKind.STORAGE_TYPE:
+        return None
+    if get_imm.kind is not RawScalarKind.STORAGE_TYPE:
+        return None
+    if has_imm.value != get_imm.value:
         return None
     return then
 

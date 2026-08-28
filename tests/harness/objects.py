@@ -106,6 +106,7 @@ class ObjectStore:
             "put_contract_data": self.put_contract_data,
             "has_contract_data": self.has_contract_data,
             "del_contract_data": self.del_contract_data,
+            "extend_contract_data_ttl": self.extend_contract_data_ttl,
             "fail_with_error": self.fail_with_error,
         }
 
@@ -343,6 +344,21 @@ class ObjectStore:
                 "guard was not emitted (a real host's behaviour here is undefined)"
             )
         return self.storage[entry]
+
+    def extend_contract_data_ttl(
+        self, key: int, storage_type: int, threshold: int, extend_to: int
+    ) -> int:
+        """`l.7`, and the pin's only 4-arity MIXED row: `(True, False, True, True)`.
+
+        Bound purely so that row is EXECUTABLE. TTLs are not modelled -- there
+        is no ledger sequence here to extend against -- so the call is recorded
+        and nothing else. What it proves is the argument dispatch: position 1
+        must arrive as the bare storage-type number while positions 2 and 3
+        arrive as `U32Val`s, and only a mixed row can catch a lowering that
+        picked one convention for the whole call.
+        """
+        self._log("extend_contract_data_ttl", key, storage_type, threshold, extend_to)
+        return val.VOID_VAL
 
     def del_contract_data(self, key: int, storage_type: int) -> int:
         self._log("del_contract_data", key, storage_type)

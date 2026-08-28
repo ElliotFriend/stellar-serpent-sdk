@@ -241,6 +241,81 @@ def test_the_storage_type_argument_is_a_RAW_number_not_a_U32Val() -> None:
     )
 
 
+def test_a_raw_position_holding_a_non_RawScalar_still_gets_the_bare_number() -> None:
+    """The test that makes the B2/C13 dispatch FALSIFIABLE.
+
+    A `RawScalar` cannot prove this on its own: `_lower_val` of one emits the
+    bare number (C13) and so does `lower_expr_raw`, so both branches of the
+    dispatch produce identical bytes for it and a lowering that ignored
+    `val_typed_args` entirely would pass every `RawScalar`-only test. Put a
+    `Const(U32)` in the same position and the two branches finally diverge --
+    `pack_u32val(2)` is `0x0000_0002_0000_0004`, the bare number is `2` -- so
+    the harness can tell which one ran.
+    """
+    put = host(
+        "put_contract_data",
+        Ty.Void,
+        const(Ty.Symbol, "k"),
+        const(Ty.U32, 9),
+        const(Ty.U32, STORAGE_INSTANCE),
+    )
+    store, host_ = start(put)
+    host_.invoke("probe")
+    assert store.calls[0] == (
+        "put_contract_data",
+        (val.symbol_small("k"), val.pack_u32val(9), STORAGE_INSTANCE),
+    )
+
+
+def test_a_raw_position_holding_a_ParamRef_is_UNBOXED_not_passed_through() -> None:
+    """The same point where no compile-time shortcut can hide it.
+
+    A `ParamRef` has no constant form at all, so the raw branch is a real
+    `local.get` + unbox and the Val branch is a bare `local.get`. The caller
+    hands in a `U32Val`; the host must see the number inside it.
+    """
+    put = host(
+        "put_contract_data",
+        Ty.Void,
+        const(Ty.Symbol, "k"),
+        const(Ty.U32, 9),
+        ParamRef(loc=LOC, ty=Ty.U32, index=0, name="bucket"),
+    )
+    store, host_ = start(put, nparams=1)
+    host_.invoke("probe", val.pack_u32val(STORAGE_PERSISTENT))
+    assert store.calls[0][1][2] == STORAGE_PERSISTENT
+
+
+def test_the_pins_four_arity_mixed_row_lowers_every_position_from_the_pin() -> None:
+    """`extend_contract_data_ttl`: `val_typed_args == (True, False, True, True)`.
+
+    The pin's only 4-arity row that mixes the two conventions, and it pins the
+    dispatch in BOTH directions at once: position 1 must arrive as the bare
+    storage-type number, and positions 2 and 3 must arrive as `U32Val`s. A
+    lowering that picked one convention for the whole call fails here whichever
+    convention it picked.
+    """
+    node = host(
+        "extend_contract_data_ttl",
+        Ty.Void,
+        const(Ty.Symbol, "k"),
+        storage_type(STORAGE_PERSISTENT),
+        const(Ty.U32, 100),
+        const(Ty.U32, 200),
+    )
+    store, host_ = start(node)
+    host_.invoke("probe")
+    assert store.calls[0] == (
+        "extend_contract_data_ttl",
+        (
+            val.symbol_small("k"),
+            STORAGE_PERSISTENT,
+            val.pack_u32val(100),
+            val.pack_u32val(200),
+        ),
+    )
+
+
 def test_a_host_call_arity_that_disagrees_with_the_pin_is_loud() -> None:
     with pytest.raises(EmitError, match="takes 2 argument"):
         items(host("map_get", Ty.U32, const(Ty.U32, 1)))
@@ -414,6 +489,40 @@ def test_a_mismatched_storage_bucket_does_not_earn_the_exemption() -> None:
     with pytest.raises(engine.HostError) as info:
         host_.invoke("probe")
     assert info.value.val == MISSING_VALUE
+
+
+def test_an_immediate_from_the_wrong_scalar_table_does_not_earn_the_exemption() -> None:
+    """Both immediates are checked for `STORAGE_TYPE`, not just the `has` one.
+
+    A `RawScalar` carries the table it came from (B6), and a
+    `CONTRACT_TTL_EXTENSION` immediate in the `get`'s storage-type position is
+    not a storage bucket at all -- so the two calls are not talking about the
+    same entry and the `has` proves nothing. Checking only the condition's
+    immediate would have let this through.
+    """
+    shared = KEY
+    node = IfExp(
+        loc=LOC,
+        ty=Ty.U32,
+        cond=host("has_contract_data", Ty.Bool, shared, storage_type(STORAGE_INSTANCE)),
+        then=host(
+            "get_contract_data",
+            Ty.U32,
+            shared,
+            RawScalar(
+                loc=LOC,
+                ty=Ty.U32,
+                value=STORAGE_INSTANCE,
+                kind=RawScalarKind.CONTRACT_TTL_EXTENSION,
+            ),
+        ),
+        orelse=const(Ty.U32, 0),
+    )
+    store = ObjectStore()
+    store.storage[(STORAGE_INSTANCE, "k")] = val.pack_u32val(4)
+    assert run(node, store=store) == val.pack_u32val(4)
+    # Guarded: the hand-written condition, then the guard's own `has`.
+    assert store.count("has_contract_data") == 2
 
 
 def test_the_frontends_own_with_default_shape_is_the_one_that_is_exempt() -> None:
@@ -766,6 +875,17 @@ def test_descending_symbol_keys_are_refused_before_the_host_can_panic() -> None:
 def test_an_empty_map_literal_takes_the_chain() -> None:
     node = make_map(Ty.Symbol, Ty.U32, [], all_static=False)
     assert import_calls(items(node)) == ["map_new"]
+
+
+def test_an_empty_STATIC_symbol_keyed_map_is_loud() -> None:
+    """The asymmetry `MakeStruct` already closed. `map_new_from_linear_memory`
+    over a zero-length key array has nothing to describe, and `intern(b"")` +
+    `scratch(0)` would hand the host two offsets pointing at no data.
+    Unreachable from frontend IR -- `recognize._all_static` answers `False` for
+    an empty container (MJ-15) -- so this pins the refusal, not a live path."""
+    node = make_map(Ty.Symbol, Ty.U32, [], all_static=True)
+    with pytest.raises(EmitError, match="empty map literal"):
+        items(node)
 
 
 # ===========================================================================

@@ -1272,6 +1272,18 @@ def _lower_make_map(fn: Fn, ctx: LowerCtx, e: MakeMap) -> None:
     names = _symbol_key_names(keys) if e.key_ty.tag is TyTag.SYMBOL else None
 
     if e.all_static and names is not None:
+        if not e.pairs:
+            # The same refusal `_lower_make_struct` makes, for the same reason:
+            # `map_new_from_linear_memory` over a zero-length key array has
+            # nothing to describe, and `intern(b"")` + `scratch(0)` would hand
+            # the host two offsets pointing at no data. Unreachable from
+            # frontend IR (`recognize._all_static` answers False for an empty
+            # container, MJ-15), so this is the asymmetry closing rather than a
+            # live path.
+            raise EmitError(
+                "an empty map literal cannot use `map_new_from_linear_memory`; "
+                "`map_new` with no puts is the lowering for it"
+            )
         _check_ascending(names, e.pairs)
         descriptor = bytearray()
         for name_bytes in names:
