@@ -159,9 +159,13 @@ RecordedAuth: TypeAlias = tuple[Address, "Vec[Any] | None"]
 #:
 #: * the whole `Bytes` family (`Bytes`, `Bytes32`, `Bytes64`, `bytes_n(n)`)
 #:   is ONE family -- the emitter compares `TAG_BYTES_OBJECT` for all of them,
-#:   and only `BytesN`'s extra length check is finer. Tier 1 takes the tag half,
-#:   because a check the chain does not make would reject what the chain
-#:   accepts;
+#:   so a `Bytes32` REQUEST accepts a stored plain `Bytes` of the right length,
+#:   exactly as on chain. The family is not the whole check for them, though:
+#:   the emitter pairs that tag compare with a REAL length compare
+#:   (`tagcheck_bytes_n`, `lower.py:1102-1115`), so `_require_ty` checks the
+#:   length too whenever the requested type carries one. Dropping it would make
+#:   tier 1 ACCEPT what the chain REJECTS, which is the wrong direction to be
+#:   coarse in;
 #: * a `@contracttype` struct and a `Map` are ONE family -- a struct IS a
 #:   `Map<Symbol, V>` on chain (S9), which is why the emitter maps
 #:   `TyTag.STRUCT` to `TAG_MAP_OBJECT`.
@@ -192,6 +196,11 @@ _FAMILY_BY_TYPE: dict[type[Any], str] = {
 _MAP_FAMILY = "map"
 _VOID_FAMILY = "void"
 
+#: The one family whose check is not finished by the family alone: a requested
+#: fixed-length `Bytes` type also pins the payload's length (see
+#: `_FAMILY_BY_TYPE`'s first bullet and `_require_ty`).
+_BYTES_FAMILY = "bytes"
+
 
 def tag_of_chain_value(value: ChainValue | None) -> str:
     """The tag family `value` belongs to, for the tier-1 `get` ty check.
@@ -208,6 +217,14 @@ def tag_of_chain_value(value: ChainValue | None) -> str:
     if isinstance(value, Struct):
         return _MAP_FAMILY
     raise TypeError(f"not a chain value: {value!r}")
+
+
+def _ty_members(ty: object) -> tuple[object, ...]:
+    """`ty`'s non-`None` members: the union's arms, or `ty` itself."""
+    origin = get_origin(ty)
+    if origin is Union or origin is UnionType:
+        return tuple(member for member in get_args(ty) if member is not type(None))
+    return (ty,)
 
 
 def _families_of_ty(ty: object) -> frozenset[str]:
@@ -234,24 +251,67 @@ def _families_of_ty(ty: object) -> frozenset[str]:
             family = _FAMILY_BY_TYPE.get(cls)
             if family is not None:
                 return frozenset({family})
-        if hasattr(ty, "__dataclass_fields__"):
+        # A `@contracttype` struct CLASS, recognized through the one `Struct`
+        # definition `tag_of_chain_value` uses for an instance -- `isinstance`
+        # rather than `issubclass` because `Struct` is a Protocol with a
+        # non-method member (`__dataclass_fields__`), which `issubclass` refuses
+        # outright, and because a class object carrying that attribute is
+        # exactly what a struct class is. Both sides therefore answer "is this a
+        # struct?" the same way, including for a plain dataclass that never went
+        # through `@contracttype`.
+        if isinstance(ty, Struct):
             return frozenset({_MAP_FAMILY})
     raise TypeError(f"not a chain type, struct or Option of one: {ty!r}")
 
 
+def _required_bytes_lengths(ty: object) -> frozenset[int]:
+    """Every exact payload length a requested `Bytes` type will accept.
+
+    Empty when the request imposes none (`Bytes` itself, or a non-`Bytes` type):
+    `Bytes._LENGTH` is `None` and `Bytes32`/`Bytes64`/`bytes_n(n)` carry 32/64/n.
+
+    A union naming SEVERAL lengths accepts any of them. A union mixing a
+    fixed-length member with plain `Bytes` (`Bytes | Bytes32`) is not a shape the
+    authoring surface can produce -- only `X | None` is -- and this reads it
+    conservatively, as the fixed length: coarse in the direction that rejects
+    what the chain accepts, which surfaces as a test failure rather than as a
+    green test over a value the chain would refuse.
+    """
+    lengths: set[int] = set()
+    for member in _ty_members(ty):
+        origin = get_origin(member)
+        cls = origin if origin is not None else member
+        length = getattr(cls, "_LENGTH", None) if isinstance(cls, type) else None
+        if isinstance(length, int):
+            lengths.add(length)
+    return frozenset(lengths)
+
+
 def _require_ty(value: ChainValue, ty: object) -> None:
-    """Raise `AbiCheckFailed` unless `value`'s tag family is one `ty` accepts.
+    """Raise `AbiCheckFailed` unless `value` really is the type `ty` names.
 
     The tier-1 twin of the emitter's `narrow_to` on a host result: both answer
-    "is this value really the type the program says it is?", both answer it at
-    tag level, and both fail with `CODE_ABI_CHECK_FAILED`, so the two tiers name
-    one failure (ruling E8).
+    "is this value really the type the program says it is?", both fail with
+    `CODE_ABI_CHECK_FAILED` (so the two tiers name one failure, ruling E8), and
+    both answer at TAG level -- with the one exception the emitter itself makes,
+    a requested fixed-length `Bytes` type, whose `tagcheck_bytes_n` part
+    compares the payload length as well as the tag. Tier 1 makes the same pair
+    of comparisons: being coarser here would ACCEPT at tier 1 what the chain
+    REJECTS, which is the direction that produces a green test and a failed
+    invocation.
     """
     family = tag_of_chain_value(value)
     accepted = _families_of_ty(ty)
+    name = getattr(ty, "__name__", repr(ty))
     if family not in accepted:
-        name = getattr(ty, "__name__", repr(ty))
         raise AbiCheckFailed(f"stored value is a {family}, not a {name}")
+    if family == _BYTES_FAMILY:
+        lengths = _required_bytes_lengths(ty)
+        if lengths and len(cast("Bytes", value)) not in lengths:
+            raise AbiCheckFailed(
+                f"stored value is {len(cast('Bytes', value))} bytes, "
+                f"not the {'/'.join(str(length) for length in sorted(lengths))} {name} wants"
+            )
 
 
 def _require_frame() -> None:
@@ -561,10 +621,15 @@ class Env:
         surface, and `serpent.__all__` is the AUTHORING surface a contract
         resolves names against.
 
+        DEEP-COPIED on the way out, for the same reason `get` is: an inspection
+        surface that handed out the recorded objects would let a test mutate the
+        record it just read and see its own mutation on the next read. (When
+        Task 4 fills `recorded_auths`, it owes the same copy on the way out.)
+
         No frame rollback (module docstring): an event published by a method
         that then raises is still here.
         """
-        return tuple(self._events)
+        return copy.deepcopy(tuple(self._events))
 
     @property
     def recorded_auths(self) -> tuple[RecordedAuth, ...]:
@@ -573,5 +638,9 @@ class Env:
         Recording IS the auth model (mock-all-auths): the host's real
         authorization trees -- nonces written to storage, sub-invocation trees,
         signature verification -- are not modelled anywhere in this repo.
+
+        Empty until `require_auth`/`require_auth_for_args` have bodies. Whoever
+        lands them owes the deep copy `published_events` makes, on the way in
+        (the recorded args are a snapshot) and on the way out.
         """
         return tuple(self._recorded_auths)

@@ -31,6 +31,7 @@ from serpent import (
     Bool,
     Bytes,
     Bytes32,
+    Bytes64,
     Duration,
     Map,
     String,
@@ -206,15 +207,44 @@ def test_a_ty_mismatch_raises_abi_check_failed() -> None:
 
 def test_the_bytes_family_shares_one_tag_family() -> None:
     """`Bytes32` stored and read back as `Bytes` is what the emitter's
-    `TAG_BYTES_OBJECT` compare accepts (review B6's first bullet)."""
+    `TAG_BYTES_OBJECT` compare accepts (review B6's first bullet) -- and so is
+    a plain `Bytes` of the right length read back as `Bytes32`: on chain there
+    is no difference between the two, only a payload of some length."""
     bucket = Env().storage().persistent()
     bucket.set(Symbol("k"), Bytes32(b"x" * 32))
     assert bucket.get(Symbol("k"), Bytes) == Bytes32(b"x" * 32)
     assert bucket.get(Symbol("k"), Bytes32) == Bytes32(b"x" * 32)
+    bucket.set(Symbol("plain"), Bytes(b"x" * 32))
+    assert bucket.get(Symbol("plain"), Bytes32) == Bytes32(b"x" * 32)
     b3 = bytes_n(3)
     bucket.set(Symbol("n"), b3(b"abc"))
     assert bucket.get(Symbol("n"), Bytes) == b3(b"abc")
-    assert bucket.get(Symbol("n"), Bytes32) == b3(b"abc")
+
+
+def test_a_fixed_length_bytes_request_also_checks_the_length() -> None:
+    """The tag family is not the whole check for the `Bytes` family.
+
+    The emitter pairs its `TAG_BYTES_OBJECT` compare with a REAL length compare
+    (`tagcheck_bytes_n`, `lower.py:1102-1115`), so a 3-byte payload read back as
+    `Bytes32` fails on chain. This assertion used to say the opposite -- tier 1
+    accepted it, which is the wrong direction to be coarse in: coarse the other
+    way rejects what the chain accepts (a test failure), coarse this way accepts
+    what the chain rejects (a green test and a failed invocation).
+    """
+    bucket = Env().storage().persistent()
+    b3 = bytes_n(3)
+    bucket.set(Symbol("n"), b3(b"abc"))
+    with pytest.raises(AbiCheckFailed, match="3 bytes"):
+        bucket.get(Symbol("n"), Bytes32)
+    with pytest.raises(AbiCheckFailed):
+        bucket.get(Symbol("n"), Bytes64)
+    # ...and the length rides through an Option, which composes rather than
+    # tabulating.
+    with pytest.raises(AbiCheckFailed):
+        bucket.get(Symbol("n"), Bytes32 | None)  # type: ignore[arg-type]
+    # A request that imposes no length still accepts anything in the family.
+    assert bucket.get(Symbol("n"), Bytes) == b3(b"abc")
+    assert bucket.get(Symbol("n"), b3) == b3(b"abc")
 
 
 def test_a_struct_and_a_map_share_one_tag_family() -> None:
@@ -330,6 +360,7 @@ def test_the_tag_families_agree_with_the_emitters_abi_check_tables() -> None:
         _OBJECT_ABI_TAG,
         ABI_CHECKED_TAGS,
     )
+    from serpent.env import _FAMILY_BY_TYPE
 
     #: Which `TyTag` each env family answers for. `OPTION` is excluded: the
     #: emitter COMPOSES it (`VOID_VAL` or the wrapped type's own check) and so
@@ -354,6 +385,10 @@ def test_the_tag_families_agree_with_the_emitters_abi_check_tables() -> None:
         TyTag.STRUCT: "map",
     }
     assert set(family_by_tag) == ABI_CHECKED_TAGS - {TyTag.OPTION}
+    # ...and the family NAMES are the model's own, both directions: a new row in
+    # `_FAMILY_BY_TYPE` (a new chain type, a renamed family) fails here instead
+    # of quietly not being compared against the emitter at all.
+    assert set(family_by_tag.values()) == set(_FAMILY_BY_TYPE.values())
 
     def emitter_tags(tag: TyTag) -> frozenset[int]:
         """The `Val` tag bytes `abi_check` accepts for `tag`."""
@@ -564,13 +599,27 @@ def test_publish_records_a_snapshot() -> None:
 
 
 def test_published_events_is_an_immutable_snapshot_view() -> None:
+    """The inspection surface obeys the same deep-copy law as `get`.
+
+    A returned tuple cannot grow, and -- the half this test used to miss -- a
+    returned RECORD cannot be mutated back into the model: the containers inside
+    it are copies, so a test that pokes at what it just read does not corrupt
+    what the next read returns.
+    """
     env = Env()
-    env.events().publish((Symbol("a"),), U32(1))
+    env.events().publish((Symbol("a"),), Vec(U32, [U32(1)]))
     first = env.published_events
     env.events().publish((Symbol("b"),), U32(2))
     assert len(first) == 1
     assert len(env.published_events) == 2
     assert isinstance(env.published_events, tuple)
+
+    data = env.published_events[0][1]
+    assert isinstance(data, Vec)
+    data.push_back(U32(99))
+    reread = env.published_events[0][1]
+    assert isinstance(reread, Vec)
+    assert len(reread) == 1
 
 
 def test_publish_requires_a_short_symbol_first_topic() -> None:

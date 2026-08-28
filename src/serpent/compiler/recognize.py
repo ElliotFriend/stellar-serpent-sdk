@@ -2171,13 +2171,16 @@ def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx, reason: str | None = No
     escapes: `<bucket>.set(k, v)`, `events().publish(topics, data)`, and
     `addr.require_auth_for_args(args)`. All three serialize their argument out
     to the host rather than storing a handle, and the tier-1 model
-    deep-copies at every one of those boundaries (ruling E5: `set` stores a
-    deep copy, `publish` snapshots its topics and data, `require_auth_for_args`
-    snapshots its args), so tier 1 still has no shared-object model to diverge
-    from -- not because those surfaces cannot run, but because what they keep is
-    a copy. `tests/unit/test_env_model.py`'s isolation property is what holds
-    that justification up; if a future model stored a reference at any of the
-    three, that position becomes an escape and belongs in this hook.
+    deep-copies at the boundaries it has bodies for (ruling E5: `set` stores a
+    deep copy, `publish` snapshots its topics and data), so tier 1 still has no
+    shared-object model to diverge from -- not because those surfaces cannot
+    run, but because what they keep is a copy.
+    `tests/unit/test_env_model.py`'s isolation property is what holds that
+    justification up. `require_auth_for_args` is a CARRIED obligation: its body
+    is still `NotImplementedError`, and whoever lands it must snapshot the args
+    it records and pin that here-shaped property alongside it. If any of the
+    three ever stores a reference instead, that position becomes an escape and
+    belongs in this hook.
 
     The exemption applies to KEYWORD arguments of those three calls as well as
     positional ones (`collect_never_owned`'s escape-facts note): the spelling of
