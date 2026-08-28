@@ -379,6 +379,99 @@ Format:
 - Reversal cost: per-item low pre-execution; the SPT8xxx band widening is
   append-only public API once released.
 
+## 2026-08-28 M1-E rulings (dossier E1-E10, all recommendations adopted)
+- Context: the M1-E inputs dossier (specs/2026-08-28-m1e-inputs-dossier.md)
+  posed ten questions; controller adopted all ten recommendations. The
+  E1 judgment call is recorded with its reasoning since the sources
+  genuinely conflicted.
+- E1 (what "wired end-to-end" means): reading (d) — a DELIBERATELY MINIMAL
+  in-memory tier-1 Env model in src/serpent/env.py (storage, events,
+  auth-recording, ledger; TTL partial per E4) plus the three narrow
+  shared-code moves (durability constants, value-level storage_key,
+  HostError/HostTrap out of the wasmtime module). Why: 19 shipped PUBLIC
+  docstrings promise "sub-plan E" by name and 8 tests pin them; the M1-C
+  carried obligation says "real tier-1 behavior"; and a plain-Python
+  innermost dev loop is the natural meaning of R1's "passing". The
+  against-case (env.py's "real host at test time"/"host bridge" wording,
+  which is really F's tier-2b) is answered by REWRITING those docstrings in
+  E to name the model honestly and point the host bridge at F. S5/S13's
+  third-implementation risk is capped by: naming every non-model in code
+  (no rollback, no footprint, no budget, no auth trees, no TTL clamp/trap),
+  an S5-voiced disclaimer docstring, and E9's differential.
+- E2 (Event.publish, five layers): mirror Rust — per-field
+  Annotated[T, topic] marker, topics=/data_format= decorator args, defaults
+  snake_case(ClassName) / all-fields-data / "map" (field-name Symbols,
+  sorted — byte-compatible with C's P7 struct sort); events appended AFTER
+  functions in spec entry order (the on-chain spike1 golden must not move);
+  SPT1032 retired to NO_FIXTURE_ALLOWLIST ("the form it rejected is now
+  supported"); the frontend DESUGARS Event.publish(env) into the existing
+  HostCall("contract_event", (MakeTopics, MakeMap/MakeVec/value)) — the IR
+  and the emitter change NOT AT ALL; token_style.py reverts to
+  Transfer(...).publish(env) AND a second fixture keeps the canonical
+  env.events().publish spelling (both forms supported per D5, and the
+  heterogeneous-topics path keeps coverage). The four Annotated unwrap
+  sites (decorators._is_contract_annotation, typemap.to_spec_type, the two
+  frontend annotation resolvers) are licensed edits with pins.
+- E3 (time algebra): DEFER TO M2, load-bearing — repoint expr.py's
+  _TIME_ALGEBRA_NOTE and numeric.py's _NO_TIME_ARITH at M2; ship a worked
+  bridge-pattern docs example; record that homogeneous Duration ops (b) are
+  the cheap first M2 increment. Nothing in row E needs the algebra, and the
+  heterogeneous ops would change the IR contract D froze while F builds
+  concurrently.
+- E4 (TTL): partial-and-honest — model live_until, never-reduce, the
+  threshold guard, and expiry-on-advance (settable/advanceable sequence);
+  REFUSE to model clamp/trap (the max is get_max_live_until_ledger, an M2
+  host fact — a chosen constant would be a guess). The mini-host's TTL
+  no-ops are NOT touched (F's). Carried to F: clamp/trap/dead-entry are
+  unproven at every tier.
+- E5 (escape flip): DO NOT FLIP — the tier-1 model DEEP-COPIES on set()/
+  publish()/require_auth_for_args() (copy-on-write IS the host's
+  serialization semantics), so note_escapes' exemption survives with its
+  justification rewritten. The isolation property (mutate-after-set must
+  not reach storage) is the decision procedure, stated in the plan: if it
+  cannot hold for any ChainValue shape, the four-site flip becomes
+  mandatory. The keyword/positional escape asymmetry in collect_never_owned
+  is closed in the kept-exemption direction (kwargs to the serializing
+  calls stop escaping), with both pinned tests updated.
+- E6 (examples): flat examples/ with five files (counter graduates from
+  sandbox_counter verbatim; errors/structs/events/allowance_token fresh),
+  driven from tests/ by extending FIXTURES (one copy, tested in place),
+  and examples/ added to BOTH mypy --strict files and ruff format scope
+  (a non-strict-clean example falsifies the SDK's pitch).
+  sandbox_hello_world stays a fixture (unique coverage). token_style and
+  spike1_reauthored stay fixtures (chain-anchored).
+- E7 (constructor + ambient env): a deploy(cls, env, *args) helper runs
+  __init__ exactly once and models S12's error laundering (~3 lines);
+  invoking an export pre-deploy is a LOUD error; Address.require_auth()
+  keeps its no-Env signature via a contextvar ambient env set/cleared with
+  try/finally by the deploy/invoke helpers; a stray require_auth() outside
+  a frame is a loud error.
+- E8 (honest boundary): env.logs() stays M2 (spec §3's layout sketch gets a
+  one-line correction note, not a feature); ONE reserved-code ContractError
+  hierarchy in serpent.errors (e.g. MissingValue with CODE_MISSING_VALUE)
+  that the tier-1 model, the emitter's guard, and the tests all name; frame
+  rollback and footprint declared out of scope with named carried
+  obligations (footprint is F's row by name). The full stays-unimplemented
+  list in dossier §E8 is RATIFIED, including instance-storage
+  flush-at-frame-exit being unobservable in M1.
+- E9 (Env differential): a second, E-owned stateful scenario table (the
+  frozen 59-case table stays frozen), run against the tier-1 model and
+  compiled WASM under FullHost, importable so F re-runs it on tier-2b —
+  with the honest limit stated (it compares two models E/D wrote; F's
+  tier-2b is where it becomes evidence).
+- E10: env.py stays a module; the package promotion is recorded as M2
+  cleanup, unless the model pushes it past ~600 lines mid-E.
+- Also adopted: the closing-sub-plan promise sweep (19 + 2
+  NotImplementedError strings, the subset.md lines, the recognize/expr
+  notes, sandbox/README's stale M1-D text) as an explicit task; and the
+  carried M1-D minor "wire SPT8004 at the emitter dispatch default when the
+  first accepted-but-unlowered construct exists" — E2's desugar choice
+  means no such construct appears, so the SPT8004 wiring stays dormant and
+  DOCUMENTED as such.
+- Reversal cost: per-item low before E's tasks consume them; E2's authoring
+  surface becomes breaking-after-docs (D4's own note) — which is why it
+  lands now, in the last cheap moment.
+
 ## 2026-08-27 M1-C final-review minors folded into parked passes
 - Minors 2 and 3 from the final whole-branch review (registry intent strings
   hardcode limit numbers; frontend.py imports _host._protocol via the private
