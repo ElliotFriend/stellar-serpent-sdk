@@ -69,6 +69,19 @@ SPIKE_WASM = pathlib.Path(__file__).parent.parent.parent / "spikes" / "spike1" /
 #: the assertions below on-chain-anchored rather than merely local.
 SPIKE_WASM_SHA256 = "bc2e806302f655686084f5c604b4e642900e0fa7812310378667a9cabe4a9920"
 
+#: Review M14 (added by Task 13): `spike.wasm` is a BUILD ARTIFACT and is not
+#: git-tracked (`git ls-files spikes/spike1/` does not list it), so a fresh
+#: clone does not have it. Without this guard the four tests below error with
+#: `FileNotFoundError` there, which reads as a broken suite rather than as
+#: absent evidence. Skipped, never silently passed -- and the same marker is
+#: used by `tests/unit/test_emitter_end_to_end.py`, which imports `SPIKE_WASM`
+#: from here, so the convention is one convention rather than two.
+requires_spike_wasm = pytest.mark.skipif(
+    not SPIKE_WASM.exists(),
+    reason=f"{SPIKE_WASM} is a build artifact and is not git-tracked (R5); "
+    "rebuild it with spikes/spike1/build.py to run the on-chain-anchored checks",
+)
+
 #: The exact stdout of `stellar contract info interface --wasm spike.wasm`,
 #: recorded in `DEPLOY_LOG.md` and there shown identical to the `--id` render
 #: taken from the live network.
@@ -230,6 +243,7 @@ def test_env_meta_27_is_byte_equal_to_the_on_chain_golden() -> None:
     assert build_env_meta(27) == golden
 
 
+@requires_spike_wasm
 def test_env_meta_matches_the_deployed_contracts_env_meta_section() -> None:
     """The same 12 bytes, read out of the on-chain-verified wasm."""
     wasm = SPIKE_WASM.read_bytes()
@@ -289,11 +303,13 @@ def test_counter_golden_round_trips_through_stellar_sdk() -> None:
 # --- the ON-CHAIN-anchored check -------------------------------------------
 
 
+@requires_spike_wasm
 def test_spike_wasm_is_the_artifact_fetched_back_off_testnet() -> None:
     """Anchor: without this pin, everything below is only a local comparison."""
     assert hashlib.sha256(SPIKE_WASM.read_bytes()).hexdigest() == SPIKE_WASM_SHA256
 
 
+@requires_spike_wasm
 def test_spike_entries_are_byte_identical_to_the_deployed_spec_section() -> None:
     """serpent's `contractspecv0` for spike1's interface == the on-chain bytes.
 
@@ -344,6 +360,7 @@ def test_spike_entries_structurally_match_the_recorded_on_chain_interface() -> N
     assert [output.type for output in bump.outputs] == [xdr.SCSpecType.SC_SPEC_TYPE_U32]
 
 
+@requires_spike_wasm
 @pytest.mark.skipif(shutil.which("stellar") is None, reason="stellar CLI not installed")
 def test_stellar_cli_renders_those_bytes_as_the_recorded_interface() -> None:
     """Closes the loop: the previous test proves serpent's bytes ARE the
