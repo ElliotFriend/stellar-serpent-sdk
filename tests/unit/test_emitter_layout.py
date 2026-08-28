@@ -107,7 +107,7 @@ def test_scratch_never_reuses_an_offset() -> None:
 # ===========================================================================
 
 
-def test_check_raises_pool_limit_once_pool_reaches_scratch_base() -> None:
+def test_check_raises_pool_limit_once_pool_exceeds_scratch_base() -> None:
     mem = Memory()
     mem.intern(b"\x00" * (Memory.SCRATCH_BASE + 1))
     with pytest.raises(BuildLimitError, match="literal pool") as exc_info:
@@ -184,6 +184,85 @@ def test_seed_dedupes_a_name_shared_between_a_string_and_a_descriptor_key() -> N
     # "shared" appears in the pool exactly once, from the strings pass; the
     # descriptor pass's intern(b"shared") is a cache hit at the same offset.
     assert mem.pool_bytes().count(b"shared") == 1
+
+
+def test_seed_never_re_sorts_an_adversarially_ordered_key_set() -> None:
+    """A reverse-alphabetical key set is interned in the GIVEN order, never re-sorted.
+
+    C9/P7 already sorted each key set into the byte-string order
+    ``map_new_from_linear_memory`` needs at compile time; ``seed`` must trust
+    that order verbatim (§C.1) -- re-sorting here would validate and then
+    panic on chain (F.1.13). Every other fixture in this file happens to use
+    an alphabetically-ascending set, so a stray ``sorted(key_set)`` inside
+    ``seed`` would sail through the rest of the suite; this one uses
+    ``("zebra", "apple")`` -- reverse order -- to catch exactly that mistake.
+
+    Both names are the same length (5), so a re-sorted implementation would
+    still produce a *numerically* identical packed ``<II>`` descriptor
+    (offsets 0/5, lengths 5/5 either way) -- the assertion has to be on the
+    raw pool BYTES, not just the descriptor's integers, or it would not
+    actually distinguish the two orderings.
+    """
+    inv = LiteralInventory(
+        symbols_over_9=(),
+        strings=(),
+        bytes_literals=(),
+        struct_key_descriptor_sets=(("zebra", "apple"),),
+    )
+    mem = Memory()
+    mem.seed(inv)
+
+    pool = mem.pool_bytes()
+    # "zebra" was given first, so its bytes must land before "apple"'s.
+    assert pool.index(b"zebra") < pool.index(b"apple")
+
+    expected_descriptor = struct.pack("<II", 0, 5) + struct.pack("<II", 5, 5)
+    expected_pool = b"zebra" + b"apple" + b"\x00" * 6 + expected_descriptor
+    assert pool == expected_pool
+
+
+def test_seed_multi_category_inventory_exact_byte_layout() -> None:
+    """The exact expected bytes across all four categories, in seed() order.
+
+    Stronger than ``test_seed_is_deterministic_across_equal_but_distinct_
+    inventories`` (which only proves two runs agree with EACH OTHER): this
+    pins the actual expected layout, computed by hand, category by category
+    -- symbols_over_9, then strings, then bytes_literals, then the key set's
+    ``<II>`` descriptor blob -- so a category emitted out of order, or with
+    the wrong encoding, fails here even if it happened to still be
+    self-consistent run to run.
+
+    Hand-computed offsets, from an empty pool:
+      * ``b"abcdefghij"`` (10 bytes, the one symbol) -> offset 0.
+      * ``b"hi"`` (2 bytes, the one string) -> offset 10.
+      * ``b"\\x01\\x02"`` (2 bytes, the one bytes literal) -> offset 12.
+      * ``b"x"`` (1 byte, the key set's first field name) -> offset 14.
+      * ``b"yy"`` (2 bytes, its second field name) -> offset 15; pool is now
+        17 bytes.
+      * the descriptor blob ``pack("<II", 14, 1) + pack("<II", 15, 2)``
+        (16 bytes), interned with ``align=8``: padded by
+        ``(-17) % 8 == 7`` zero bytes up to offset 24.
+    """
+    inv = LiteralInventory(
+        symbols_over_9=("abcdefghij",),
+        strings=("hi",),
+        bytes_literals=(b"\x01\x02",),
+        struct_key_descriptor_sets=(("x", "yy"),),
+    )
+    mem = Memory()
+    mem.seed(inv)
+
+    expected_descriptor = struct.pack("<II", 14, 1) + struct.pack("<II", 15, 2)
+    expected_pool = (
+        b"abcdefghij"
+        + b"hi"
+        + b"\x01\x02"
+        + b"x"
+        + b"yy"
+        + b"\x00" * 7  # pad from pool length 17 up to the align=8 boundary at 24
+        + expected_descriptor
+    )
+    assert mem.pool_bytes() == expected_pool
 
 
 # ===========================================================================
