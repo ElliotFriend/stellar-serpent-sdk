@@ -1191,6 +1191,92 @@ def test_a_container_in_a_serializing_calls_keyword_position_keeps_ownership() -
     assert {"put_contract_data", "vec_push_back"} <= compiled.host_fns_used
 
 
+def test_both_publish_spellings_share_one_escape_rule() -> None:
+    """The same asymmetry closure, for the OTHER pair of spellings.
+
+    `MyEvent(items=own).publish(env)` used to mark `own` never-owned (its
+    construction is a keyword call, and the pre-pass marked every keyword value)
+    while the equivalent `env.events().publish(topics, own)` left `own` mutable
+    -- so which of two spellings of one publish the author picked decided
+    whether a later `own.push_back(...)` was `SPT1034`. `note_escapes`' own
+    docstring says the spelling of the call cannot change what the host does
+    with the value, and it cannot here either: `publish` deep-copy-serializes
+    its data through ONE `Events._record` for both spellings (ruling E5), so the
+    construction kwargs of a DIRECTLY published event join the serializing-call
+    exemption.
+
+    Both spellings are compiled here, in one test, because the claim is that
+    they AGREE: a future change that closed the gap in the reject direction
+    would fail on the canonical leg instead.
+    """
+    canonical = _compile(
+        """
+        from serpent import Env, Symbol, U32, Vec, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> U32:
+                own = Vec(U32, [U32(1)])
+                env.events().publish((Symbol("logged"),), own)
+                own.push_back(U32(2))
+                return len(own)
+        """
+    )
+    declared = _compile(
+        """
+        from serpent import Env, Event, U32, Vec, contract, contractevent
+
+
+        @contractevent(topics=("logged",), data_format="single-value")
+        class Logged(Event):
+            items: Vec[U32]
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> U32:
+                own = Vec(U32, [U32(1)])
+                Logged(items=own).publish(env)
+                own.push_back(U32(2))
+                return len(own)
+        """
+    )
+    for compiled in (canonical, declared):
+        assert {"contract_event", "vec_push_back"} <= compiled.host_fns_used
+
+
+def test_an_unpublished_event_construction_still_loses_ownership() -> None:
+    """The exemption is the DIRECTLY-PUBLISHED shape only.
+
+    A bare `Logged(items=own)` bound to a local is not a publish, and nothing
+    has serialized `own`; that shape is refused elsewhere anyway (an event
+    instance is not a value M1 can hold), so the conservative answer here is the
+    one that cannot be wrong. Pinned so the exemption cannot widen into "any
+    event construction" by accident.
+    """
+    _expect_reject(
+        """
+        from serpent import Env, Event, U32, Vec, contract, contractevent
+
+
+        @contractevent(topics=("logged",), data_format="single-value")
+        class Logged(Event):
+            items: Vec[U32]
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> U32:
+                own = Vec(U32, [U32(1)])
+                e = Logged(items=own)
+                own.push_back(U32(2))
+                return len(own)
+        """,
+        "SPT1034",
+    )
+
+
 def test_a_container_in_a_struct_field_keyword_loses_ownership() -> None:
     """The general keyword rule, on its own and unconfounded.
 
