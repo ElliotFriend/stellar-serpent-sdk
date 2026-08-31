@@ -552,6 +552,36 @@ Format:
   downgrade it to an M2 deferral by striking this entry and adding the spec
   amendment note.
 
+## 2026-08-31 M1-E final-review rulings (fix wave)
+- Context: the Fable whole-branch review returned 0 Critical / 4 Important;
+  two of the fixes graze settled rulings, so the calls are recorded here.
+- Tier-1 `get` ADOPTS a non-ChainValue default through the requested `ty`
+  (mirroring M1-C literal adoption): `get(k, U32, default=0)` now answers
+  `U32(0)` at tier 1, matching the compiled IfExp's adopted literal. E5's
+  "default returns un-copied" is grazed, not reversed — adopting a raw
+  literal is not copying a caller's chain value; a chain-value default
+  still passes through un-copied and identity-pinned. The review proved
+  the old behavior was a silent cross-tier type divergence (raw `0` vs
+  `U32(0)`, equality-invisible).
+- Escape analysis: the construction kwargs of a DIRECTLY PUBLISHED event
+  (`MyEvent(x=v).publish(env)`) join the serializing-call exemption in
+  `collect_never_owned` — the two publish spellings now share one escape
+  rule, which E2's one-convention position requires and note_escapes'
+  docstring already claimed. Accepts strictly grow.
+- The allowance-token example's `mint` enforces the STORED admin (reads
+  it back and auths against it, parameter dropped) — the shipped example
+  documented an auth check it did not perform.
+- Ratified retroactively: loader's acceptance of the `@contractevent(...)`
+  Call form (44dea69, Task 6 fix round) as a licensed deviation — the
+  sanctioned factory spelling required it; test-pinned.
+- Parked with reasons (the review's triage, recorded in the M1-E ledger):
+  the SPT3019 relax-to-32 pass and the method-parameter `topic` refusal
+  both feed M1-E2's dossier; `from_` aliasing is a G/M2 docs item;
+  env.py at ~1,550 lines fires E10's package-promotion trigger for M2.
+- Reversal cost: the `get` adoption is a behavior change on a 3-day-old
+  surface, trivially revertable; the escape exemption only widens accepts;
+  the mint change is example-local.
+
 ## 2026-08-27 M1-C final-review minors folded into parked passes
 - Minors 2 and 3 from the final whole-branch review (registry intent strings
   hardcode limit numbers; frontend.py imports _host._protocol via the private
