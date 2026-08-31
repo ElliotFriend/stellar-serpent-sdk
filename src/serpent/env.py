@@ -590,7 +590,9 @@ class _TtlState:
     * `Env.advance` must move exactly one copy of the sequence. A bucket that
       captured its own snapshot would keep answering `has` against the
       pre-advance ledger -- and a test holding a bucket across an `advance` is
-      the normal way to write a TTL test;
+      the normal way to write a TTL test. `Ledger` is threaded the same state
+      for the same reason: it reads the sequence live, so the number a contract
+      OBSERVES and the number expiry is measured against are one number;
     * the instance sub-map's live-until is BUCKET-WIDE (S7: one shared TTL for
       the whole instance entry), so it cannot live in a per-key map;
     * `live_until` is a SEPARATE map from the value store rather than a field
@@ -1096,14 +1098,23 @@ class Ledger:
     (`_require_frame`), even though neither can change anything: on chain
     `get_ledger_timestamp` is a host function, and a tier-1 read of it with no
     invocation open is the same state the chain cannot produce.
+
+    The SEQUENCE is read LIVE, out of the `Env`'s own `_TtlState`, for the
+    reason that state's docstring gives about buckets: a `Ledger` bound before
+    an `env.advance(n)` would otherwise keep answering the pre-advance number
+    while every storage expiry compared against the moved one, and two readers
+    of one ledger disagreeing about which ledger it is is precisely the snapshot
+    hazard the single `_TtlState` exists to remove. The TIMESTAMP is an `int`
+    copy because nothing moves it: `advance` deliberately leaves the clock
+    alone, and a later timestamp comes from a new `Env(timestamp=...)`.
     """
 
-    __slots__ = ("_env", "_sequence", "_timestamp")
+    __slots__ = ("_env", "_timestamp", "_ttl")
 
-    def __init__(self, env: Env, timestamp: int, sequence: int) -> None:
+    def __init__(self, env: Env, timestamp: int, ttl: _TtlState) -> None:
         self._env = env
         self._timestamp = timestamp
-        self._sequence = sequence
+        self._ttl = ttl
 
     def timestamp(self) -> U64:
         """Seconds since the Unix epoch, as the host reports it.
@@ -1115,9 +1126,10 @@ class Ledger:
         return U64(self._timestamp)
 
     def sequence(self) -> U32:
-        """The sequence number of the ledger being applied."""
+        """The sequence number of the ledger being applied, read live (the class
+        docstring says why it is not a snapshot)."""
         _require_frame(self._env, "a ledger sequence read")
-        return U32(self._sequence)
+        return U32(self._ttl.sequence)
 
 
 class Events:
@@ -1255,7 +1267,7 @@ class Env:
 
     def ledger(self) -> Ledger:
         _require_frame(self, "env.ledger()")
-        return Ledger(self, self._timestamp, self._ttl.sequence)
+        return Ledger(self, self._timestamp, self._ttl)
 
     def events(self) -> Events:
         _require_frame(self, "env.events()")

@@ -405,6 +405,27 @@ def test_a_bucket_held_across_an_advance_sees_the_new_sequence() -> None:
     assert bucket.has(KEY) == Bool(False)
 
 
+def test_a_ledger_held_across_an_advance_sees_the_new_sequence() -> None:
+    """The same snapshot hazard `_TtlState`'s docstring names, on the OTHER
+    reader of the same number.
+
+    `env.ledger()` used to hand `Ledger` an `int` copy of the sequence, so a
+    `Ledger` bound before an `advance` answered the pre-advance number while
+    every expiry comparison used the moved one -- two readers of one ledger
+    disagreeing about which ledger it is. A test that binds `led =
+    env.ledger()` once and advances between assertions is the normal way to
+    write this, exactly as `test_a_bucket_held_across_an_advance_sees_the_new_
+    sequence` is for a bucket.
+    """
+    env = deployed_env()
+    led = env.ledger()
+    assert led.sequence() == U32(DEFAULT_LEDGER_SEQUENCE)
+    env.advance(5)
+    assert led.sequence() == U32(DEFAULT_LEDGER_SEQUENCE + 5)
+    # And it still agrees with a Ledger taken AFTER the advance.
+    assert led.sequence() == env.ledger().sequence()
+
+
 def test_two_envs_do_not_share_ttl_state() -> None:
     """Two `Env`s are two unrelated contracts, so one's expiry is invisible to
     the other.
