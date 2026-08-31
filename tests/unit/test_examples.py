@@ -379,6 +379,15 @@ def test_the_events_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
     `record_tally`'s data is a `VecObject` on the WASM side, so it is decoded
     through `host._vec` element by element rather than through the single
     `host.chain_value` call that suffices for `record_score`'s bare `U32`.
+
+    **Carried obligation (sub-plan F): `host._vec` is PRIVATE.** `FullHost` has
+    no public container decoder, so this test reaches past the harness's own
+    surface to read a published vec -- a coupling that a rename inside the
+    harness would break silently, and the one place in this file that has it.
+    The durable fix is a public container decoder ON the host (the same shape
+    `chain_value` has for a scalar), which belongs with the tier-2b harness work
+    rather than here; disclosed rather than papered over, so the next reader
+    knows it is a known debt and not an oversight.
     """
     module = load_example(EXAMPLE_EVENTS)
     env = Env()
@@ -400,6 +409,8 @@ def test_the_events_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
     assert [host.chain_value(t) for t in wasm_score_topics] == list(score_topics)
     assert host.chain_value(wasm_score_data) == score_data
     assert [host.chain_value(t) for t in wasm_tally_topics] == list(tally_topics)
+    # `host._vec`: the private coupling this test's docstring carries to
+    # sub-plan F -- a public container decoder on `FullHost` is the fix.
     assert [host.chain_value(item) for item in host._vec(wasm_tally_data)] == list(tally_data)
 
     assert score_topics == (Symbol("scored"), Address(ACCOUNT))

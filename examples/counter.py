@@ -7,8 +7,12 @@ serpent's authoring surface that a contract cannot avoid:
   contract's entry points, and each one takes `self` first and `env: Env`
   second;
 * chain types on every parameter and every return (`U32`, never a bare `int`) --
-  the compiler rejects an unannotated parameter and a bare literal, because the
-  on-chain value model has no `int`;
+  the compiler rejects an unannotated parameter, and rejects a bare literal
+  wherever nothing gives it a chain type (`x = 1` on its own is `SPT3008`),
+  because the on-chain value model has no `int`. Where the expected type IS
+  known -- one side of `total + 1`, a typed `default=` -- the literal is
+  ADOPTED into it, so this file's explicit `U32(0)` is the clearer spelling
+  rather than the only legal one;
 * `@contracterror` with `errorcode(N)` members, raised with
   `raise Error.MaxReached` -- the code is what a client sees on chain;
 * `env.storage().persistent()` with an explicit type on `get`, and `default=` for
