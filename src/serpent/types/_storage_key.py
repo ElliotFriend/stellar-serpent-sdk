@@ -24,6 +24,12 @@ Normalization rules (review B7-corrected):
   yields keys only (`Map.__iter__`), and normalizing on keys alone would
   collapse two maps that agree on every key but disagree on some value -- a
   real, silent bug this rig must not reproduce (review B7);
+* a `ContractUnion` value normalizes to the key of the `ScVec` it IS on chain
+  (§B.1: `ScVec[Symbol(case), payload...]`), by DELEGATING to the `Vec` it
+  holds -- so a union key and the equivalent hand-built vec key are one value,
+  and an `ScVec`'s order-sensitivity applies to a variant payload for free. A
+  `ContractEnum` value gets no rule of its own: it IS a bare `U32`, so it is
+  answered by the scalar line;
 * a `@contracttype` struct instance normalizes IDENTICALLY to its equivalent
   field-name-keyed `Map`: `("map", frozenset((storage_key(Symbol(field_name)),
   storage_key(field_value)) for each field))`. A struct and its equivalent map
@@ -48,6 +54,7 @@ from __future__ import annotations
 from collections.abc import Hashable
 
 from serpent.types._ordering import ContainerValue, Struct
+from serpent.types._udt import ContractUnion
 from serpent.types.containers import Map, Vec
 from serpent.types.symbol import Symbol
 
@@ -73,6 +80,15 @@ def storage_key(value: ContainerValue | None) -> Hashable:
     """
     if value is None:
         return (_VOID_RANK,)
+    if isinstance(value, ContractUnion):
+        # DELEGATED to the `ScVec` a union IS on chain (§B.1), so the vec shape
+        # has one definition and not a second copy. Placed above the `Struct`
+        # arm as belt and braces: neither new kind is a dataclass (ruling E9),
+        # so the order is not load-bearing today, and
+        # `test_storage_key.py::test_a_union_is_never_keyed_as_a_map` pins it.
+        # An int enum needs no arm at all -- it IS a bare `U32`, so it falls
+        # through to the scalar line below.
+        return storage_key(value._vec)
     if isinstance(value, Struct):
         return _struct_key(value)
     if isinstance(value, Vec):

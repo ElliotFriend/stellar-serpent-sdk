@@ -58,6 +58,8 @@ from serpent.env import (
     DEFAULT_LEDGER_TIMESTAMP,
     ChainValue,
     Env,
+    Struct,
+    _families_of_ty,
     tag_of_chain_value,
 )
 from serpent.errors import AbiCheckFailed, BadArgument, MissingValue
@@ -440,6 +442,66 @@ def test_tag_of_chain_value_names_one_family_per_value(
 def test_tag_of_chain_value_rejects_a_non_chain_value() -> None:
     with pytest.raises(TypeError, match="not a chain value"):
         tag_of_chain_value("raw")  # type: ignore[arg-type]
+
+
+def test_a_union_and_an_int_enum_never_reach_the_struct_fallthrough() -> None:
+    """M1-E2 ruling E9's collision pin, at the model's own three doors.
+
+    `Struct` is a `runtime_checkable` Protocol over `__dataclass_fields__` and
+    it is the FALLTHROUGH in `tag_of_chain_value`, `_families_of_ty` and
+    `storage_key`. Neither new kind is a dataclass, and both are matched by
+    `_FAMILY_BY_TYPE` first -- so a union answers `"vec"` (it IS an `ScVec` on
+    chain) and an int enum answers `"u32"` (it IS a bare `U32`). Were either a
+    dataclass, all three doors would answer `"map"` instead: wrong family,
+    wrong storage key, wrong ABI tag, and no error anywhere.
+
+    The declarations come from `test_udt_values.py` rather than a second
+    hand-bound copy (`@contractunion` is M1-E2 Task 2's).
+    """
+    from tests.unit.test_udt_values import Color, Shape
+
+    for value in (Shape.Empty, Shape.Rect(U32(1), U32(2)), Color.Red):
+        assert not isinstance(value, Struct)
+    assert tag_of_chain_value(Shape.Circle(U32(1))) == "vec"
+    assert tag_of_chain_value(Color.Green) == "u32"
+    assert _families_of_ty(Shape) == frozenset({"vec"})
+    assert _families_of_ty(Color) == frozenset({"u32"})
+
+
+def test_a_union_and_an_int_enum_round_trip_through_storage_by_value() -> None:
+    """The two new kinds are ordinary stored values: keyed by `storage_key`,
+    deep-copied in and out (E5), and tag-checked against `ty` on the way out.
+
+    A fresh-but-equal union as the KEY finds the entry an earlier call wrote,
+    which is S13's whole point -- and a `get` under the wrong kind fails the
+    ABI check rather than handing back the other kind's value.
+    """
+    from tests.unit.test_udt_values import Color, Shape
+
+    bucket = deployed_env().storage().persistent()
+    bucket.set(Shape.Circle(U32(7)), Color.Green)
+    assert bucket.get(Shape.Circle(U32(7)), Color) == Color.Green
+    bucket.set(Symbol("shape"), Shape.Rect(U32(1), U32(2)))
+    assert bucket.get(Symbol("shape"), Shape) == Shape.Rect(U32(1), U32(2))
+    with pytest.raises(AbiCheckFailed):
+        bucket.get(Symbol("shape"), Color)
+
+
+def test_a_union_default_passes_through_instead_of_being_re_adopted() -> None:
+    """Ruling E5's default rule, for the two new kinds: a default that already
+    IS a chain value comes back as the caller's own object, un-copied and
+    un-checked, because the compiled `orelse` is that expression.
+
+    This is what `_is_chain_value` answers, and the two M1-E2 arms are why it
+    holds here -- without them a union default would be re-adopted through
+    `ty`, i.e. a union rebuilt from itself.
+    """
+    from tests.unit.test_udt_values import Color, Shape
+
+    bucket = deployed_env().storage().persistent()
+    fallback = Shape.Circle(U32(9))
+    assert bucket.get(Symbol("absent"), Shape, default=fallback) is fallback
+    assert bucket.get(Symbol("absent"), Color, default=Color.Red) == Color.Red
 
 
 def test_the_tag_families_agree_with_the_emitters_abi_check_tables() -> None:

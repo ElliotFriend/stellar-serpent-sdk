@@ -167,6 +167,8 @@ from serpent.types import (
     Address,
     Bool,
     Bytes,
+    ContractEnum,
+    ContractUnion,
     Duration,
     Map,
     String,
@@ -215,11 +217,15 @@ DEFAULT_LEDGER_SEQUENCE = 1_000_000
 
 #: Everything that can cross the host boundary as a value: any scalar chain
 #: type (`_ChainValue` is the shared base of `Bool`/`U32`/.../`Symbol`/
-#: `Bytes`/`Address`), the containers, or a `@contracttype` struct.
+#: `Bytes`/`Address`), the containers, a `@contracttype` struct, or a
+#: `@contractunion`/`@contractenum` value (M1-E2: an `ScVec` and a bare `U32`
+#: on chain respectively).
 #:
 #: This is deliberately a closed union rather than `object`: a raw `str` or
 #: `int` key is a static error, which is the whole point of the chain types.
-ChainValue: TypeAlias = _ChainValue[Any] | Vec[Any] | Map[Any, Any] | Struct
+ChainValue: TypeAlias = (
+    _ChainValue[Any] | Vec[Any] | Map[Any, Any] | Struct | ContractUnion | ContractEnum
+)
 
 #: One entry of the model's store. Keyed on the storage type FIRST so the three
 #: buckets are visibly separate namespaces, then on `storage_key(key)` -- the
@@ -284,6 +290,13 @@ _FAMILY_BY_TYPE: dict[type[Any], str] = {
     Address: "address",
     Vec: "vec",
     Map: "map",
+    # M1-E2: a union IS an `ScVec` and an int enum IS a bare `U32` on chain
+    # (§B.1, byte-verified), so neither needs a family of its own -- and both
+    # are matched HERE, by the MRO walk `tag_of_chain_value`/`_families_of_ty`
+    # already do, which is what keeps the `Struct` fallthrough (a dataclass
+    # match, ruling E9) from ever seeing them.
+    ContractUnion: "vec",
+    ContractEnum: "u32",
 }
 
 #: The family a `@contracttype` struct shares with `Map`, and the family a
@@ -319,15 +332,20 @@ def _is_chain_value(value: object) -> bool:
     """Whether `value` is ALREADY a chain value -- the `ChainValue` alias, asked
     at runtime.
 
-    The alias itself (`_ChainValue[Any] | Vec | Map | Struct`) is a static type
-    and cannot be `isinstance`d, so its four arms are spelled out here, in the
-    one place that needs the runtime answer: `get`'s default adoption, which
-    passes a chain value straight through and adopts anything else through the
-    requested type. `Struct` is a Protocol with a non-method member, which is
-    why it is matched by `isinstance` and not `issubclass` (the same reason
-    `_families_of_ty` gives).
+    The alias itself (`_ChainValue[Any] | Vec | Map | Struct | ContractUnion |
+    ContractEnum`) is a static type and cannot be `isinstance`d, so its six
+    arms are spelled out here, in the one place that needs the runtime answer:
+    `get`'s default adoption, which passes a chain value straight through and
+    adopts anything else through the requested type. `Struct` is a Protocol
+    with a non-method member, which is why it is matched by `isinstance` and
+    not `issubclass` (the same reason `_families_of_ty` gives).
+
+    The two M1-E2 arms are here for the same reason as the other four rather
+    than for a new one: a union or int-enum `default=` is ALREADY a chain
+    value, so adopting it through `ty` (`ty(default)`) would rebuild it from
+    itself.
     """
-    return isinstance(value, (_ChainValue, Vec, Map, Struct))
+    return isinstance(value, (_ChainValue, Vec, Map, Struct, ContractUnion, ContractEnum))
 
 
 def _ty_members(ty: object) -> tuple[object, ...]:

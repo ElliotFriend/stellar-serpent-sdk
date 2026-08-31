@@ -12,6 +12,10 @@ from serpent.decorators import contracttype
 from serpent.types import U32, Address, Bool, Bytes, Bytes32, Map, Symbol, Vec
 from serpent.types._storage_key import storage_key
 
+# The union/enum declarations, hand-bound there because `@contractunion` is
+# M1-E2 Task 2's -- imported rather than declared a second time here.
+from tests.unit.test_udt_values import Color, Shape
+
 ADDRESS_A = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
 ADDRESS_B = "GAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPSABOV"
 
@@ -244,3 +248,52 @@ def test_an_option_field_none_vs_set_produces_a_different_struct_key() -> None:
     set_ = WithOptional(owner=Address(ADDRESS_A))
     assert storage_key(unset_a) == storage_key(unset_b)
     assert storage_key(unset_a) != storage_key(set_)
+
+
+# --- unions and int enums (M1-E2) --------------------------------------------
+
+
+def test_a_union_key_is_its_held_vecs_key_and_nothing_new() -> None:
+    """The union arm DELEGATES: one definition of the vec shape, not a second
+    copy of it. §B.1's byte-verified shape is `ScVec[Symbol, payload...]`, so a
+    union and the hand-built `Vec` of the same elements are ONE key -- which is
+    also what makes a union key found by an equal-but-distinct rebuild.
+    """
+    rect = Shape.Rect(U32(1), U32(2))
+    assert storage_key(rect) == storage_key(rect._vec)
+    assert storage_key(rect) == ("vec", ((15, b"Rect"), (3, 1), (3, 2)))
+    assert storage_key(Shape.Rect(U32(1), U32(2))) == storage_key(Shape.Rect(U32(1), U32(2)))
+    hash(storage_key(Shape.Rect(U32(1), U32(2))))
+
+
+def test_a_unit_variant_key_is_a_one_element_vec_not_a_bare_symbol() -> None:
+    """The shape fact the whole sub-plan rests on, at the key level: a unit
+    variant is NOT its name."""
+    assert storage_key(Shape.Empty) == ("vec", (storage_key(Symbol("Empty")),))
+    assert storage_key(Shape.Empty) != storage_key(Symbol("Empty"))
+
+
+def test_union_keys_separate_by_case_and_by_payload() -> None:
+    assert storage_key(Shape.Circle(U32(1))) != storage_key(Shape.Circle(U32(2)))
+    assert storage_key(Shape.Circle(U32(1))) != storage_key(Shape.Empty)
+    assert storage_key(Shape.Circle(U32(1))) != storage_key(Shape.Rect(U32(1), U32(2)))
+
+
+def test_a_union_is_never_keyed_as_a_map() -> None:
+    """Ruling E9: neither new kind is a dataclass, so the `Struct` arm -- which
+    would produce a `("map", ...)` key -- is never reached. The union arm sits
+    ABOVE that line as well (belt and braces), and this is what pins it.
+    """
+    for value in (Shape.Empty, Shape.Rect(U32(1), U32(2))):
+        key = storage_key(value)
+        assert isinstance(key, tuple)
+        assert key[0] == "vec"
+
+
+def test_an_int_enum_key_is_exactly_a_u32_key() -> None:
+    """No arm at all: an int enum IS a bare `U32` on chain, so it falls through
+    to the scalar `(_SCVAL_RANK, _cmp_payload())` line for free."""
+    assert storage_key(Color.Red) == storage_key(U32(0))
+    assert storage_key(Color.Green) == storage_key(U32(1))
+    assert storage_key(Color.Red) != storage_key(Color.Green)
+    hash(storage_key(Color.Red))
