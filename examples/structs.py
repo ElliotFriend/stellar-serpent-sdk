@@ -42,6 +42,31 @@ It is just worth knowing that `display_name` and `name` do not compile to the
 same thing. `tests/unit/test_examples.py` asserts the
 `symbol_new_from_linear_memory` call really happens.
 
+## The time-algebra bridge (deferred to M2, ruling E3)
+
+`Timepoint`/`Duration` are u64 newtypes with NO arithmetic of their own -- not
+even same-type (`Timepoint(1) + Timepoint(1)` is a `TypeError` naming the
+omission, same as Rust's own newtypes carry no operators either). serpent will
+not invent a time algebra ahead of a real contract needing one; the bridge is
+`to_u64()`/`from_u64()`, and it reads like this for a membership that expires
+30 days after it is renewed (a field this `Registry` does not have, but could):
+
+    from serpent import Duration, Timepoint
+
+    THIRTY_DAYS = Duration(30 * 24 * 60 * 60)
+
+    def renew(self, env: Env, owner: Address) -> None:
+        now = env.ledger().timestamp()                     # U64
+        expires = Timepoint.from_u64(now + THIRTY_DAYS.to_u64())
+        ...                                                  # store `expires`
+
+    def is_expired(self, env: Env, expires: Timepoint) -> Bool:
+        return Bool(env.ledger().timestamp() >= expires.to_u64())
+
+Do the arithmetic on plain `U64` (checked overflow, same as any other chain
+integer), then wrap the result back into whichever type the field or return
+annotation actually declares.
+
 Run it two ways -- `tests/unit/test_examples.py` does both and asserts the two
 legs agree:
 

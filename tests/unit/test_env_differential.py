@@ -63,6 +63,7 @@ from serpent import val
 from serpent.compiler.diagnostics import CompileError
 from serpent.compiler.frontend import compile_module
 from serpent.compiler.ir import FuncKind
+from serpent.compiler.recognize import _HELP
 
 # `_METADATA_ATTR` is the decorator's OWN attribute name for the `@contract`/
 # `@contractevent` metadata, read through the constant rather than as a
@@ -85,12 +86,10 @@ from serpent.types._storage_key import storage_key
 from tests.harness import engine
 from tests.harness.hostfns import FullHost
 from tests.semantics.env_scenarios import (
-    AUTH_ARGS_METHODS,
     ENV_SCENARIOS,
     ENV_SURFACE,
     TOKEN_STYLE,
     TOKEN_STYLE_CANONICAL,
-    TTL_METHODS,
     Advance,
     Call,
     EnvScenario,
@@ -332,6 +331,34 @@ def test_env_scenario(scenario: EnvScenario) -> None:
 def test_the_scenario_names_are_unique() -> None:
     names = [scenario.name for scenario in ENV_SCENARIOS]
     assert len(names) == len(set(names))
+
+
+def test_a_row_carries_expect_or_code_exactly_when_its_kind_calls_for_it() -> None:
+    """Row-coherence: no dead data, and no missing data, for `kind`.
+
+    `expect` only means something for `kind="value"`, and `code` only means
+    something for `kind="contract_error"` -- `EnvScenario` cannot enforce that
+    itself (both fields are plain optional attributes), so this is the meta-test
+    that keeps a future row from carrying an `expect` nobody reads or from
+    omitting a `code` a `contract_error` row needs, as sub-plan F grows this
+    corpus.
+    """
+    for scenario in ENV_SCENARIOS:
+        assert (scenario.expect is not None) == (scenario.kind == "value"), (
+            f"{scenario.name}: expect={scenario.expect!r} but kind={scenario.kind!r}"
+        )
+        assert (scenario.code is not None) == (scenario.kind == "contract_error"), (
+            f"{scenario.name}: code={scenario.code!r} but kind={scenario.kind!r}"
+        )
+
+
+#: The method names whose presence in a row FORCES `tier1_only_reason`, and
+#: which reason each forces. RUNNER knowledge, not table data (`env_scenarios.
+#: py` states why it lives here): the biconditional test below derives "which
+#: rows are tier-1-only" from the surfaces they reach rather than trusting a
+#: hand-set flag.
+TTL_METHODS = frozenset({"bump_instance", "bump_slot", "bump_temp"})
+AUTH_ARGS_METHODS = frozenset({"guard_args"})
 
 
 def test_a_row_is_tier_1_only_exactly_when_it_reaches_a_harness_limit() -> None:
@@ -732,8 +759,6 @@ def test_the_last_resort_spt1034_help_recommends_something_that_compiles() -> No
     emission passes a receiver-specific help (`_mutation_help`), so the default
     can only be checked against its own text.
     """
-    from serpent.compiler.recognize import _HELP
-
     assert "mutate only a local this method owns" in _HELP["SPT1034"]
     assert "vec_push_back(v, x)" in _HELP["SPT1034"]
     compile_module(

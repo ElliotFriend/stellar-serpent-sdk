@@ -579,10 +579,12 @@ class ErrorEnumDecl(IRDecl):
 @dataclass(frozen=True, kw_only=True)
 class EventDecl(IRDecl):
     """A `@contractevent` class. Tracked SEPARATELY from structs and error
-    enums (MJ-9): `spec.sections` refuses an event class, and
-    `SC_SPEC_ENTRY_EVENT_V0` is deferred to sub-plan E because
-    `_serpent_type_` carries no topic/data split (B14/D8) -- which is also why
-    this declaration has no topic/data fields to record."""
+    enums (MJ-9): `spec.sections` still refuses an event class handed to
+    `types=`, but `SC_SPEC_ENTRY_EVENT_V0` is no longer deferred -- it is
+    built straight from the decorated class's own `_serpent_type_` metadata
+    (`prefix_topics`/`locations`/`data_format`, M1-E Task 5), not from this
+    node, which is why this declaration still has no topic/data fields to
+    record."""
 
     name: str
     doc: str

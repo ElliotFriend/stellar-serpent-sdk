@@ -231,7 +231,7 @@ _LEN_SCOPE_NOTE = (
     "a Symbol's or String's length is not an operation M1 exposes; MJ-1 scopes len() "
     "to Vec, Map, and Bytes"
 )
-_TIME_ALGEBRA_NOTE = "time algebra is a sub-plan E decision (D4/A17)"
+_TIME_ALGEBRA_NOTE = "time algebra is deferred to M2 (D4/A17/E3)"
 _ORACLE_SURPRISE_NOTE = (
     "the compiler validates a literal by constructing the tier-1 chain value; this "
     "constructor raised something other than the ValueError/TypeError serpent's error "

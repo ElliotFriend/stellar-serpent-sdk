@@ -454,7 +454,7 @@ def test_truthiness_is_zero_test() -> None:
 
 def test_time_types_expose_no_arithmetic() -> None:
     # RULED: Timepoint/Duration carry no operators at all -- not even same-type.
-    # Rust's newtypes do not either, and a time algebra is a sub-plan E decision.
+    # Rust's newtypes do not either, and a time algebra is deferred to M2 (E3).
     # These are TypeErrors, NOT ArithmeticOverflow: the omission bites first.
     with pytest.raises(TypeError, match="no arithmetic"):
         Timepoint(5) + Timepoint(1)  # type: ignore[operator]

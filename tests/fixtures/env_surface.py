@@ -6,10 +6,13 @@ mini-host, comparing the two legs. It exists because two things the table has
 to cover are unreachable through every contract the repo already ships:
 
 * **a bare `get(key, T)` with no `default=`**, i.e. `MissingValue` at both
-  tiers. Every existing contract either writes the key in its constructor
-  (`errors.py`, `token_style.py`) or guards the read with `has`
-  (`structs.py`), so the reserved-code miss is not reachable through any of
-  them;
+  tiers. Most existing contracts write the key in their constructor
+  (`errors.py`, `token_style.py`) or guard the read with `has`
+  (`structs.py`); the one exception is `spike1_reauthored.py`'s `bump()`,
+  which reads `SETTINGS` before any constructor writes it (there is no
+  `__init__`, only a plain `setup()` method) -- but that fixture is not one
+  of this table's contracts, so the reserved-code miss is still not reachable
+  through anything THIS table drives;
 * **`require_auth_for_args`**, which no example or fixture calls at all.
 
 Everything else the table needs is here too, one narrow method per surface, so
@@ -21,7 +24,8 @@ both event spellings, `require_auth`, and both ledger reads.
 carries the contracts the whole-contract property sweep and the WAT goldens run
 over -- the shipped examples and the chain-anchored fixtures. This one is a test
 instrument for one table: `tests/unit/test_env_differential.py` builds it,
-validates it and invokes almost every method in it on every run, which is the
+validates it and invokes every method in it on every run -- an exact set
+equality the differential asserts, not "almost every" -- which is the
 coverage that matters for it.
 
 No constructor, on purpose: `deploy` takes no arguments and the declared

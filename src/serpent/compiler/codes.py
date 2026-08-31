@@ -930,7 +930,11 @@ CODES: frozenset[str] = frozenset(entry.code for entry in REGISTRY)
 #: today no C-emitted host function carries a protocol gate above the base
 #: (the frontend only ever emits the ungated v1 TTL form), so no real
 #: source can trip SPT6001 -- it is proven end-to-end by a synthetic-bindings
-#: unit test (Task 10) instead of a fixture. `SPT1009`/`SPT4018`/`SPT7003`
+#: unit test (Task 10) instead of a fixture. (Rider, constructor-floor fix:
+#: SPT6001 also gates any constructor-bearing contract below protocol 22
+#: (CAP-0058) -- a real source-level trigger -- but only via an explicit
+#: `target_protocol`, a `compile_module` keyword no `must_reject` fixture can
+#: set, so the allowlisting still holds.) `SPT1009`/`SPT4018`/`SPT7003`
 #: were added by controller ruling during Task 11b's fixture-completion
 #: round: each is a dead dispatch/check branch an earlier, always-first check
 #: already claims on every real-source path (see `NO_FIXTURE_REASONS`), kept

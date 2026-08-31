@@ -103,11 +103,14 @@ class BadArgument(ContractError):
 class MissingValue(ContractError):
     """Storage `get(key, T)` (no `default`) found no value for `key`.
 
-    Two consumers, both carrying `CODE_MISSING_VALUE`: Task 2's tier-1 `get`
-    raises this Python exception when the mini-host/tier-1 model finds the key
-    absent, and the emitter's E13 guard already emits the *same* code as a raw
-    `fail_with_error` from compiled WASM (`serpent.emitter.lower`) -- one code,
-    two tiers, never two numbers to keep in sync (dossier C.4).
+    Four consumers now, all carrying `CODE_MISSING_VALUE`: Task 2's tier-1
+    `get` raises this Python exception when the tier-1 model finds the key
+    absent; Task 3's tier-1 `extend_ttl` raises it too, for a dead entry (S8's
+    "extending a dead entry errors"), on both the keyed persistent/temporary
+    form and the keyless instance form; and the emitter's E13 guard already
+    emits the *same* code as a raw `fail_with_error` from compiled WASM
+    (`serpent.emitter.lower`) -- one code, every consumer, never a second
+    number to keep in sync (dossier C.4).
     """
 
     code = CODE_MISSING_VALUE

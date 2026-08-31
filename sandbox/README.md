@@ -11,13 +11,20 @@ From the repo root:
 uv run python sandbox/compile.py sandbox/counter.py
 ```
 
-That compiles the example contract and prints what the frontend produced:
-the protocol floor, the host functions the contract imports, any
-guest-runtime parts the emitter will need, and each exported function's
-signature. There is no WASM output yet — the emitter is sub-plan M1-D — and
-`Env`'s storage/events raise `NotImplementedError` at runtime until
-sub-plan E, so today the game is authoring contracts and watching the
-compiler judge them.
+That compiles the example contract, prints what the frontend produced (the
+protocol floor, the host functions it imports, any guest-runtime parts the
+emitter needs, and each exported function's signature), then builds and
+writes a deployable `sandbox/counter.wasm` next to the source — validated
+before it is written, ready for `stellar contract deploy --wasm
+sandbox/counter.wasm ...`.
+
+`Env`'s storage, events, TTL and auth all run for real in plain Python too,
+at tier 1 (`from serpent.env import Env, deploy`): a contract's own methods
+can be called directly against a tier-1 `Env` and their answers inspected,
+with no WASM build in the loop at all. So the sandbox is not limited to
+watching the compiler judge a contract — `examples/` (five worked contracts,
+each one compiled to WASM and run at tier 1, with `tests/unit/test_examples.py`
+asserting the two legs agree) is where to see both together end to end.
 
 ## Things to try
 

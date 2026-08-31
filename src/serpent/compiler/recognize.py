@@ -2369,11 +2369,11 @@ def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx, reason: str | None = No
     diverge from -- not because those surfaces cannot run, but because what they
     keep is a copy.
     `tests/unit/test_env_model.py`'s isolation property is what holds that
-    justification up. `require_auth_for_args` is a CARRIED obligation: its body
-    is still `NotImplementedError`, and whoever lands it must snapshot the args
-    it records and pin that here-shaped property alongside it. If any of the
-    four ever stores a reference instead, that position becomes an escape and
-    belongs in this hook.
+    justification up. `require_auth_for_args` landed in Task 4: its body
+    deep-copies the args it records (`Address.require_auth_for_args` ->
+    `Env._record_auth`), and that here-shaped property is pinned alongside the
+    other three. If any of the four ever stores a reference instead, that
+    position becomes an escape and belongs in this hook.
 
     The exemption applies to KEYWORD arguments of those calls as well as
     positional ones (`collect_never_owned`'s escape-facts note): the spelling of

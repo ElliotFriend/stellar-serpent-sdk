@@ -101,8 +101,9 @@ _OTHER_KEY = Symbol("Z")
 #: opts out of the WASM leg opts out for a reason this module states.
 TTL_REASON = (
     "the mini host has no TTL model at all -- `extend_contract_data_ttl` is a "
-    "recorded no-op and there is no ledger sequence to expire against -- so an "
-    "expiry-sensitive answer has no WASM leg to be compared with"
+    "recorded no-op, and FullHost tracks a ledger sequence but no per-entry "
+    "live-until state and applies no expiry on reads -- so an expiry-sensitive "
+    "answer has no WASM leg to be compared with"
 )
 AUTH_ARGS_REASON = (
     "the mini host DISCARDS `require_auth_for_args`' args (it shape-checks the "
@@ -115,12 +116,11 @@ ALLOW_SET_REASON = (
     "refusal it produces -- does not exist on the WASM leg"
 )
 
-#: The method names whose presence in a row FORCES `tier1_only_reason`, and
-#: which reason each forces. The differential's biconditional test reads this
-#: table, so "which rows are tier-1-only" is derived from the surfaces they
-#: reach rather than trusted to a hand-set flag.
-TTL_METHODS = frozenset({"bump_instance", "bump_slot", "bump_temp"})
-AUTH_ARGS_METHODS = frozenset({"guard_args"})
+# `TTL_METHODS`/`AUTH_ARGS_METHODS` -- which method names in a row FORCE
+# `tier1_only_reason` -- are RUNNER knowledge (how `test_env_differential.py`'s
+# biconditional test derives "is this row tier-1-only" from the surfaces a row
+# reaches), not table data any row here reads, so they live next to that test
+# in `tests/unit/test_env_differential.py` rather than in this module.
 
 
 @dataclass(frozen=True)
@@ -192,7 +192,13 @@ class EnvScenario:
     #: passing unnoticed.
     events: tuple[PublishedEvent, ...] = ()
     auths: tuple[RecordedAuth, ...] = ()
-    #: Set exactly when the row reaches a surface the mini host does not model.
+    #: Set exactly when the row reaches a surface THIS mini host does not
+    #: model (TTL, auth args, the allow-set) -- i.e. it has no SECOND LEG to
+    #: compare against in this differential today. The name overstates the
+    #: reach: a real host at sub-plan F's tier 2b CAN replay the allow-set and
+    #: auth-args rows (the mini host's limits are its own, not every host's),
+    #: so "tier1_only" means "no mini-host leg here," not "no host can ever
+    #: run this."
     tier1_only_reason: str | None = None
 
 
