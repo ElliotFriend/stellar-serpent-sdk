@@ -30,21 +30,24 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   disassembly snapshots): merged to main 2026-08-28. 3552 tests.
   `contractspecv0` byte-identical to the deployed Phase 0 artifact; the
   registry gained the sanctioned SPT8xxx band (100 codes).
-- **M1-E (Env runtime semantics + examples): IN PROGRESS on branch
-  `m1e-env-runtime`** — dossier + rulings in decisions.md (2026-08-28);
-  plan v2 at plans/2026-08-28-m1e-env-runtime.md. **Tasks 1-7 of 10
-  complete** (the tier-1 Env model with deep-copy isolation, partial TTL,
-  deploy/frame/auth; the full Event.publish convention end-to-end; the
-  counter/errors/structs examples with `examples/` inside the strict
-  gates). Suite 3817/2skip, all gates green at the branch head.
-  **RESUME AT TASK 8** (events + allowance-token examples), then 9 (the
-  stateful Env differential), 10 (the promise sweep), the Fable
-  whole-branch review (reconcile the attention file AGAINST the ledger's
-  deferred lines — the M1-D lesson), one fix wave, local merge. The ledger
-  (.superpowers/sdd/2026-08-28-m1e-env-runtime/progress.md) is the map.
-  Then F (testing tiers), G (CLI as a Stellar CLI plugin). M1 ENDS with a
-  user-approved testnet deployment (HARD STOP — Elliot must explicitly
-  approve it in-session).
+- **M1-E (Env runtime semantics + examples): merged to main 2026-08-31**
+  (merge 5731390). The tier-1 Env model (deep-copy isolation, partial
+  TTL, deploy/frame/auth, write-resets-TTL); the Event.publish convention
+  end-to-end, both spellings, one escape rule; five examples (counter,
+  errors, structs, events, allowance_token) each passing the
+  compile/tier-1/WASM-same-answers triple; the 59-row ENV_SCENARIOS
+  stateful differential (F's tier-2b re-run corpus); the promise sweep +
+  the case-insensitive stale-promise gate. Tier-1 `get` ADOPTS raw
+  literal defaults through the requested type (decisions.md 2026-08-31).
+  Suite 3947/2skip, all gates green on main. Carried obligations live in
+  `.superpowers/sdd/2026-08-28-m1e-env-runtime/final-review-attention.md`
+  (kept, like M1-C/D's) — F/G/M2 items plus the parked triage.
+- **NEXT: M1-E2** (tagged unions + int enums addendum — decisions.md
+  2026-08-31; its dossier must ingest the method-parameter `topic`
+  refusal direction and the SPT3019 relax-to-32 pass), then F (testing
+  tiers), G (CLI as a Stellar CLI plugin). M1 ENDS with a user-approved
+  testnet deployment (HARD STOP — Elliot must explicitly approve it
+  in-session).
 
 ## How each sub-plan runs (the loop that built A, B, C)
 
