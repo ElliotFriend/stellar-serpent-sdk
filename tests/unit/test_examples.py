@@ -80,6 +80,16 @@ OWNER = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
 SPENDER = "GAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPSABOV"
 
 
+def _allowance_token_roles() -> tuple[Address, Address, Address, Address]:
+    """`allowance_token`'s four distinct roles: `(admin, owner, spender, to)`.
+
+    One function so every test that deploys this example builds the same four
+    `Address`es the same way, rather than the same four-tuple literal copied
+    into each one.
+    """
+    return Address(ACCOUNT), Address(OWNER), Address(SPENDER), Address(CONTRACT)
+
+
 def load_example(path: Path) -> ModuleType:
     """Import one example as a module, BY PATH.
 
@@ -424,9 +434,9 @@ def test_the_events_examples_canonical_spelling_matches_the_authoring_forms_desu
 
 
 def test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
-    """The whole surface -- `mint`, `approve`, `transfer_from`, and both of its
-    refusals -- run identically on both legs, with no `env.advance(...)`
-    anywhere: the mini host has no TTL model at all
+    """The whole surface -- `mint`, `approve`, `transfer_from`, its events, and
+    both of its refusals -- run identically on both legs, with no
+    `env.advance(...)` anywhere: the mini host has no TTL model at all
     (`extend_contract_data_ttl` is a recorded no-op), so this is the
     WITHOUT-expiry half of the cross-check the module docstring names. The
     expiry half is tier-1 only (the dedicated test below), and sub-plan F's
@@ -439,28 +449,33 @@ def test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm() ->
     at all (`to` was never approved), so it is `InsufficientAllowance`. A
     final read of both the balance and the allowance proves neither refusal
     wrote anything.
+
+    Two things `errors.py`/`structs.py`'s cross-checks did not need to cover,
+    which this contract's enumerated requirements ("events on approve/
+    transfer") do: the published `Approval` and `Transfer` events, decoded and
+    compared the same way `events.py`'s cross-check compares `Scored`/`Tally`
+    (`test_the_events_example_answers_the_same_at_tier_1_and_as_wasm`); and
+    that `approve` and the successful `transfer_from` each really reach
+    `extend_contract_data_ttl` once, via the host's own call count -- proving
+    the re-extend-on-access call in `transfer_from` is not dead code.
     """
     module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
     env = Env()
-    admin, owner, spender, to = (
-        Address(ACCOUNT),
-        Address(OWNER),
-        Address(SPENDER),
-        Address(CONTRACT),
-    )
+    admin, owner, spender, to = _allowance_token_roles()
     token = deploy(module.AllowanceToken, env, admin)
     with env.frame():
         token.mint(env, admin, owner, U32(100))
         token.approve(env, owner, spender, U32(200), U32(0), U32(1000))
-        token.transfer_from(env, spender, owner, to, U32(25))
+        token.transfer_from(env, spender, owner, to, U32(25), U32(0), U32(1000))
+        tier_1_events = env.published_events
         tier_1 = [
             token.balance(env, owner),
             token.balance(env, to),
             token.allowance(env, owner, spender),
         ]
         tier_1_codes = [
-            _tier_1_code(token.transfer_from, env, spender, owner, to, U32(100)),
-            _tier_1_code(token.transfer_from, env, to, owner, spender, U32(1)),
+            _tier_1_code(token.transfer_from, env, spender, owner, to, U32(100), U32(0), U32(1000)),
+            _tier_1_code(token.transfer_from, env, to, owner, spender, U32(1), U32(0), U32(1000)),
         ]
         tier_1.append(token.balance(env, owner))
         tier_1.append(token.allowance(env, owner, spender))
@@ -483,25 +498,77 @@ def test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm() ->
         )
         == val.VOID_VAL
     )
+    assert host.count("extend_contract_data_ttl") == 1  # approve's own call
     assert (
-        mini.invoke("transfer_from", spender_w, owner_w, to_w, val.pack_u32val(25)) == val.VOID_VAL
+        mini.invoke(
+            "transfer_from",
+            spender_w,
+            owner_w,
+            to_w,
+            val.pack_u32val(25),
+            val.pack_u32val(0),
+            val.pack_u32val(1000),
+        )
+        == val.VOID_VAL
     )
+    # transfer_from's re-extend-on-access call, reached on top of approve's.
+    assert host.count("extend_contract_data_ttl") == 2
+    wasm_events = list(host.events)
     from_wasm = [
         answer(host, mini, "balance", owner_w),
         answer(host, mini, "balance", to_w),
         answer(host, mini, "allowance", owner_w, spender_w),
     ]
     from_wasm_codes = [
-        _wasm_code(mini, "transfer_from", spender_w, owner_w, to_w, val.pack_u32val(100)),
-        _wasm_code(mini, "transfer_from", to_w, owner_w, spender_w, val.pack_u32val(1)),
+        _wasm_code(
+            mini,
+            "transfer_from",
+            spender_w,
+            owner_w,
+            to_w,
+            val.pack_u32val(100),
+            val.pack_u32val(0),
+            val.pack_u32val(1000),
+        ),
+        _wasm_code(
+            mini,
+            "transfer_from",
+            to_w,
+            owner_w,
+            spender_w,
+            val.pack_u32val(1),
+            val.pack_u32val(0),
+            val.pack_u32val(1000),
+        ),
     ]
     from_wasm.append(answer(host, mini, "balance", owner_w))
     from_wasm.append(answer(host, mini, "allowance", owner_w, spender_w))
+    # The two refusals raised before reaching the host's extend_ttl call at
+    # all (both fail on the allowance/balance CHECK, before either write), so
+    # the count from above is unchanged by them.
+    assert host.count("extend_contract_data_ttl") == 2
 
     assert from_wasm == tier_1
     assert from_wasm_codes == tier_1_codes
     assert tier_1 == [U32(75), U32(25), U32(175), U32(75), U32(175)]
     assert tier_1_codes == [2, 1]  # InsufficientBalance, InsufficientAllowance
+
+    # `Approval` (from `approve`) then `Transfer` (from the successful
+    # `transfer_from`), decoded and compared the way `events.py`'s
+    # cross-check compares its own two events.
+    (approval_topics, approval_data), (transfer_topics, transfer_data) = tier_1_events
+    (wasm_approval_topics, wasm_approval_data), (wasm_transfer_topics, wasm_transfer_data) = (
+        wasm_events
+    )
+    assert [host.chain_value(t) for t in wasm_approval_topics] == list(approval_topics)
+    assert host.chain_value(wasm_approval_data) == approval_data
+    assert [host.chain_value(t) for t in wasm_transfer_topics] == list(transfer_topics)
+    assert host.chain_value(wasm_transfer_data) == transfer_data
+
+    assert approval_topics == (Symbol("approve"), owner, spender)
+    assert approval_data == U32(200)
+    assert transfer_topics == (Symbol("transfer"), owner, to)
+    assert transfer_data == U32(25)
 
 
 def test_the_allowance_token_example_records_auth_for_admin_owner_and_spender() -> None:
@@ -514,18 +581,59 @@ def test_the_allowance_token_example_records_auth_for_admin_owner_and_spender() 
     """
     module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
     env = Env()
-    admin, owner, spender, to = (
-        Address(ACCOUNT),
-        Address(OWNER),
-        Address(SPENDER),
-        Address(CONTRACT),
-    )
+    admin, owner, spender, to = _allowance_token_roles()
     token = deploy(module.AllowanceToken, env, admin)
     with env.frame():
         token.mint(env, admin, owner, U32(100))
         token.approve(env, owner, spender, U32(40), U32(0), U32(1000))
-        token.transfer_from(env, spender, owner, to, U32(10))
+        token.transfer_from(env, spender, owner, to, U32(10), U32(0), U32(1000))
     assert env.recorded_auths == ((admin, None), (owner, None), (spender, None))
+
+
+def test_the_allowance_tokens_approve_always_fully_reextends_regardless_of_threshold() -> None:
+    """Every OTHER test in this file passes `threshold=U32(0)` to `approve`,
+    which never puts a NONZERO threshold through the algebra at all. This
+    test does, and the real (module-docstring-documented) behavior is worth
+    seeing rather than assuming: because `approve` always WRITES the amount
+    immediately before calling `extend_ttl`, that call always finds a
+    never-extended (`None`) entry, and a `None` entry always takes the FULL
+    `extend_to` (`env.py`'s `_extended_live_until`: "the first extension
+    always applies"), no matter how large `threshold` is.
+
+    So the SECOND `approve` below passes `threshold=U32(4_000_000_000)` --
+    large enough to block ordinary re-extension of an already-live entry
+    (`tests/unit/test_env_ttl.py::test_an_extension_never_reduces` uses the
+    same value for exactly that reason) -- and a smaller `extend_to=U32(10)`
+    than the first call's `U32(1_000)`. If the guard or never-reduce were
+    protecting this entry the way a first glance at "threshold-guard/
+    never-reduce algebra" suggests, it would still be alive hundreds of
+    ledgers from now (the first call's grant). It is not: the second call's
+    write reset the memory the guard needs, so its `extend_to=10` applies in
+    full and the live-until actually SHRINKS relative to the first call.
+    """
+    module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
+    env = Env()
+    admin, owner, spender, _to = _allowance_token_roles()
+    token = deploy(module.AllowanceToken, env, admin)
+    with env.frame():
+        token.mint(env, admin, owner, U32(100))
+        token.approve(env, owner, spender, U32(10), U32(0), U32(1_000))
+    env.advance(1)
+    with env.frame():
+        token.approve(env, owner, spender, U32(20), U32(4_000_000_000), U32(10))
+        # The amount is overwritten regardless of what happened to the TTL.
+        assert token.allowance(env, owner, spender) == U32(20)
+    env.advance(10)
+    with env.frame():
+        # Exactly at the SECOND call's live-until (sequence + 10): still
+        # alive (expiry is strict) -- proving the huge threshold did not
+        # block this extension the way it would have on an unwritten entry.
+        assert token.allowance(env, owner, spender) == U32(20)
+    env.advance(1)
+    with env.frame():
+        # One ledger past: dead at seq+10, not at the FIRST call's seq+1000 --
+        # the smaller extend_to really did shrink the live-until.
+        assert token.allowance(env, owner, spender) == U32(0)
 
 
 def test_the_allowance_expires_and_transfer_from_then_fails_with_the_authors_error() -> None:
@@ -551,12 +659,7 @@ def test_the_allowance_expires_and_transfer_from_then_fails_with_the_authors_err
     """
     module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
     env = Env()
-    admin, owner, spender, to = (
-        Address(ACCOUNT),
-        Address(OWNER),
-        Address(SPENDER),
-        Address(CONTRACT),
-    )
+    admin, owner, spender, to = _allowance_token_roles()
     token = deploy(module.AllowanceToken, env, admin)
     with env.frame():
         token.mint(env, admin, owner, U32(50))
@@ -572,7 +675,7 @@ def test_the_allowance_expires_and_transfer_from_then_fails_with_the_authors_err
     with env.frame():
         # One ledger past: the entry reads absent, i.e. U32(0) via `default=`.
         assert token.allowance(env, owner, spender) == U32(0)
-        code = _tier_1_code(token.transfer_from, env, spender, owner, to, U32(1))
+        code = _tier_1_code(token.transfer_from, env, spender, owner, to, U32(1), U32(0), U32(100))
         assert code == 1  # AllowanceError.InsufficientAllowance
         # The refused call wrote nothing: the balance mint left is untouched.
         assert token.balance(env, owner) == U32(50)

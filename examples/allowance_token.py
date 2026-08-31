@@ -13,17 +13,34 @@ that composite key.
 
 A balance should outlive its owner's next login; a stale, forgotten approval
 should not sit around forever as a standing risk. `temporary()` is the bucket
-that models that: an allowance's storage entry can EXPIRE, and this file's
-`approve` extends its TTL explicitly, with an author-chosen `threshold`/
-`extend_to` pair -- the same `extend_ttl(key, threshold, extend_to)` call
-`env.py`'s TTL section documents for both keyed buckets.
+that models that: an allowance's storage entry can EXPIRE, and BOTH `approve`
+and `transfer_from` extend its TTL explicitly, with an author-chosen
+`threshold`/`extend_to` pair -- the same `extend_ttl(key, threshold,
+extend_to)` call `env.py`'s TTL section documents for both keyed buckets.
+`transfer_from` re-extends rather than relying on `approve`'s original grant
+because its own reducing `set()` would otherwise reset the entry's live-until
+to "never extended" (`env.py`'s `set` docstring: any write to a keyed bucket
+does), which would make a partially-spent allowance IMMORTAL until the next
+`approve` -- exactly the "sits around forever" risk this section opens with.
+Re-extending on every touch, not only on creation, is the standard Soroban
+pattern for a `temporary()` entry that is read AND written more than once.
 
-**The threshold guard and never-reduce, in one call.** `approve`'s `extend_ttl`
-call only actually moves the live-until when fewer than `threshold` ledgers of
-lifetime remain (so re-approving the same allowance every block does not
-re-extend it every time), and a later, smaller `extend_to` can never pull a
-live-until backwards. Both rules are the model's, not this contract's -- see
-`env.py`'s `_extended_live_until`.
+**A worth-knowing consequence of "every write resets the live-until":**
+`approve` ALWAYS writes the amount immediately before calling `extend_ttl`, so
+that call always sees a never-extended (`None`) entry -- and a `None` entry
+always takes the FULL `extend_to`, `threshold` notwithstanding (`env.py`'s
+`_extended_live_until` docstring: "the first extension always applies"). So
+the threshold guard can never actually BLOCK a call made through `approve`,
+no matter how large a `threshold` is passed, and a smaller `extend_to` on a
+later `approve` can genuinely SHRINK the live-until relative to an earlier
+one -- the opposite of "never-reduce" as an end-to-end property of repeated
+`approve` calls, even though `_extended_live_until`'s own never-reduce
+arithmetic is unconditionally correct for the (reset) state it is handed.
+`threshold`/`extend_to` are still real, forwarded parameters -- they are
+exactly the values `env.py`'s TTL algebra takes for any OTHER keyed-bucket
+call that is NOT preceded by a write to the same key, which is what
+`tests/unit/test_examples.py`'s dedicated test demonstrates, and what
+`tests/unit/test_env_ttl.py` proves end to end for the algebra itself.
 
 ## The expiry story, and where it stops being provable
 
@@ -68,7 +85,7 @@ legs agree (minus the expiry scenario, which only tier 1 can run):
     with env.frame():
         token.mint(env, admin, owner, U32(100))
         token.approve(env, owner, spender, U32(40), U32(0), U32(1000))
-        token.transfer_from(env, spender, owner, to, U32(10))   # -> None
+        token.transfer_from(env, spender, owner, to, U32(10), U32(0), U32(1000))  # -> None
 """
 
 from serpent import (
@@ -177,10 +194,11 @@ class AllowanceToken:
         allowance entry's TTL.
 
         `owner.require_auth()` is the whole point: only the account granting
-        the allowance may set it. The `extend_ttl` call is `env.py`'s
-        threshold-guard/never-reduce algebra applied to a REAL allowance entry
-        -- a later `approve` with a smaller `extend_to` cannot shorten a
-        live-until an earlier call already set.
+        the allowance may set it. `threshold`/`extend_to` are forwarded to
+        `extend_ttl` verbatim -- but because the write just above always
+        resets this entry's live-until first, the threshold can never
+        actually BLOCK a call made through `approve` (the module docstring
+        explains why, and why that is not a bug).
         """
         owner.require_auth()
         key = AllowanceKey(owner=owner, spender=spender)
@@ -189,22 +207,27 @@ class AllowanceToken:
         Approval(owner=owner, spender=spender, amount=amount).publish(env)
 
     def transfer_from(
-        self, env: Env, spender: Address, owner: Address, to: Address, amount: U32
+        self,
+        env: Env,
+        spender: Address,
+        owner: Address,
+        to: Address,
+        amount: U32,
+        threshold: U32,
+        extend_to: U32,
     ) -> None:
         """Move `amount` from `owner` to `to`, consuming `spender`'s allowance.
 
         `spender.require_auth()`, not `owner`'s: the owner already authorized
-        this spender, once, in `approve`. Two checks, in order, each its own
-        code: the allowance first (so a stranger with no allowance at all gets
-        the SAME answer an expired one does, per the module docstring), then
-        the balance -- both before either storage write, so a refused call
-        changes nothing.
+        this spender, once, in `approve`. The allowance is checked first (so
+        a stranger with no allowance gets the SAME answer an expired one
+        does), then the balance -- both before either write, so a refused
+        call changes nothing.
 
-        One tier-1 wrinkle worth knowing (`env.py`'s `set` docstring): the
-        allowance's re-`set` below resets ITS OWN live-until to "never
-        extended", exactly as any other write to a keyed bucket does. A spent
-        allowance is therefore immortal again until the next `approve`
-        extends it -- a model consequence, not a rule this contract enforces.
+        The re-`set()` below is followed by its OWN `extend_ttl`: without it
+        the reducing write would reset the live-until to "never extended"
+        (`env.py`'s `set` docstring), making a spent allowance IMMORTAL until
+        the next `approve` -- the module docstring's extend-on-access point.
         """
         spender.require_auth()
         allowance_key = AllowanceKey(owner=owner, spender=spender)
@@ -216,6 +239,7 @@ class AllowanceToken:
         if owner_balance < amount:
             raise AllowanceError.InsufficientBalance
         env.storage().temporary().set(allowance_key, allowance - amount)
+        env.storage().temporary().extend_ttl(allowance_key, threshold, extend_to)
         env.storage().persistent().set(owner_key, owner_balance - amount)
         to_key = BalanceKey(owner=to)
         to_balance = env.storage().persistent().get(to_key, U32, default=U32(0))
