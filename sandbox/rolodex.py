@@ -1,7 +1,7 @@
-"""Rolodex: a very simple address<->name mapper contract
-"""
+"""Rolodex: a very simple address<->name mapper contract"""
 
 from serpent import Address, Bool, Env, String, contract, contracterror, contracttype, errorcode
+
 
 @contracterror
 class Error:
@@ -19,12 +19,16 @@ class Error:
 @contracttype
 class NameKey:
     """The Name(Address) storage key: one persistent entry per address. value stored is the `String` name."""
+
     address: Address
+
 
 @contracttype
 class AddyKey:
     """The Addy(String) storage key: one persistent entry per name. value stored is the `Address`"""
+
     name: String
+
 
 @contract
 class RolodexContract:
@@ -100,7 +104,6 @@ class RolodexContract:
         env.storage().persistent().set(AddyKey(name=new_name), addy)
         # Delete the (old) Addy(String) -> Address entry
         env.storage().persistent().del_(AddyKey(name=old_name))
-
 
     def get_address_for_name(self, env: Env, name: String) -> Address:
         key = AddyKey(name=name)

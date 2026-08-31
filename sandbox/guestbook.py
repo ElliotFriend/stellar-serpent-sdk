@@ -1,7 +1,18 @@
-"""Guestbook: Can we reinvent the wheel?
-"""
+"""Guestbook: Can we reinvent the wheel?"""
 
-from serpent import Address, Bool, Env, Symbol, String, U32, contract, contracttype, contracterror, errorcode
+from serpent import (
+    U32,
+    Address,
+    Bool,
+    Env,
+    String,
+    Symbol,
+    contract,
+    contracterror,
+    contracttype,
+    errorcode,
+)
+
 
 @contracttype
 class Message:
@@ -10,19 +21,23 @@ class Message:
     title: String
     text: String
 
+
 @contracttype
 class MessageKey:
     message: U32
 
+
 ADMIN = Symbol("ADMIN")
 COUNT = Symbol("COUNT")
 
+
 @contracterror
 class Error:
-    InvalidMessage = errorcode(1) # The provided message is malformed in some way.
-    NoSuchMessage = errorcode(2) # The message requested does not exist.
-    UnauthorizedToEdit = errorcode(3) # Address is not allowed to edit this message.
-    NoDonations = errorcode(4) # Contract has no donations to claim.
+    InvalidMessage = errorcode(1)  # The provided message is malformed in some way.
+    NoSuchMessage = errorcode(2)  # The message requested does not exist.
+    UnauthorizedToEdit = errorcode(3)  # Address is not allowed to edit this message.
+    NoDonations = errorcode(4)  # Contract has no donations to claim.
+
 
 def save_message(env: Env, message: Message) -> U32:
     message_count = env.storage().instance().get(COUNT, U32, default=0)
@@ -33,12 +48,14 @@ def save_message(env: Env, message: Message) -> U32:
 
     return message_count
 
+
 def get_message(env: Env, message_id: U32) -> Message:
     message_key = MessageKey(message=message_id)
     if env.storage().persistent().has(message_key) != Bool(True):
         raise Error.NoSuchMessage
 
     return env.storage().persistent().get(message_key, Message)
+
 
 @contract
 class GuestbookContract:
@@ -120,7 +137,6 @@ class GuestbookContract:
         )
 
         env.storage().persistent().set(MessageKey(message=message_id), mod_message)
-
 
     def read_message(self, env: Env, message_id: U32) -> Message:
         """Read a specified message from the guestbook.
