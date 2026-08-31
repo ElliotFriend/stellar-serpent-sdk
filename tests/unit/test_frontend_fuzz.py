@@ -1044,8 +1044,9 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
 
     The `fixtures/` and `examples/` lists are asserted EXACTLY rather than as a
     floor, so adding a contract is a deliberate act: Task 13 promoted the two
-    `sandbox/` contracts into `tests/fixtures/` (F.2.8) and M1-E added
-    `examples/`, and each joined this corpus automatically -- which is the
+    `sandbox/` contracts into `tests/fixtures/` (F.2.8), M1-E added
+    `examples/`, and M1-E Task 9 added `env_surface.py` (the E9 scenario
+    table's contract) -- each joined this corpus automatically, which is the
     intended behavior, and updating these lines is how it gets acknowledged.
     """
     must_reject = [name for name, _ in CORPUS if name.startswith("must_reject/")]
@@ -1053,6 +1054,7 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     examples = [name for name, _ in CORPUS if name.startswith("examples/")]
     assert len(must_reject) >= 94, len(must_reject)
     assert sorted(fixtures) == [
+        "fixtures/env_surface.py",
         "fixtures/sandbox_counter.py",
         "fixtures/sandbox_hello_world.py",
         "fixtures/spike1_reauthored.py",
