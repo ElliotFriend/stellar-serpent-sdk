@@ -103,6 +103,25 @@ class EnvSurface:
     def read_instance_or(self, env: Env, key: Symbol, fallback: U32) -> U32:
         return env.storage().instance().get(key, U32, default=fallback)
 
+    def read_instance_or_zero(self, env: Env, key: Symbol) -> U32:
+        """A RAW-LITERAL `default=`, not a chain value -- the cross-tier pin.
+
+        M1-C ADOPTS a literal in a typed position, so the compiled form's
+        `IfExp` orelse is `U32(0)` and the WASM leg answers a chain `U32`. The
+        tier-1 model has to adopt through `ty` the same way
+        (`_StorageBucket.get`), or the two legs agree about the answer's VALUE
+        and disagree about its TYPE -- silently, because `U32(0) == 0`. The
+        differential compares `answer_type`, which is what turns that into a
+        failure.
+
+        `mypy --strict` cannot see M1-C's adoption: it solves `_T` against both
+        `U32` (from `ty`) and `int` (from `default`) and gets `object`, so the
+        return carries the one narrow ignore code that names exactly that. It
+        is the only place in the repo that spells the shape, and the reason a
+        contract normally writes `default=U32(0)`.
+        """
+        return env.storage().instance().get(key, U32, default=0)  # type: ignore[return-value]
+
     def has_instance(self, env: Env, key: Symbol) -> Bool:
         return env.storage().instance().has(key)
 

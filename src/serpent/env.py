@@ -315,6 +315,21 @@ def tag_of_chain_value(value: ChainValue | None) -> str:
     raise TypeError(f"not a chain value: {value!r}")
 
 
+def _is_chain_value(value: object) -> bool:
+    """Whether `value` is ALREADY a chain value -- the `ChainValue` alias, asked
+    at runtime.
+
+    The alias itself (`_ChainValue[Any] | Vec | Map | Struct`) is a static type
+    and cannot be `isinstance`d, so its four arms are spelled out here, in the
+    one place that needs the runtime answer: `get`'s default adoption, which
+    passes a chain value straight through and adopts anything else through the
+    requested type. `Struct` is a Protocol with a non-method member, which is
+    why it is matched by `isinstance` and not `issubclass` (the same reason
+    `_families_of_ty` gives).
+    """
+    return isinstance(value, (_ChainValue, Vec, Map, Struct))
+
+
 def _ty_members(ty: object) -> tuple[object, ...]:
     """`ty`'s non-`None` members: the union's arms, or `ty` itself."""
     origin = get_origin(ty)
@@ -843,19 +858,43 @@ class _StorageBucket:
         * a hit is TAG-CHECKED against `ty` (`_require_ty`), failing with
           `AbiCheckFailed` exactly where the emitter's narrow check fails.
 
-        A miss WITH a `default` returns that default as-is, un-copied and
-        un-checked -- deliberately, because the compiled form is an `IfExp`
-        whose `orelse` IS the default expression: no host call, no narrowing,
-        and the caller's own object is the value of the whole expression at
-        both tiers. (The frontend's escape analysis marks a container passed to
-        `default=` accordingly.)
+        A miss WITH a `default` has two halves, because the compiled form is an
+        `IfExp` whose `orelse` IS the default EXPRESSION -- no host call and no
+        narrowing -- and what that expression evaluates to depends on how it was
+        written:
+
+        * a default that is already a CHAIN VALUE comes back as-is, un-copied
+          and un-checked (ruling E5): the caller's own object is the value of
+          the whole expression at both tiers;
+        * a default that is NOT a chain value -- a raw `0`, `True`, `"NAME"`,
+          `b"\\x01"` -- is ADOPTED through `ty` (`ty(default)`), because that is
+          what the compiled tier does: `default=0` in this typed position is
+          M1-C literal adoption, so the compiled `orelse` is `U32(0)`, and a
+          model that answered the Python `0` would diverge SILENTLY (`U32(0) ==
+          0` is True, so a type-blind assertion goes green). If `ty` refuses the
+          value, its OWN error propagates unsoftened -- `U32(-1)` raises
+          `ValueError` here exactly where the frontend reports `SPT3004`.
+
+        `default=None` is the NO-DEFAULT sentinel, not a default of `None`: an
+        explicit `default=None` raises `MissingValue` like a bare `get`. No
+        compiled contract can reach that spelling -- the frontend refuses `None`
+        in this position with `SPT3018` -- so the sentinel is a tier-1 signature
+        detail, not a semantics the two tiers have to agree on.
+
+        (The frontend's escape analysis marks a container passed to `default=`
+        accordingly.)
         """
         _require_frame(self._env, f"a {self._DURABILITY_NAME} storage read")
         entry = self._entry_key(key)
         if self._absent(entry):
-            if default is not None:
+            if default is None:
+                raise MissingValue(f"no {self._DURABILITY_NAME} storage entry for {key!r}")
+            if _is_chain_value(default):
                 return default
-            raise MissingValue(f"no {self._DURABILITY_NAME} storage entry for {key!r}")
+            # `ty` is `type[_T]`, whose __init__ signature is unknown to the
+            # checker; the adoption is exactly the compiled tier's, and the
+            # constructor's own error is left to propagate.
+            return cast("Callable[[object], _T]", ty)(default)
         stored = self._store[entry]
         _require_ty(stored, ty)
         return cast("_T", copy.deepcopy(stored))

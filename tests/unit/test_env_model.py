@@ -217,6 +217,58 @@ def test_a_default_is_returned_for_an_absent_key_and_never_ty_checked() -> None:
     assert bucket.get(Symbol("k"), U32, U32(9)) == U32(1)
 
 
+def test_a_chain_value_default_comes_back_as_the_identical_object() -> None:
+    """Ruling E5's default half, as an IDENTITY assertion.
+
+    The compiled form is an `IfExp` whose `orelse` IS the default expression,
+    so no host call and no copy stand between the author's object and the value
+    of the whole expression. `==` cannot see the difference between "returned
+    the object" and "returned a copy of it"; `is` can.
+    """
+    bucket = deployed_env().storage().persistent()
+    default = U32(9)
+    assert bucket.get(Symbol("absent"), U32, default=default) is default
+
+
+def test_a_raw_default_is_adopted_through_the_requested_type() -> None:
+    """The cross-tier fix: a NON-chain default is adopted through `ty`.
+
+    `default=0` compiles -- M1-C adopts a literal in a typed position, so the
+    compiled tier's `IfExp` orelse is the ADOPTED `U32(0)`. A tier-1 model that
+    handed back the raw Python `0` would diverge SILENTLY, because `U32(0) == 0`
+    is True and a type-blind assertion goes green either way. `type(...) is` is
+    what makes it a failure.
+    """
+    bucket = deployed_env().storage().persistent()
+    got = bucket.get(Symbol("absent"), U32, default=0)
+    assert got == U32(0)
+    assert type(got) is U32
+    # Every scalar family the adoption reaches, not just the integers.
+    assert type(bucket.get(Symbol("absent"), Bool, default=True)) is Bool
+    assert type(bucket.get(Symbol("absent"), Symbol, default="NAME")) is Symbol
+    assert type(bucket.get(Symbol("absent"), Bytes, default=b"\x01")) is Bytes
+
+
+def test_a_raw_default_the_requested_type_refuses_raises_the_types_own_error() -> None:
+    """Adoption does not soften the constructor: `ty`'s own loud error wins.
+
+    A model that swallowed this (returning the raw value, or `None`) would hide
+    a value the chain cannot represent behind a green test.
+    """
+    bucket = deployed_env().storage().persistent()
+    with pytest.raises((ValueError, TypeError, OverflowError)):
+        bucket.get(Symbol("absent"), U32, default=-1)
+
+
+def test_an_explicit_none_default_is_the_no_default_case() -> None:
+    """`default=None` is the sentinel, at both tiers: tier 1 raises
+    `MissingValue` exactly as a bare `get` does, and the compiled tier refuses
+    the spelling outright (`SPT3018`), so no contract can reach this."""
+    bucket = deployed_env().storage().persistent()
+    with pytest.raises(MissingValue):
+        bucket.get(Symbol("absent"), U32, default=None)
+
+
 def test_del_of_an_absent_key_is_a_silent_no_op() -> None:
     """Mirrors the mini-host (`hostfns.py:365-370`), and is an UNVERIFIED
     assumption about the real host -- see `del_`'s own docstring."""

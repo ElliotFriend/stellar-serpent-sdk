@@ -260,6 +260,20 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         expect=U32(7),
     ),
     EnvScenario(
+        # The RAW-LITERAL default row: `default=0`, not `default=U32(0)`. The
+        # compiled tier ADOPTS the literal (M1-C, typed position), so the
+        # `IfExp` orelse is `U32(0)`; a tier-1 model that handed back the Python
+        # `0` would agree with this row's `expect` and disagree with the WASM leg
+        # about the answer's TYPE. Both the two-leg compare and the
+        # `answer_type` assertion against `expect` catch it.
+        name="instance_get_with_a_raw_literal_default_adopts_it_as_a_chain_value",
+        contract=ENV_SURFACE,
+        setup=(Call("put_instance", (_K, U32(7))),),
+        invoke=Call("read_instance_or_zero", (_OTHER_KEY,)),
+        kind="value",
+        expect=U32(0),
+    ),
+    EnvScenario(
         name="instance_has_is_false_before_the_write",
         contract=ENV_SURFACE,
         invoke=Call("has_instance", (_K,)),
