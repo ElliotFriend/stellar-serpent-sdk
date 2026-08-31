@@ -42,12 +42,24 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   Suite 3947/2skip, all gates green on main. Carried obligations live in
   `.superpowers/sdd/2026-08-28-m1e-env-runtime/final-review-attention.md`
   (kept, like M1-C/D's) — F/G/M2 items plus the parked triage.
-- **NEXT: M1-E2** (tagged unions + int enums addendum — decisions.md
-  2026-08-31; its dossier must ingest the method-parameter `topic`
-  refusal direction and the SPT3019 relax-to-32 pass), then F (testing
-  tiers), G (CLI as a Stellar CLI plugin). M1 ENDS with a user-approved
-  testnet deployment (HARD STOP — Elliot must explicitly approve it
-  in-session).
+- **M1-E2 (tagged unions + int enums): IN PROGRESS on branch
+  `m1e2-unions`** — dossier (byte-verified against real Rust builds) at
+  specs/2026-08-31-m1e2-inputs-dossier.md; rulings E1-E13 + plan-review
+  rulings in decisions.md (2026-08-31); plan v2 at
+  plans/2026-08-31-m1e2-unions.md (10 tasks / 12 commits). **Tasks 1-2
+  of 10 complete** (the value layer: ContractUnion/ContractEnum +
+  variant()/enumvalue() descriptors, tier-1 tag()/payload(); the
+  declaration layer: @contractunion/@contractenum, the limits.py
+  case-name rerouting, six new SPT4xxx/5xxx rows, serpent.__all__ +6).
+  Suite 4088/2skip, all gates green at 4524506. **RESUME AT TASK 3**
+  (spec entries), then 4-10, the Fable whole-branch review, one fix
+  wave, local merge. The ledger
+  (.superpowers/sdd/2026-08-31-m1e2-unions/progress.md) is the map and
+  carries the booked debts (discriminant rename; the M1-E
+  event-convention unbridged raises; SPT4012 wording).
+- Then F (testing tiers), G (CLI as a Stellar CLI plugin). M1 ENDS with
+  a user-approved testnet deployment (HARD STOP — Elliot must
+  explicitly approve it in-session).
 
 ## How each sub-plan runs (the loop that built A, B, C)
 
