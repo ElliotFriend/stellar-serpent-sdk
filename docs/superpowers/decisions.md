@@ -659,6 +659,37 @@ Format:
   E8/E11 registry edits are the usual append-only-discipline sanctions;
   every scope restriction in the dossier's §D table is additive to relax.
 
+## 2026-08-31 M1-E2 plan-review rulings (all findings adopted)
+- Context: adversarial review of the M1-E2 plan — 5 blockers, 8 majors, 12
+  minors, all probe-evidenced (triage record:
+  .superpowers/sdd/2026-08-31-m1e2-unions/plan-review.md). Zero disputes;
+  plan v2 integrates every fix. The structural adoptions:
+- Case-name validation routes through `limits.py`, not the decorator: the
+  kind gate widens to union/int-enum, `_check_cases` gains per-kind
+  limits (32 via SCSYMBOL_LIMIT for union variants, 60 for int-enum
+  cases), and the decorator CEDES case-name checking (its 30-cap SPT5001
+  route was an accepts-shrink vs ruling E8). SPT5002 re-attributed to
+  `limits._check_type_name` — both sanctioned widenings now have a
+  reachable emission path, which the plan's v1 route lacked.
+- Deliberate-error typing fixtures get NO new excluded directory: positive
+  halves are compilable tests/fixtures/ modules under the normal gates;
+  negatives run through a tmp_path mypy subprocess helper with a smoke
+  test so a no-op invocation cannot pass (the M1-C E15
+  excluded-directory precedent explicitly does not apply).
+- The stale-promise gate's (path, line) allowlist is a named blast-radius
+  hazard: every task that grows codes.py or the pinned test files carries
+  the allowlist-line update in its own commit.
+- Two plan-author corrections to the rulings' letter RATIFIED: the
+  emitter's Const dispatch widens at BOTH U32-tag sites (`_lower_const`
+  AND `_static_word`, with a needs_memory honesty pin) — E3's "zero
+  emitter change for enums" was the dossier's overstatement; and
+  MakeUnion carries its variant-name Symbol as a frontend-built Const
+  inside `items` so ir.walk's reflective traversal reaches the literal
+  pool (>9-char variant names must intern).
+- Reversal cost: per-item low pre-execution; the limits.py routing is the
+  one with public-diagnostic consequences and it lands with fixtures
+  pinning both kinds' messages.
+
 ## 2026-08-27 M1-C final-review minors folded into parked passes
 - Minors 2 and 3 from the final whole-branch review (registry intent strings
   hardcode limit numbers; frontend.py imports _host._protocol via the private
