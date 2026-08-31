@@ -109,6 +109,15 @@ class TokenStyle:
         key = BalanceKey(owner=owner)
         return env.storage().persistent().get(key, U32, default=U32(0))
 
+    # UNENFORCED BY DESIGN: the `admin` here is a caller-supplied PARAMETER, so
+    # `require_auth` is applied to whichever address the caller names rather
+    # than to the `ADMIN` this contract stored -- anyone can mint by naming
+    # themselves. The shape is kept because this fixture is chain-anchored (it
+    # mirrors a Rust original, and its shape is what the goldens and the spec
+    # entries are pinned to), not because it is the shape to copy.
+    # `examples/allowance_token.py`'s `mint` is the ENFORCED form: it drops the
+    # parameter, reads `ADMIN` back out of instance storage, and authorizes
+    # that.
     def mint(self, env: Env, admin: Address, to: Address, amount: U32) -> None:
         admin.require_auth()
         key = BalanceKey(owner=to)

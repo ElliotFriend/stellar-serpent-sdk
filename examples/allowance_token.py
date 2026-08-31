@@ -78,13 +78,23 @@ that eventually proves it against a real host.
 ## `require_auth`, on the party that is actually acting
 
 Three methods call it, each on the address whose funds or allowance the call
-moves: `mint` on the admin (only the admin may create balance out of nothing),
-`approve` on the owner (only the owner may authorize a spender), and
+moves: `mint` on the STORED admin (only the admin may create balance out of
+nothing), `approve` on the owner (only the owner may authorize a spender), and
 `transfer_from` on the SPENDER (not the owner -- the owner already authorized
 this spender once, in `approve`; requiring the owner's auth again on every
 `transfer_from` would defeat the entire point of an allowance). This is the
 full authorized shape `examples/errors.py`'s `set_limit` docstring points at
 and deliberately does not show itself.
+
+**Why `mint` takes no `admin` argument, and reads the key instead.** An `admin`
+PARAMETER is authorized exactly as passed, so any caller could name themselves
+and supply their own authorization: the docstring would promise "only the admin
+may" while the code checked "only whoever you say may", and the constructor's
+`ADMIN` entry would be write-only state nothing ever consults. Reading the
+stored address back is what makes the promise enforceable, and it is what that
+write is FOR. (`tests/fixtures/token_style.py`'s `mint` keeps the
+caller-supplied shape deliberately -- it is chain-anchored to a Rust original,
+and a comment there points here for the enforced form.)
 
 Run it two ways -- `tests/unit/test_examples.py` does both and asserts the two
 legs agree (minus the expiry scenario, which only tier 1 can run):
@@ -94,7 +104,7 @@ legs agree (minus the expiry scenario, which only tier 1 can run):
     env = Env()
     token = deploy(AllowanceToken, env, admin)
     with env.frame():
-        token.mint(env, admin, owner, U32(100))
+        token.mint(env, owner, U32(100))
         token.approve(env, owner, spender, U32(40))
         token.transfer_from(env, spender, owner, to, U32(10))   # -> None
 """
@@ -171,13 +181,26 @@ class AllowanceToken:
     """Balances in `persistent()`, allowances in `temporary()` with a TTL."""
 
     def __init__(self, env: Env, admin: Address) -> None:
-        """Store the admin. No ceiling, no laundering caveat here -- this
-        constructor cannot fail (`examples/errors.py` is where that story is
-        told)."""
+        """Store the admin -- the entry `mint` reads back to decide whose
+        authorization it requires. No ceiling, no laundering caveat here --
+        this constructor cannot fail (`examples/errors.py` is where that story
+        is told)."""
         env.storage().instance().set(ADMIN, admin)
 
-    def mint(self, env: Env, admin: Address, to: Address, amount: U32) -> None:
-        """Create `amount` of balance for `to`. Only the admin may."""
+    def mint(self, env: Env, to: Address, amount: U32) -> None:
+        """Create `amount` of balance for `to`. Only the STORED admin may.
+
+        The admin is NOT a parameter: it is read back out of the instance entry
+        the constructor wrote, and `require_auth()` is called on THAT address.
+        A `mint(env, admin, to, amount)` that authorized whichever address the
+        caller handed it would document a check it does not perform -- anyone
+        could name themselves and supply their own authorization -- and the
+        stored `ADMIN` would be write-only state. The bare `get` (no
+        `default=`) is deliberate too: the constructor always writes the key, so
+        a miss is a broken instance and a trap is the honest answer, not an
+        invented admin.
+        """
+        admin = env.storage().instance().get(ADMIN, Address)
         admin.require_auth()
         key = BalanceKey(owner=to)
         current = env.storage().persistent().get(key, U32, default=U32(0))

@@ -6,15 +6,15 @@
 ;;     SERPENT_REGEN_GOLDENS=1 uv run pytest tests/unit/test_emitter_printer.py
 ;; and READ THE DIFF: a change here is a behavioral change to what sub-plan D
 ;; emits, not noise.
-;; wasm module: 4890 byte(s), 10 section(s)
+;; wasm module: 5564 byte(s), 10 section(s)
 ;; type section: 5 entry(ies)
 ;; import section: 10 entry(ies)
 (import "x" "5" (func $fail_with_error (param i64) (result i64)))
 (import "l" "_" (func $put_contract_data (param i64 i64 i64) (result i64)))
-(import "a" "0" (func $require_auth (param i64) (result i64)))
-(import "m" "9" (func $map_new_from_linear_memory (param i64 i64 i64) (result i64)))
 (import "l" "0" (func $has_contract_data (param i64 i64) (result i64)))
 (import "l" "1" (func $get_contract_data (param i64 i64) (result i64)))
+(import "a" "0" (func $require_auth (param i64) (result i64)))
+(import "m" "9" (func $map_new_from_linear_memory (param i64 i64 i64) (result i64)))
 (import "l" "7" (func $extend_contract_data_ttl (param i64 i64 i64 i64) (result i64)))
 (import "v" "_" (func $vec_new (result i64)))
 (import "v" "6" (func $vec_push_back (param i64 i64) (result i64)))
@@ -54,8 +54,8 @@ end
 )
 
 ;; func[1] (combined index 11)
-(func $mint (param i64 i64 i64) (result i64)
-  (local i64 i64 i64 i64 i64 i64 i64)
+(func $mint (param i64 i64) (result i64)
+  (local i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64)
   local.get 0
   i64.const 255
   i64.and
@@ -67,16 +67,6 @@ end
     drop
   end
   local.get 1
-  i64.const 255
-  i64.and
-  i64.const 77
-  i64.ne
-  if
-    i64.const -21474836477
-    call $fail_with_error
-    drop
-  end
-  local.get 2
   i64.const 4294967295
   i64.and
   i64.const 4
@@ -86,11 +76,39 @@ end
     call $fail_with_error
     drop
   end
-  local.get 0
+  i64.const 52571740430
+  local.set 5
+  i64.const 2
+  local.set 6
+  local.get 5
+  local.get 6
+  call $has_contract_data
+  i64.eqz
+  if
+    i64.const -12884901885
+    call $fail_with_error
+    drop
+  end
+  local.get 5
+  local.get 6
+  call $get_contract_data
+  local.tee 7
+  local.get 7
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.set 2
+  local.get 2
   call $require_auth
   drop
   i32.const 4096
-  local.get 1
+  local.get 0
   i64.store offset=0 align=3
   i64.const 34359738372
   i64.const 17592186044420
@@ -98,19 +116,19 @@ end
   call $map_new_from_linear_memory
   local.set 3
   local.get 3
-  local.set 5
+  local.set 8
   i64.const 1
-  local.set 6
-  local.get 5
-  local.get 6
+  local.set 9
+  local.get 8
+  local.get 9
   call $has_contract_data
   i32.wrap_i64
   if (result i64)
-    local.get 5
-    local.get 6
+    local.get 8
+    local.get 9
     call $get_contract_data
-    local.tee 7
-    local.get 7
+    local.tee 10
+    local.get 10
     i64.const 4294967295
     i64.and
     i64.const 4
@@ -128,11 +146,11 @@ end
   local.get 4
   i64.const 32
   i64.shr_u
-  local.get 2
+  local.get 1
   i64.const 32
   i64.shr_u
   i64.add
-  local.tee 8
+  local.tee 11
   i64.const 4294967295
   i64.gt_u
   if
@@ -140,8 +158,8 @@ end
     call $fail_with_error
     drop
   end
-  local.get 8
-  local.tee 9
+  local.get 11
+  local.tee 12
   i64.const 4294967295
   i64.gt_u
   if
@@ -149,7 +167,7 @@ end
     call $fail_with_error
     drop
   end
-  local.get 9
+  local.get 12
   i64.const 32
   i64.shl
   i64.const 4
@@ -679,5 +697,5 @@ end
 
 ;; custom sections: 3
 (custom "contractenvmetav0" 12 payload byte(s))
-(custom "contractspecv0" 3044 payload byte(s))
+(custom "contractspecv0" 3676 payload byte(s))
 (custom "contractmetav0" 64 payload byte(s))

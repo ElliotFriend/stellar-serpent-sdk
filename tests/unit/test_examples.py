@@ -47,7 +47,7 @@ import pytest
 from serpent import val
 from serpent.compiler.frontend import compile_module
 from serpent.compiler.ir import FuncKind
-from serpent.env import ConstructorFailed, Env, deploy
+from serpent.env import AuthorizationFailed, ConstructorFailed, Env, deploy
 from serpent.errors import ContractError
 from serpent.types import U32, Address, String, Symbol, Vec
 from tests.harness import engine
@@ -464,7 +464,7 @@ def test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm() ->
     admin, owner, spender, to = _allowance_token_roles()
     token = deploy(module.AllowanceToken, env, admin)
     with env.frame():
-        token.mint(env, admin, owner, U32(100))
+        token.mint(env, owner, U32(100))
         token.approve(env, owner, spender, U32(200))
         token.transfer_from(env, spender, owner, to, U32(25))
         tier_1_events = env.published_events
@@ -486,7 +486,7 @@ def test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm() ->
     spender_w = host.val_word(spender)
     to_w = host.val_word(to)
     assert mini.invoke("__constructor", admin_w) == val.VOID_VAL
-    assert mini.invoke("mint", admin_w, owner_w, val.pack_u32val(100)) == val.VOID_VAL
+    assert mini.invoke("mint", owner_w, val.pack_u32val(100)) == val.VOID_VAL
     assert mini.invoke("approve", owner_w, spender_w, val.pack_u32val(200)) == val.VOID_VAL
     assert host.count("extend_contract_data_ttl") == 1  # approve's own call
     assert (
@@ -535,22 +535,62 @@ def test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm() ->
 
 
 def test_the_allowance_token_example_records_auth_for_admin_owner_and_spender() -> None:
-    """`require_auth` is called on a DIFFERENT address per method -- the admin
-    in `mint`, the owner in `approve`, and the SPENDER (not the owner again)
-    in `transfer_from` -- which is the full authorized shape
+    """`require_auth` is called on a DIFFERENT address per method -- the STORED
+    admin in `mint` (read back out of instance storage, not a parameter), the
+    owner in `approve`, and the SPENDER (not the owner again) in
+    `transfer_from` -- which is the full authorized shape
     `examples/errors.py`'s `set_limit` docstring points at and deliberately
     does not show. `recorded_auths` is the whole tier-1 auth model
     (mock-all-auths, S4): each call is recorded, in order, and nothing else is.
+
+    The recorded admin is EQUAL to the deployed one and not the same object
+    (`get` hands back a deep copy, ruling E5), which is exactly the claim: the
+    address authorized came out of the store.
     """
     module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
     env = Env()
     admin, owner, spender, to = _allowance_token_roles()
     token = deploy(module.AllowanceToken, env, admin)
     with env.frame():
-        token.mint(env, admin, owner, U32(100))
+        token.mint(env, owner, U32(100))
         token.approve(env, owner, spender, U32(40))
         token.transfer_from(env, spender, owner, to, U32(10))
     assert env.recorded_auths == ((admin, None), (owner, None), (spender, None))
+    assert env.recorded_auths[0][0] is not admin
+
+
+def test_the_allowance_tokens_mint_enforces_the_stored_admin() -> None:
+    """`mint` has no `admin` parameter: it reads `ADMIN` back and authorizes
+    THAT address, so the constructor's write is what decides who may mint.
+
+    Pinned through an allow-set (S4) rather than through `recorded_auths`,
+    because the allow-set is the only tier-1 surface that can REFUSE: the same
+    `mint(env, owner, U32(1))` call succeeds on an env whose allow-set holds the
+    stored admin and fails on one that holds everybody else. The older shape --
+    `mint(env, admin, to, amount)` authorizing its own argument -- could not
+    fail this way at all: a caller simply named an address it could authorize.
+
+    Tier-1 only, and for a reason the mini host owns: its `require_auth` records
+    and always succeeds (there is no authorization state to consult), so an
+    allow-set refusal has no WASM leg here. `tests/semantics/env_scenarios.py`'s
+    `ALLOW_SET_REASON` is the same limitation, stated for the table.
+    """
+    module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
+    admin, owner, spender, _to = _allowance_token_roles()
+
+    allowed = Env(auths=(admin,))
+    token = deploy(module.AllowanceToken, allowed, admin)
+    with allowed.frame():
+        token.mint(allowed, owner, U32(1))
+        assert token.balance(allowed, owner) == U32(1)
+
+    refused = Env(auths=(owner, spender))
+    other = deploy(module.AllowanceToken, refused, admin)
+    with refused.frame(), pytest.raises(AuthorizationFailed):
+        other.mint(refused, owner, U32(1))
+    with refused.frame():
+        # The refusal is not a partial write: nothing was credited.
+        assert other.balance(refused, owner) == U32(0)
 
 
 def test_the_allowance_tokens_approve_always_reextends_from_the_current_sequence() -> None:
@@ -579,7 +619,7 @@ def test_the_allowance_tokens_approve_always_reextends_from_the_current_sequence
     admin, owner, spender, _to = _allowance_token_roles()
     token = deploy(module.AllowanceToken, env, admin)
     with env.frame():
-        token.mint(env, admin, owner, U32(100))
+        token.mint(env, owner, U32(100))
         token.approve(env, owner, spender, U32(10))  # live-until = sequence + extend_to
     env.advance(1)
     with env.frame():
@@ -626,7 +666,7 @@ def test_the_allowance_expires_and_transfer_from_then_fails_with_the_authors_err
     admin, owner, spender, to = _allowance_token_roles()
     token = deploy(module.AllowanceToken, env, admin)
     with env.frame():
-        token.mint(env, admin, owner, U32(50))
+        token.mint(env, owner, U32(50))
         token.approve(env, owner, spender, U32(50))
         assert token.allowance(env, owner, spender) == U32(50)
 
