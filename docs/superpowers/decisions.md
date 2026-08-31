@@ -531,6 +531,27 @@ Format:
   four-site edit list is dead barring a Task 2 surprise.
 - Reversal cost: per-item low pre-execution.
 
+## 2026-08-31 Tagged unions / int enums get a late-M1 addendum sub-plan
+- Context: Elliot caught (2026-08-28, journal-captured) that tagged unions
+  and int enums have no authoring surface and no sub-plan schedule, despite
+  spec §2's conventions (union → Vec led by variant Symbol; int enum → u32)
+  and §11's M1 scope sentence naming "structs/unions/enums" explicitly. The
+  M1-E ledger recorded that a controller decision was owed: late-M1 addendum
+  vs an explicit M2 deferral.
+- Decision: a late-M1 addendum sub-plan (working name M1-E2, dossier → plan
+  → review → SDD, the standard loop) scheduled after the M1-E merge and
+  before M1's closing deployment. Until it lands, the documented workaround
+  stays per-variant @contracttype keys + Symbol constants (token_style's
+  shape).
+- Why: the spec is the binding authority and its M1 sentence is explicit; a
+  deferral would ship M1 incomplete against its own scope line and require
+  amending the spec instead. Sizing note: the surface touches decorators,
+  typemap, spec sections (union/enum UDT entries), frontend lowering, and
+  the emitter's descriptor inventory — a real sub-plan, not a rider on E/F.
+- Reversal cost: schedule-only today (nothing is built); Elliot can
+  downgrade it to an M2 deferral by striking this entry and adding the spec
+  amendment note.
+
 ## 2026-08-27 M1-C final-review minors folded into parked passes
 - Minors 2 and 3 from the final whole-branch review (registry intent strings
   hardcode limit numbers; frontend.py imports _host._protocol via the private
