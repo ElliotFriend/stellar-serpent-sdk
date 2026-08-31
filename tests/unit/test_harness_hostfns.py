@@ -1004,6 +1004,8 @@ _FIXTURES = (
     _ROOT / "examples" / "counter.py",
     _ROOT / "examples" / "errors.py",
     _ROOT / "examples" / "structs.py",
+    _ROOT / "examples" / "events.py",
+    _ROOT / "examples" / "allowance_token.py",
 )
 
 

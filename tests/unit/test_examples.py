@@ -49,13 +49,15 @@ from serpent.compiler.frontend import compile_module
 from serpent.compiler.ir import FuncKind
 from serpent.env import ConstructorFailed, Env, deploy
 from serpent.errors import ContractError
-from serpent.types import U32, Address, String
+from serpent.types import U32, Address, String, Symbol, Vec
 from tests.harness import engine
 from tests.unit.test_emitter_end_to_end import (
     ACCOUNT,
     CONTRACT,
+    EXAMPLE_ALLOWANCE_TOKEN,
     EXAMPLE_COUNTER,
     EXAMPLE_ERRORS,
+    EXAMPLE_EVENTS,
     EXAMPLE_STRUCTS,
     EXAMPLES,
     EXAMPLES_DIR,
@@ -68,6 +70,14 @@ from tests.unit.test_emitter_end_to_end import (
 # decode" is the drift this repo keeps avoiding (the same reason
 # `_wasm_custom_section` is imported across test modules rather than re-derived).
 from tests.unit.test_emitter_end_to_end import _answer as answer
+
+#: Two more real strkeys, beyond `ACCOUNT`/`CONTRACT`, for `allowance_token`'s
+#: four distinct roles (admin, owner, spender, recipient) -- lifted from
+#: `tests/unit/test_env_deploy.py` (`OWNER`) and `tests/unit/test_storage_key.py`
+#: (`SPENDER`) rather than hand-written, so both are strkeys already proven to
+#: decode correctly elsewhere in the suite.
+OWNER = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
+SPENDER = "GAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPSABOV"
 
 
 def load_example(path: Path) -> ModuleType:
@@ -108,18 +118,21 @@ def test_every_example_compiles(path: Path) -> None:
     module really declares a contract rather than compiling to nothing.
 
     The declared protocol is the COMPUTED floor over both kinds of gate: no
-    example reaches a gated host function, so the import floor is 20 for all
-    three -- but `errors.py` has an `__init__`, and `__constructor` is a
-    capability the host only honors from protocol 22 (spec SS 13 / CAP-0058), so
-    it declares 22. The split is derived from the module's own IR rather than
-    listed by name, so adding an `__init__` to an example cannot silently
-    invalidate the pin.
+    example reaches a gated host function, so the import floor is 20 for the
+    examples with no `__init__` -- but `errors.py` and `allowance_token.py`
+    each have one, and `__constructor` is a capability the host only honors
+    from protocol 22 (spec SS 13 / CAP-0058), so those two declare 22. The
+    split is derived from the module's own IR rather than listed by name, so
+    adding an `__init__` to an example cannot silently invalidate the pin.
     """
     compiled = compile_module(path.read_text(encoding="utf-8"), str(path))
     contract = compiled.ir.contract
     assert contract is not None
     has_constructor = any(m.kind is FuncKind.CONSTRUCTOR for m in contract.methods)
-    assert has_constructor == (path.stem == "errors"), (path.stem, has_constructor)
+    assert has_constructor == (path.stem in {"errors", "allowance_token"}), (
+        path.stem,
+        has_constructor,
+    )
     assert compiled.declared_protocol == (22 if has_constructor else 20)
 
 
@@ -341,6 +354,228 @@ def test_the_structs_examples_long_field_name_goes_through_linear_memory() -> No
     answer(host, mini, "display_name_of", member)
     assert host.count("symbol_new_from_linear_memory") > 0
     assert host.count("map_get") > 0
+
+
+# ===========================================================================
+# events: both publish spellings, a topics-marked event and an all-data one
+# ===========================================================================
+
+
+def test_the_events_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
+    """`record_score` (the AUTHORING form, topics-marked) then `record_tally`
+    (the CANONICAL form, all-data `"vec"`), both published events compared
+    between tier 1 and WASM as decoded chain values.
+
+    `record_tally`'s data is a `VecObject` on the WASM side, so it is decoded
+    through `host._vec` element by element rather than through the single
+    `host.chain_value` call that suffices for `record_score`'s bare `U32`.
+    """
+    module = load_example(EXAMPLE_EVENTS)
+    env = Env()
+    scoreboard = deploy(module.Scoreboard, env)
+    with env.frame():
+        scoreboard.record_score(env, Address(ACCOUNT), U32(7))
+        scoreboard.record_tally(env, U32(3), U32(1))
+    (score_topics, score_data), (tally_topics, tally_data) = env.published_events
+
+    _built, host, mini = start(EXAMPLE_EVENTS)
+    player = host.val_word(Address(ACCOUNT))
+    assert mini.invoke("record_score", player, val.pack_u32val(7)) == val.VOID_VAL
+    assert mini.invoke("record_tally", val.pack_u32val(3), val.pack_u32val(1)) == val.VOID_VAL
+    (wasm_score_topics, wasm_score_data), (wasm_tally_topics, wasm_tally_data) = host.events
+    # `tally_data` is a `ChainValue` union; narrow it to `Vec` before iterating
+    # (a struct or a scalar has no `__iter__` mypy --strict can see).
+    assert isinstance(tally_data, Vec)
+
+    assert [host.chain_value(t) for t in wasm_score_topics] == list(score_topics)
+    assert host.chain_value(wasm_score_data) == score_data
+    assert [host.chain_value(t) for t in wasm_tally_topics] == list(tally_topics)
+    assert [host.chain_value(item) for item in host._vec(wasm_tally_data)] == list(tally_data)
+
+    assert score_topics == (Symbol("scored"), Address(ACCOUNT))
+    assert score_data == U32(7)
+    assert tally_topics == (Symbol("tally"),)
+    assert list(tally_data) == [U32(3), U32(1)]
+
+
+def test_the_events_examples_canonical_spelling_matches_the_authoring_forms_desugar() -> None:
+    """The equivalence claim, checked on THIS file's own all-data event.
+
+    `record_tally` hand-writes `env.events().publish((Symbol("tally"),),
+    Vec(U32, [wins, losses]))`; `Tally(wins=..., losses=...).publish(env)` is
+    the authoring form the module docstring says produces the identical
+    record. Both are published into the SAME frame here, and the two
+    `PublishedEvent` snapshots compare equal -- topics word for word (chain
+    values, via `ChainValue.__eq__`) and the `Vec` data the same way.
+    """
+    module = load_example(EXAMPLE_EVENTS)
+    env = Env()
+    scoreboard = deploy(module.Scoreboard, env)
+    with env.frame():
+        scoreboard.record_tally(env, U32(3), U32(1))
+        module.Tally(wins=U32(3), losses=U32(1)).publish(env)
+    canonical, authored = env.published_events
+    assert canonical == authored
+
+
+# ===========================================================================
+# allowance_token: the S6 allowance-style token, without cross-contract calls
+# ===========================================================================
+
+
+def test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
+    """The whole surface -- `mint`, `approve`, `transfer_from`, and both of its
+    refusals -- run identically on both legs, with no `env.advance(...)`
+    anywhere: the mini host has no TTL model at all
+    (`extend_contract_data_ttl` is a recorded no-op), so this is the
+    WITHOUT-expiry half of the cross-check the module docstring names. The
+    expiry half is tier-1 only (the dedicated test below), and sub-plan F's
+    tier 2b is where it eventually gets proven against a real host.
+
+    The two refusal codes are reached in an order that isolates each guard:
+    `transfer_from(spender, owner, to, 100)` exceeds the balance (75 left)
+    but not the allowance (175 left), so it is `InsufficientBalance`;
+    `transfer_from(to, owner, spender, 1)` uses an address with NO allowance
+    at all (`to` was never approved), so it is `InsufficientAllowance`. A
+    final read of both the balance and the allowance proves neither refusal
+    wrote anything.
+    """
+    module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
+    env = Env()
+    admin, owner, spender, to = (
+        Address(ACCOUNT),
+        Address(OWNER),
+        Address(SPENDER),
+        Address(CONTRACT),
+    )
+    token = deploy(module.AllowanceToken, env, admin)
+    with env.frame():
+        token.mint(env, admin, owner, U32(100))
+        token.approve(env, owner, spender, U32(200), U32(0), U32(1000))
+        token.transfer_from(env, spender, owner, to, U32(25))
+        tier_1 = [
+            token.balance(env, owner),
+            token.balance(env, to),
+            token.allowance(env, owner, spender),
+        ]
+        tier_1_codes = [
+            _tier_1_code(token.transfer_from, env, spender, owner, to, U32(100)),
+            _tier_1_code(token.transfer_from, env, to, owner, spender, U32(1)),
+        ]
+        tier_1.append(token.balance(env, owner))
+        tier_1.append(token.allowance(env, owner, spender))
+
+    _built, host, mini = start(EXAMPLE_ALLOWANCE_TOKEN)
+    admin_w = host.val_word(admin)
+    owner_w = host.val_word(owner)
+    spender_w = host.val_word(spender)
+    to_w = host.val_word(to)
+    assert mini.invoke("__constructor", admin_w) == val.VOID_VAL
+    assert mini.invoke("mint", admin_w, owner_w, val.pack_u32val(100)) == val.VOID_VAL
+    assert (
+        mini.invoke(
+            "approve",
+            owner_w,
+            spender_w,
+            val.pack_u32val(200),
+            val.pack_u32val(0),
+            val.pack_u32val(1000),
+        )
+        == val.VOID_VAL
+    )
+    assert (
+        mini.invoke("transfer_from", spender_w, owner_w, to_w, val.pack_u32val(25)) == val.VOID_VAL
+    )
+    from_wasm = [
+        answer(host, mini, "balance", owner_w),
+        answer(host, mini, "balance", to_w),
+        answer(host, mini, "allowance", owner_w, spender_w),
+    ]
+    from_wasm_codes = [
+        _wasm_code(mini, "transfer_from", spender_w, owner_w, to_w, val.pack_u32val(100)),
+        _wasm_code(mini, "transfer_from", to_w, owner_w, spender_w, val.pack_u32val(1)),
+    ]
+    from_wasm.append(answer(host, mini, "balance", owner_w))
+    from_wasm.append(answer(host, mini, "allowance", owner_w, spender_w))
+
+    assert from_wasm == tier_1
+    assert from_wasm_codes == tier_1_codes
+    assert tier_1 == [U32(75), U32(25), U32(175), U32(75), U32(175)]
+    assert tier_1_codes == [2, 1]  # InsufficientBalance, InsufficientAllowance
+
+
+def test_the_allowance_token_example_records_auth_for_admin_owner_and_spender() -> None:
+    """`require_auth` is called on a DIFFERENT address per method -- the admin
+    in `mint`, the owner in `approve`, and the SPENDER (not the owner again)
+    in `transfer_from` -- which is the full authorized shape
+    `examples/errors.py`'s `set_limit` docstring points at and deliberately
+    does not show. `recorded_auths` is the whole tier-1 auth model
+    (mock-all-auths, S4): each call is recorded, in order, and nothing else is.
+    """
+    module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
+    env = Env()
+    admin, owner, spender, to = (
+        Address(ACCOUNT),
+        Address(OWNER),
+        Address(SPENDER),
+        Address(CONTRACT),
+    )
+    token = deploy(module.AllowanceToken, env, admin)
+    with env.frame():
+        token.mint(env, admin, owner, U32(100))
+        token.approve(env, owner, spender, U32(40), U32(0), U32(1000))
+        token.transfer_from(env, spender, owner, to, U32(10))
+    assert env.recorded_auths == ((admin, None), (owner, None), (spender, None))
+
+
+def test_the_allowance_expires_and_transfer_from_then_fails_with_the_authors_error() -> None:
+    """E4's TTL model, the showcase spec S6's example forces (dossier §B.5.3).
+
+    `approve` grants an allowance and extends its live-until by exactly
+    `extend_to` ledgers past the current sequence (the threshold guard always
+    fires on a never-extended entry, so the whole `extend_to` applies).
+    Advancing the sequence to EXACTLY the live-until still finds the entry
+    alive (S8's "strictly past" rule, `env.py`'s `_absent`); one more ledger
+    and it reads absent, and `allowance(...)` answers `U32(0)` through its own
+    `default=` -- an expired approval and a never-made one are the same
+    contract state. `transfer_from` then refuses with THIS CONTRACT'S OWN
+    `InsufficientAllowance` (code 1), not a generic missing-value trap, which
+    is the point of reading the allowance through `default=U32(0)` rather than
+    a bare `get`.
+
+    **Not runnable on the WASM leg at all.** `tests/harness`'s mini host has no
+    TTL model (`extend_contract_data_ttl` is a recorded no-op, `env.py`'s TTL
+    section), so there is nothing to cross-check this scenario against here --
+    sub-plan F's tier 2b is where it eventually gets proven against a real
+    host.
+    """
+    module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
+    env = Env()
+    admin, owner, spender, to = (
+        Address(ACCOUNT),
+        Address(OWNER),
+        Address(SPENDER),
+        Address(CONTRACT),
+    )
+    token = deploy(module.AllowanceToken, env, admin)
+    with env.frame():
+        token.mint(env, admin, owner, U32(50))
+        token.approve(env, owner, spender, U32(50), U32(0), U32(100))
+        assert token.allowance(env, owner, spender) == U32(50)
+
+    env.advance(100)
+    with env.frame():
+        # Exactly at the live-until ledger: still alive (expiry is strict).
+        assert token.allowance(env, owner, spender) == U32(50)
+
+    env.advance(1)
+    with env.frame():
+        # One ledger past: the entry reads absent, i.e. U32(0) via `default=`.
+        assert token.allowance(env, owner, spender) == U32(0)
+        code = _tier_1_code(token.transfer_from, env, spender, owner, to, U32(1))
+        assert code == 1  # AllowanceError.InsufficientAllowance
+        # The refused call wrote nothing: the balance mint left is untouched.
+        assert token.balance(env, owner) == U32(50)
 
 
 # --- small readers -----------------------------------------------------------

@@ -1060,8 +1060,10 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
         "fixtures/token_style_canonical.py",
     ]
     assert sorted(examples) == [
+        "examples/allowance_token.py",
         "examples/counter.py",
         "examples/errors.py",
+        "examples/events.py",
         "examples/structs.py",
     ]
 

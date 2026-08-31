@@ -102,7 +102,15 @@ EXAMPLES_DIR = _ROOT / "examples"
 EXAMPLE_COUNTER = EXAMPLES_DIR / "counter.py"
 EXAMPLE_ERRORS = EXAMPLES_DIR / "errors.py"
 EXAMPLE_STRUCTS = EXAMPLES_DIR / "structs.py"
-EXAMPLES: tuple[Path, ...] = (EXAMPLE_COUNTER, EXAMPLE_ERRORS, EXAMPLE_STRUCTS)
+EXAMPLE_EVENTS = EXAMPLES_DIR / "events.py"
+EXAMPLE_ALLOWANCE_TOKEN = EXAMPLES_DIR / "allowance_token.py"
+EXAMPLES: tuple[Path, ...] = (
+    EXAMPLE_COUNTER,
+    EXAMPLE_ERRORS,
+    EXAMPLE_STRUCTS,
+    EXAMPLE_EVENTS,
+    EXAMPLE_ALLOWANCE_TOKEN,
+)
 
 #: THE fixture list this sub-plan's whole-contract properties run over. Defined
 #: here, where the contracts are built and invoked, and imported by
@@ -652,7 +660,13 @@ def test_sandbox_hello_world_refuses_the_unimaginative_greeting() -> None:
 #: the computed floor over these is 22 even though nothing they IMPORT is gated
 #: -- see `test_every_fixture_instantiates_and_declares_the_protocol_floor`.
 CONSTRUCTOR_BEARING: frozenset[Path] = frozenset(
-    {TOKEN_STYLE, TOKEN_STYLE_CANONICAL, SANDBOX_HELLO_WORLD, EXAMPLE_ERRORS}
+    {
+        TOKEN_STYLE,
+        TOKEN_STYLE_CANONICAL,
+        SANDBOX_HELLO_WORLD,
+        EXAMPLE_ERRORS,
+        EXAMPLE_ALLOWANCE_TOKEN,
+    }
 )
 
 

@@ -1,0 +1,697 @@
+;; SELF-SNAPSHOT (tests/goldens/README.md's third class, the `wasm/` rows):
+;; this is what `serpent.emitter.printer.disassemble` currently renders for
+;; `serpent.emitter.build_file("examples/allowance_token.py")`.
+;; It must NEVER be cited as evidence the wasm bytes -- or this rendering of
+;; them -- are CORRECT (B12). Regenerate with
+;;     SERPENT_REGEN_GOLDENS=1 uv run pytest tests/unit/test_emitter_printer.py
+;; and READ THE DIFF: a change here is a behavioral change to what sub-plan D
+;; emits, not noise.
+;; wasm module: 4960 byte(s), 10 section(s)
+;; type section: 6 entry(ies)
+;; import section: 10 entry(ies)
+(import "x" "5" (func $fail_with_error (param i64) (result i64)))
+(import "l" "_" (func $put_contract_data (param i64 i64 i64) (result i64)))
+(import "a" "0" (func $require_auth (param i64) (result i64)))
+(import "m" "9" (func $map_new_from_linear_memory (param i64 i64 i64) (result i64)))
+(import "l" "0" (func $has_contract_data (param i64 i64) (result i64)))
+(import "l" "1" (func $get_contract_data (param i64 i64) (result i64)))
+(import "l" "7" (func $extend_contract_data_ttl (param i64 i64 i64 i64) (result i64)))
+(import "v" "_" (func $vec_new (result i64)))
+(import "v" "6" (func $vec_push_back (param i64 i64) (result i64)))
+(import "x" "1" (func $contract_event (param i64 i64) (result i64)))
+;; memory section
+(memory (export "memory") 1)
+;; export section: 7 entry(ies)
+(export "__constructor" (func $__constructor))
+(export "mint" (func $mint))
+(export "balance" (func $balance))
+(export "allowance" (func $allowance))
+(export "approve" (func $approve))
+(export "transfer_from" (func $transfer_from))
+(export "memory" (memory 0))
+;; code section: 6 defined function(s)
+
+;; func[0] (combined index 10)
+(func $__constructor (param i64) (result i64)
+  local.get 0
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  i64.const 52571740430
+  local.get 0
+  i64.const 2
+  call $put_contract_data
+  drop
+  i64.const 2
+  return
+end
+)
+
+;; func[1] (combined index 11)
+(func $mint (param i64 i64 i64) (result i64)
+  (local i64 i64 i64 i64 i64 i64 i64)
+  local.get 0
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 1
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 2
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 0
+  call $require_auth
+  drop
+  i32.const 4096
+  local.get 1
+  i64.store offset=0 align=3
+  i64.const 34359738372
+  i64.const 17592186044420
+  i64.const 4294967300
+  call $map_new_from_linear_memory
+  local.set 3
+  local.get 3
+  local.set 5
+  i64.const 1
+  local.set 6
+  local.get 5
+  local.get 6
+  call $has_contract_data
+  i32.wrap_i64
+  if (result i64)
+    local.get 5
+    local.get 6
+    call $get_contract_data
+    local.tee 7
+    local.get 7
+    i64.const 4294967295
+    i64.and
+    i64.const 4
+    i64.ne
+    if
+      i64.const -21474836477
+      call $fail_with_error
+      drop
+    end
+  else
+    i64.const 4
+  end
+  local.set 4
+  local.get 3
+  local.get 4
+  i64.const 32
+  i64.shr_u
+  local.get 2
+  i64.const 32
+  i64.shr_u
+  i64.add
+  local.tee 8
+  i64.const 4294967295
+  i64.gt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 8
+  local.tee 9
+  i64.const 4294967295
+  i64.gt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 9
+  i64.const 32
+  i64.shl
+  i64.const 4
+  i64.or
+  i64.const 1
+  call $put_contract_data
+  drop
+  i64.const 2
+  return
+end
+)
+
+;; func[2] (combined index 12)
+(func $balance (param i64) (result i64)
+  (local i64 i64 i64 i64)
+  local.get 0
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  i32.const 4104
+  local.get 0
+  i64.store offset=0 align=3
+  i64.const 34359738372
+  i64.const 17626545782788
+  i64.const 4294967300
+  call $map_new_from_linear_memory
+  local.set 1
+  local.get 1
+  local.set 2
+  i64.const 1
+  local.set 3
+  local.get 2
+  local.get 3
+  call $has_contract_data
+  i32.wrap_i64
+  if (result i64)
+    local.get 2
+    local.get 3
+    call $get_contract_data
+    local.tee 4
+    local.get 4
+    i64.const 4294967295
+    i64.and
+    i64.const 4
+    i64.ne
+    if
+      i64.const -21474836477
+      call $fail_with_error
+      drop
+    end
+  else
+    i64.const 4
+  end
+  return
+end
+)
+
+;; func[3] (combined index 13)
+(func $allowance (param i64 i64) (result i64)
+  (local i64 i64 i64 i64)
+  local.get 0
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 1
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  i32.const 4112
+  local.get 0
+  i64.store offset=0 align=3
+  i32.const 4120
+  local.get 1
+  i64.store offset=0 align=3
+  i64.const 103079215108
+  i64.const 17660905521156
+  i64.const 8589934596
+  call $map_new_from_linear_memory
+  local.set 2
+  local.get 2
+  local.set 3
+  i64.const 0
+  local.set 4
+  local.get 3
+  local.get 4
+  call $has_contract_data
+  i32.wrap_i64
+  if (result i64)
+    local.get 3
+    local.get 4
+    call $get_contract_data
+    local.tee 5
+    local.get 5
+    i64.const 4294967295
+    i64.and
+    i64.const 4
+    i64.ne
+    if
+      i64.const -21474836477
+      call $fail_with_error
+      drop
+    end
+  else
+    i64.const 4
+  end
+  return
+end
+)
+
+;; func[4] (combined index 14)
+(func $approve (param i64 i64 i64 i64 i64) (result i64)
+  (local i64 i64)
+  local.get 0
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 1
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 2
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 3
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 4
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 0
+  call $require_auth
+  drop
+  i32.const 4128
+  local.get 0
+  i64.store offset=0 align=3
+  i32.const 4136
+  local.get 1
+  i64.store offset=0 align=3
+  i64.const 103079215108
+  i64.const 17729624997892
+  i64.const 8589934596
+  call $map_new_from_linear_memory
+  local.set 5
+  local.get 5
+  local.get 2
+  i64.const 0
+  call $put_contract_data
+  drop
+  local.get 5
+  i64.const 0
+  local.get 3
+  local.get 4
+  call $extend_contract_data_ttl
+  drop
+  call $vec_new
+  local.set 6
+  local.get 6
+  i64.const 683302978513422
+  call $vec_push_back
+  local.set 6
+  local.get 6
+  local.get 0
+  call $vec_push_back
+  local.set 6
+  local.get 6
+  local.get 1
+  call $vec_push_back
+  local.set 6
+  local.get 6
+  local.get 2
+  call $contract_event
+  drop
+  i64.const 2
+  return
+end
+)
+
+;; func[5] (combined index 15)
+(func $transfer_from (param i64 i64 i64 i64) (result i64)
+  (local i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64)
+  local.get 0
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 1
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 2
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 3
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 0
+  call $require_auth
+  drop
+  i32.const 4144
+  local.get 1
+  i64.store offset=0 align=3
+  i32.const 4152
+  local.get 0
+  i64.store offset=0 align=3
+  i64.const 103079215108
+  i64.const 17798344474628
+  i64.const 8589934596
+  call $map_new_from_linear_memory
+  local.set 4
+  local.get 4
+  local.set 10
+  i64.const 0
+  local.set 11
+  local.get 10
+  local.get 11
+  call $has_contract_data
+  i32.wrap_i64
+  if (result i64)
+    local.get 10
+    local.get 11
+    call $get_contract_data
+    local.tee 12
+    local.get 12
+    i64.const 4294967295
+    i64.and
+    i64.const 4
+    i64.ne
+    if
+      i64.const -21474836477
+      call $fail_with_error
+      drop
+    end
+  else
+    i64.const 4
+  end
+  local.set 5
+  local.get 5
+  i64.const 32
+  i64.shr_u
+  local.get 3
+  i64.const 32
+  i64.shr_u
+  i64.lt_u
+  i64.extend_i32_u
+  i32.wrap_i64
+  if
+    i64.const 4294967299
+    call $fail_with_error
+    drop
+  end
+  i32.const 4160
+  local.get 1
+  i64.store offset=0 align=3
+  i64.const 34359738372
+  i64.const 17867063951364
+  i64.const 4294967300
+  call $map_new_from_linear_memory
+  local.set 6
+  local.get 6
+  local.set 13
+  i64.const 1
+  local.set 14
+  local.get 13
+  local.get 14
+  call $has_contract_data
+  i32.wrap_i64
+  if (result i64)
+    local.get 13
+    local.get 14
+    call $get_contract_data
+    local.tee 15
+    local.get 15
+    i64.const 4294967295
+    i64.and
+    i64.const 4
+    i64.ne
+    if
+      i64.const -21474836477
+      call $fail_with_error
+      drop
+    end
+  else
+    i64.const 4
+  end
+  local.set 7
+  local.get 7
+  i64.const 32
+  i64.shr_u
+  local.get 3
+  i64.const 32
+  i64.shr_u
+  i64.lt_u
+  i64.extend_i32_u
+  i32.wrap_i64
+  if
+    i64.const 8589934595
+    call $fail_with_error
+    drop
+  end
+  local.get 4
+  local.get 5
+  i64.const 32
+  i64.shr_u
+  local.get 3
+  i64.const 32
+  i64.shr_u
+  local.set 16
+  local.set 17
+  local.get 17
+  local.get 16
+  i64.lt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 17
+  local.get 16
+  i64.sub
+  local.tee 18
+  i64.const 4294967295
+  i64.gt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 18
+  i64.const 32
+  i64.shl
+  i64.const 4
+  i64.or
+  i64.const 0
+  call $put_contract_data
+  drop
+  local.get 6
+  local.get 7
+  i64.const 32
+  i64.shr_u
+  local.get 3
+  i64.const 32
+  i64.shr_u
+  local.set 19
+  local.set 20
+  local.get 20
+  local.get 19
+  i64.lt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 20
+  local.get 19
+  i64.sub
+  local.tee 21
+  i64.const 4294967295
+  i64.gt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 21
+  i64.const 32
+  i64.shl
+  i64.const 4
+  i64.or
+  i64.const 1
+  call $put_contract_data
+  drop
+  i32.const 4168
+  local.get 2
+  i64.store offset=0 align=3
+  i64.const 34359738372
+  i64.const 17901423689732
+  i64.const 4294967300
+  call $map_new_from_linear_memory
+  local.set 8
+  local.get 8
+  local.set 22
+  i64.const 1
+  local.set 23
+  local.get 22
+  local.get 23
+  call $has_contract_data
+  i32.wrap_i64
+  if (result i64)
+    local.get 22
+    local.get 23
+    call $get_contract_data
+    local.tee 24
+    local.get 24
+    i64.const 4294967295
+    i64.and
+    i64.const 4
+    i64.ne
+    if
+      i64.const -21474836477
+      call $fail_with_error
+      drop
+    end
+  else
+    i64.const 4
+  end
+  local.set 9
+  local.get 8
+  local.get 9
+  i64.const 32
+  i64.shr_u
+  local.get 3
+  i64.const 32
+  i64.shr_u
+  i64.add
+  local.tee 25
+  i64.const 4294967295
+  i64.gt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 25
+  local.tee 26
+  i64.const 4294967295
+  i64.gt_u
+  if
+    i64.const -8589934589
+    call $fail_with_error
+    drop
+  end
+  local.get 26
+  i64.const 32
+  i64.shl
+  i64.const 4
+  i64.or
+  i64.const 1
+  call $put_contract_data
+  drop
+  call $vec_new
+  local.set 27
+  local.get 27
+  i64.const 65154533130155790
+  call $vec_push_back
+  local.set 27
+  local.get 27
+  local.get 1
+  call $vec_push_back
+  local.set 27
+  local.get 27
+  local.get 2
+  call $vec_push_back
+  local.set 27
+  local.get 27
+  local.get 3
+  call $contract_event
+  drop
+  i64.const 2
+  return
+end
+)
+
+;; data section: 1 segment(s)
+(data (memory 0) (i32.const 0) b'owner\x00\x00\x00\x00\x00\x00\x00\x05\x00\x00\x00spender\x00\x00\x00\x00\x00\x05\x00\x00\x00\x10\x00\x00\x00\x07\x00\x00\x00')
+
+;; custom sections: 3
+(custom "contractenvmetav0" 12 payload byte(s))
+(custom "contractspecv0" 3088 payload byte(s))
+(custom "contractmetav0" 64 payload byte(s))

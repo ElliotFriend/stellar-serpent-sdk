@@ -1,0 +1,117 @@
+;; SELF-SNAPSHOT (tests/goldens/README.md's third class, the `wasm/` rows):
+;; this is what `serpent.emitter.printer.disassemble` currently renders for
+;; `serpent.emitter.build_file("examples/events.py")`.
+;; It must NEVER be cited as evidence the wasm bytes -- or this rendering of
+;; them -- are CORRECT (B12). Regenerate with
+;;     SERPENT_REGEN_GOLDENS=1 uv run pytest tests/unit/test_emitter_printer.py
+;; and READ THE DIFF: a change here is a behavioral change to what sub-plan D
+;; emits, not noise.
+;; wasm module: 1208 byte(s), 10 section(s)
+;; type section: 3 entry(ies)
+;; import section: 5 entry(ies)
+(import "x" "5" (func $fail_with_error (param i64) (result i64)))
+(import "v" "_" (func $vec_new (result i64)))
+(import "v" "6" (func $vec_push_back (param i64 i64) (result i64)))
+(import "x" "1" (func $contract_event (param i64 i64) (result i64)))
+(import "v" "g" (func $vec_new_from_linear_memory (param i64 i64) (result i64)))
+;; memory section
+(memory (export "memory") 1)
+;; export section: 3 entry(ies)
+(export "record_score" (func $record_score))
+(export "record_tally" (func $record_tally))
+(export "memory" (memory 0))
+;; code section: 2 defined function(s)
+
+;; func[0] (combined index 5)
+(func $record_score (param i64 i64) (result i64)
+  (local i64)
+  local.get 0
+  i64.const 255
+  i64.and
+  i64.const 77
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 1
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  call $vec_new
+  local.set 2
+  local.get 2
+  i64.const 15568509511950
+  call $vec_push_back
+  local.set 2
+  local.get 2
+  local.get 0
+  call $vec_push_back
+  local.set 2
+  local.get 2
+  local.get 1
+  call $contract_event
+  drop
+  i64.const 2
+  return
+end
+)
+
+;; func[1] (combined index 6)
+(func $record_tally (param i64 i64) (result i64)
+  (local i64)
+  local.get 0
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  local.get 1
+  i64.const 4294967295
+  i64.and
+  i64.const 4
+  i64.ne
+  if
+    i64.const -21474836477
+    call $fail_with_error
+    drop
+  end
+  i64.const 4
+  i64.const 4294967300
+  call $vec_new_from_linear_memory
+  call $vec_new
+  local.set 2
+  local.get 2
+  local.get 0
+  call $vec_push_back
+  local.set 2
+  local.get 2
+  local.get 1
+  call $vec_push_back
+  local.set 2
+  local.get 2
+  call $contract_event
+  drop
+  i64.const 2
+  return
+end
+)
+
+;; data section: 1 segment(s)
+(data (memory 0) (i32.const 0) b'\x0e~\x1c\x9b9\x00\x00\x00')
+
+;; custom sections: 3
+(custom "contractenvmetav0" 12 payload byte(s))
+(custom "contractspecv0" 768 payload byte(s))
+(custom "contractmetav0" 60 payload byte(s))
