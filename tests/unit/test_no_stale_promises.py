@@ -9,8 +9,9 @@ genuinely stale and nothing replaced it). This test is the net: it walks
 `src/` and `tests/` (the only trees the sweep touched -- `docs/superpowers/`'s
 decisions, dossiers and plans are deliberately never in scope, since they are
 a historical record of the PLANNING, not a promise the shipped code makes) and
-fails on any "sub-plan E" mention that is not one of the allowlist's
-DELIBERATE historical records below.
+fails on any "sub-plan E" mention -- CASE-INSENSITIVELY, so a sentence-initial
+"Sub-plan E will..." cannot slip past by capitalization alone -- that is not
+one of the allowlist's DELIBERATE historical records below.
 
 A historical record reads in the past tense about something that already
 happened -- "was retired", "used to pin", "the whole of M1-C" -- never a
@@ -28,7 +29,10 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WALKED = (_REPO_ROOT / "src", _REPO_ROOT / "tests")
 
-_NEEDLE = "sub-plan E"
+#: Matched case-INSENSITIVELY (see `_mentions`): "Sub-plan E" (sentence-
+#: initial, as `env.py`'s own module docstring spells it) is the same promise
+#: as "sub-plan E" and must not be invisible to this gate.
+_NEEDLE = "sub-plan e"
 
 #: This file itself, excluded from its own walk: its docstrings and comments
 #: discuss "sub-plan E" throughout (that is the whole point of the file), and
@@ -60,20 +64,24 @@ _ALLOWLIST: frozenset[tuple[str, int]] = frozenset(
         # table, owned by sub-plan E, of STATEFUL scenarios" -- states which
         # sub-plan built the module, not what it will do later.
         ("tests/semantics/env_scenarios.py", 8),
+        # Sentence-initial capitalization: "Sub-plan E gave every method here
+        # an in-memory body" -- past tense, the module's own honest-boundary
+        # disclaimer about what already happened, not a forward promise.
+        ("src/serpent/env.py", 8),
     }
 )
 
 
 def _mentions(root: Path) -> list[tuple[str, int, str]]:
     """`(relative path, 1-based line number, line text)` for every line under
-    `root` containing `_NEEDLE`, `__pycache__` excluded."""
+    `root` containing `_NEEDLE` CASE-INSENSITIVELY, `__pycache__` excluded."""
     found: list[tuple[str, int, str]] = []
     for path in sorted(root.rglob("*.py")):
         if "__pycache__" in path.parts or path.resolve() == _SELF:
             continue
         lines = path.read_text(encoding="utf-8").splitlines()
         for lineno, line in enumerate(lines, start=1):
-            if _NEEDLE in line:
+            if _NEEDLE in line.lower():
                 found.append((str(path.relative_to(_REPO_ROOT)), lineno, line.strip()))
     return found
 

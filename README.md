@@ -39,7 +39,7 @@ its own, and higher layers depend only on the ones below them:
   (`deploy`/`Env`) that runs a contract's own methods for real, with no WASM
   build in the loop, as a fast inner dev loop; the same contract also
   compiles and runs as WASM under `tests/harness`'s mini host, and
-  `tests/unit/test_env_differential.py` checks the two agree on ~60 stateful
+  `tests/unit/test_env_differential.py` checks the two agree on 58 stateful
   scenarios.
 - **Examples** (`examples/`) -- five complete contracts (a counter, error
   codes, structs, events, an allowance-style token) exercising the authoring
