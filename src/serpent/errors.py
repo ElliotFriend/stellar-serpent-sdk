@@ -98,3 +98,34 @@ class ArithmeticOverflow(ContractError):
 
 class BadArgument(ContractError):
     code = CODE_BAD_ARGUMENT
+
+
+class MissingValue(ContractError):
+    """Storage `get(key, T)` (no `default`) found no value for `key`.
+
+    Four consumers now, all carrying `CODE_MISSING_VALUE`: Task 2's tier-1
+    `get` raises this Python exception when the tier-1 model finds the key
+    absent; Task 3's tier-1 `extend_ttl` raises it too, for a dead entry (S8's
+    "extending a dead entry errors"), on both the keyed persistent/temporary
+    form and the keyless instance form; and the emitter's E13 guard already
+    emits the *same* code as a raw `fail_with_error` from compiled WASM
+    (`serpent.emitter.lower`) -- one code, every consumer, never a second
+    number to keep in sync (dossier C.4).
+    """
+
+    code = CODE_MISSING_VALUE
+
+
+class AbiCheckFailed(ContractError):
+    """An incoming value failed an ABI tag/range/type check.
+
+    Two consumers, both carrying `CODE_ABI_CHECK_FAILED`: Task 2's tier-1 `get`
+    ty-check raises this Python exception when a stored value does not match
+    the type asked for, and the emitter's ABI prologue and narrowing checks
+    (`serpent.emitter.lower`, `serpent.emitter.arith`) already emit the *same*
+    code as a raw `fail_with_error` from compiled WASM -- ONE code for every
+    check, which argument or value failed is a message/trap-context concern,
+    not a code concern (spec Sec.4, C19).
+    """
+
+    code = CODE_ABI_CHECK_FAILED

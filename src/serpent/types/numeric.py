@@ -28,7 +28,7 @@ therefore chain-driven, not Python-driven:
   arithmetic at all.
 * **Time types.** `Timepoint`/`Duration` expose **no** arithmetic, not even
   same-type: they are u64 newtypes exactly as in Rust, and any time algebra is
-  a sub-plan E decision. Bridge with `to_u64()` / `from_u64()`.
+  deferred to M2 (E3). Bridge with `to_u64()` / `from_u64()`.
 
 `**`, `divmod` and the bitwise operators are deliberately omitted (they raise
 `TypeError` naming the omission) until a real contract needs them.
@@ -541,11 +541,12 @@ class _TimeValue(_ChainInt):
     **These types expose no arithmetic at all** -- not even same-type: Rust's
     `Timepoint`/`Duration` newtypes carry no operators either, and a time
     algebra (`Timepoint - Timepoint -> Duration`, `Timepoint + Duration ->
-    Timepoint`) is a deliberate sub-plan E decision that serpent will not
-    pre-empt. `+ - * // %` and unary `-` raise `TypeError` naming the omission;
-    comparisons, truthiness, the Val forms and the `to_u64()` / `from_u64()`
-    bridges all work, so arithmetic is done explicitly on `U64` (sub-plan E
-    needs the bridge for `env.ledger().timestamp()`).
+    Timepoint`) is a decision deliberately deferred to M2 (ruling E3) that
+    serpent will not pre-empt. `+ - * // %` and unary `-` raise `TypeError`
+    naming the omission; comparisons, truthiness, the Val forms and the
+    `to_u64()` / `from_u64()` bridges all work, so arithmetic is done
+    explicitly on `U64` (the bridge is what `env.ledger().timestamp()` needs
+    today, and what M2's algebra would build on).
     """
 
     __slots__ = ()

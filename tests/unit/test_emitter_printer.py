@@ -344,26 +344,62 @@ def test_a_call_to_an_import_pair_outside_the_pin_is_a_loud_error() -> None:
 # Never cited as evidence -- the per-fixture SELF-SNAPSHOTs (tests/goldens/README.md)
 # ===========================================================================
 
-_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 GOLDEN_DIR = Path(__file__).resolve().parents[1] / "goldens" / "wasm"
 
 #: The environment variable that rewrites every golden instead of comparing.
 REGEN_ENV = "SERPENT_REGEN_GOLDENS"
 REGEN_HINT = f"{REGEN_ENV}=1 uv run pytest tests/unit/test_emitter_printer.py"
 
-#: The four fixtures the task brief names: the Phase 0 re-author, the one
-#: real richly-shaped contract, and the two promoted sandbox examples.
-FIXTURE_NAMES: tuple[str, ...] = (
-    "sandbox_counter",
-    "sandbox_hello_world",
-    "spike1_reauthored",
-    "token_style",
+#: Every snapshotted contract, as `(source path relative to the repo root,
+#: golden stem)`.
+#:
+#: **This list is this file's OWN inventory and is deliberately not
+#: `test_emitter_end_to_end.py`'s `FIXTURES`** (review M8): a golden is a file on
+#: disk keyed by a stem, and `test_no_stale_or_missing_wasm_goldens` asserts the
+#: directory listing EXACTLY, so the two lists have different jobs and a shared
+#: one would make "add a fixture" silently mean "add a golden".
+#:
+#: The rows: the Phase 0 re-author, the one real richly-shaped contract, the two
+#: promoted sandbox contracts, M1-E's `token_style_canonical` (the contract that
+#: keeps the canonical `env.events().publish(topics, data)` spelling covered now
+#: that `token_style` publishes through `Event.publish`), and M1-E's shipped
+#: `examples/`.
+#:
+#: The pair replaced a bare stem tuple when the examples arrived: the stems were
+#: enough only while every source sat in `tests/fixtures/`, and `examples/` is a
+#: second root. The stems stay distinct across both roots (`counter` vs
+#: `sandbox_counter`), which is what keeps one flat golden directory workable.
+#:
+#: `counter.wat.txt` is, below its header, necessarily identical to
+#: `sandbox_counter.wat.txt`: `examples/counter.py` is the same contract, and
+#: `test_a_promoted_sandbox_copy_builds_the_same_module_as_its_original` is where
+#: that identity is ASSERTED. The duplicate snapshot is kept anyway, because a
+#: golden is a per-source snapshot and a missing one would read as "this shipped
+#: example is not snapshotted".
+FIXTURE_SOURCES: tuple[tuple[str, str], ...] = (
+    ("tests/fixtures/sandbox_counter.py", "sandbox_counter"),
+    ("tests/fixtures/sandbox_hello_world.py", "sandbox_hello_world"),
+    ("tests/fixtures/spike1_reauthored.py", "spike1_reauthored"),
+    ("tests/fixtures/token_style.py", "token_style"),
+    ("tests/fixtures/token_style_canonical.py", "token_style_canonical"),
+    ("examples/counter.py", "counter"),
+    ("examples/errors.py", "errors"),
+    ("examples/structs.py", "structs"),
+    ("examples/events.py", "events"),
+    ("examples/allowance_token.py", "allowance_token"),
 )
+
+#: The golden stems, derived from the pairs above -- the name every test here
+#: parametrizes over.
+FIXTURE_NAMES: tuple[str, ...] = tuple(name for _source, name in FIXTURE_SOURCES)
+
+_SOURCE_BY_NAME: dict[str, str] = {name: source for source, name in FIXTURE_SOURCES}
 
 _HEADER_TEMPLATE = """\
 ;; SELF-SNAPSHOT (tests/goldens/README.md's third class, the `wasm/` rows):
 ;; this is what `serpent.emitter.printer.disassemble` currently renders for
-;; `serpent.emitter.build_file("tests/fixtures/{name}.py")`.
+;; `serpent.emitter.build_file("{source}")`.
 ;; It must NEVER be cited as evidence the wasm bytes -- or this rendering of
 ;; them -- are CORRECT (B12). Regenerate with
 ;;     {hint}
@@ -377,8 +413,9 @@ def golden_path(name: str) -> Path:
 
 
 def render_golden(name: str) -> str:
-    built = build_file(_FIXTURES_DIR / f"{name}.py")
-    header = _HEADER_TEMPLATE.format(name=name, hint=REGEN_HINT)
+    source = _SOURCE_BY_NAME[name]
+    built = build_file(_REPO_ROOT / source)
+    header = _HEADER_TEMPLATE.format(source=source, hint=REGEN_HINT)
     return header + disassemble(built.wasm)
 
 

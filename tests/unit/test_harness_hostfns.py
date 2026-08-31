@@ -41,6 +41,7 @@ from serpent.compiler.recognize import (
     ENV_HOST_FN_TARGETS,
     UNREACHED_CONTAINER_HOST_FNS,
 )
+from serpent.decorators import contracttype
 from serpent.emitter import build_wasm
 from serpent.types import (
     I32,
@@ -53,11 +54,14 @@ from serpent.types import (
     Bool,
     Bytes,
     Duration,
+    Map,
     String,
     Symbol,
     Timepoint,
+    Vec,
 )
 from serpent.types._ordering import ChainValue, val_cmp
+from serpent.types._storage_key import storage_key
 from tests.harness import engine, testmod
 from tests.harness.hostfns import (
     INVALID_POSITION_ERROR_VAL,
@@ -72,6 +76,14 @@ from tests.unit.test_frontend_semantics import wrap_case
 #: discriminant first). Lifted from `tests/semantics/cases.py`'s own fixtures.
 _ACCOUNT = "GCUNZ4XXN2LPHSGWPGCVZAZ4GUWL6HMXLJ7NCHCPB3I23EPY6JCVISSY"
 _CONTRACT = "CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI"
+
+
+@contracttype
+class _BalanceKey:
+    """The dominant real-world struct storage key, for the I1 cross-tier test."""
+
+    owner: Address
+
 
 #: One representative value per rank the harness models, in ascending
 #: `_SCVAL_RANK` order, each rank contributing a LOW and a HIGH value so the
@@ -339,6 +351,42 @@ def test_a_freshly_built_struct_key_finds_the_entry_the_first_one_wrote() -> Non
     assert store.get_contract_data(read, STORAGE_PERSISTENT) == val.pack_u32val(10)
 
 
+def test_map_key_agrees_with_storage_key_across_tiers() -> None:
+    """Review I1: the harness's word-level `map_key` and tier-1's value-level
+    `storage_key` are ONE definition of key equality, not two that happen to
+    agree within the harness. For a `Symbol` key, a struct key, and a nested
+    container key, `map_key` of the harness's `Val` word must equal
+    `storage_key` of the equivalent tier-1 value -- not just equal ITSELF
+    across the small/object forms, which `test_a_symbol_key_answers_the_same_
+    whichever_form_it_arrived_in` and the struct test above already cover.
+    """
+    store = FullHost()
+
+    # A Symbol key, small and object forms, both against the SAME tier-1 value.
+    assert store.map_key(store.val_word(Symbol("k"))) == storage_key(Symbol("k"))
+    wide_symbol = store._new(val.TAG_SYMBOL_OBJECT, Symbol("k"))
+    assert store.map_key(wide_symbol) == storage_key(Symbol("k"))
+
+    # A struct key: `owner` written the way `map_new`/`map_put` build it, kept
+    # in agreement with `storage_key` normalizing the EQUIVALENT `_BalanceKey`.
+    owner = store._new(val.TAG_ADDRESS_OBJECT, Address(_ACCOUNT))
+    struct_word = store.map_put(store.map_new(), val.symbol_small("owner"), owner)
+    assert store.map_key(struct_word) == storage_key(_BalanceKey(owner=Address(_ACCOUNT)))
+
+    # A nested container key: a Vec of Symbols, inside a Map value -- built at
+    # the word level, compared against the tier-1 `Vec`/`Map` it stands for.
+    tier1_tags = Vec(Symbol, [Symbol("a"), Symbol("b")])
+    tags_word = store.vec_push_back(
+        store.vec_push_back(store.vec_new(), store.val_word(Symbol("a"))),
+        store.val_word(Symbol("b")),
+    )
+    assert store.map_key(tags_word) == storage_key(tier1_tags)
+
+    tier1_flags = Map(Symbol, Bool, [(Symbol("tags"), Bool(True))])
+    flags_word = store.map_put(store.map_new(), store.val_word(Symbol("tags")), val.TRUE_VAL)
+    assert store.map_key(flags_word) == storage_key(tier1_flags)
+
+
 def test_equal_object_keys_are_one_key_however_they_were_built() -> None:
     """The same value-equality for the other object key shapes, and across the
     small/object forms of one number -- the host compares keys with `obj_cmp`,
@@ -360,15 +408,29 @@ def test_equal_object_keys_are_one_key_however_they_were_built() -> None:
     assert store.map_len(m) == val.pack_u32val(3)
 
 
-def test_a_key_with_no_tier1_model_keeps_its_raw_word() -> None:
-    """A9's boundary again, on the key path: `Void` has no `serpent.types`
-    class, so `map_key` cannot normalize it by value and keeps the word -- which
-    IS canonical for `Void`, and is honest about not being an equality this rig
-    has for everything."""
+def test_a_void_key_normalizes_via_storage_key_of_none() -> None:
+    """Review M2: `Void` has no `serpent.types` class, but it is NOT lumped in
+    with the "no tier-1 model, keep the raw word" case below -- an
+    Option-typed struct field holding `None` is a legitimate on-chain map
+    value, and `storage_key(None)` (`(1,)`, `Void`'s own A8 rank) is what
+    `_storage_key.storage_key` normalizes it to at the value level. `map_key`
+    must agree, so the two tiers key a `None`-valued field identically."""
     store = FullHost()
     m = store.map_put(store.map_new(), val.VOID_VAL, val.pack_u32val(1))
     assert store.map_get(m, val.VOID_VAL) == val.pack_u32val(1)
-    assert store.map_key(val.VOID_VAL) == val.VOID_VAL
+    assert store.map_key(val.VOID_VAL) == storage_key(None) == (1,)
+
+
+def test_a_value_with_no_tier1_model_keeps_its_raw_word() -> None:
+    """A9's boundary: `Error` and the 256-bit family have no `serpent.types`
+    class at all (unlike `Void`, which `storage_key(None)` now models), so
+    `map_key` cannot normalize one by value and keeps the word instead -- and
+    is honest about not being an equality this rig has for everything."""
+    store = FullHost()
+    error_word = val.error_val(7)
+    m = store.map_put(store.map_new(), error_word, val.pack_u32val(1))
+    assert store.map_get(m, error_word) == val.pack_u32val(1)
+    assert store.map_key(error_word) == error_word
 
 
 def test_get_contract_data_on_an_absent_key_is_a_rig_assertion() -> None:
@@ -921,16 +983,40 @@ def _in_scope(case: SemCase) -> bool:
     )
 
 
-#: The four whole-contract fixtures Task 13 builds. The two sandbox contracts
+#: The whole-contract fixtures Task 13 builds (M1-E added the fifth,
+#: `token_style_canonical.py`, with the canonical publish spelling, and then the
+#: three `examples/` contracts of sub-plan G's wave 1). The two sandbox contracts
 #: are read from `sandbox/` -- the same source Task 13 promotes into
 #: `tests/fixtures/` (F.2.8) -- because `sandbox/` itself must not be touched.
+#:
+#: This is this FILE's own inventory, deliberately not
+#: `test_emitter_end_to_end.py`'s `FIXTURES` (review M8): the question here is
+#: "does `FullHost` bind every callback these modules need", which is about the
+#: callback table, and it is answered for `sandbox/`'s own two files rather than
+#: for the promoted copies. Adding a contract anywhere means adding it here too.
 _ROOT = Path(__file__).resolve().parents[2]
 _FIXTURES = (
     _ROOT / "tests" / "fixtures" / "token_style.py",
+    _ROOT / "tests" / "fixtures" / "token_style_canonical.py",
     _ROOT / "tests" / "fixtures" / "spike1_reauthored.py",
     _ROOT / "sandbox" / "counter.py",
     _ROOT / "sandbox" / "hello_world.py",
+    _ROOT / "examples" / "counter.py",
+    _ROOT / "examples" / "errors.py",
+    _ROOT / "examples" / "structs.py",
+    _ROOT / "examples" / "events.py",
+    _ROOT / "examples" / "allowance_token.py",
 )
+
+
+def _fixture_id(path: Path) -> str:
+    """The test id: the path RELATIVE TO THE REPO ROOT, not the bare filename.
+
+    `sandbox/counter.py` and `examples/counter.py` are two different files with
+    the same name, and a bare-name id would leave pytest disambiguating them as
+    `counter.py0`/`counter.py1` -- which says nothing about which file failed.
+    """
+    return str(path.relative_to(_ROOT))
 
 
 def _needed(source: str, path: str) -> set[str]:
@@ -944,7 +1030,7 @@ def _needed(source: str, path: str) -> set[str]:
     return set(compiled.host_fns_reachable) | set(built.imports)
 
 
-@pytest.mark.parametrize("path", _FIXTURES, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _FIXTURES, ids=_fixture_id)
 def test_every_task13_fixture_is_fully_bound(path: Path) -> None:
     missing = sorted(
         _needed(path.read_text(encoding="utf-8"), str(path)) - set(FullHost().bindings())
@@ -968,7 +1054,7 @@ def test_every_in_scope_semantics_case_is_fully_bound() -> None:
     assert missing == {}
 
 
-@pytest.mark.parametrize("path", _FIXTURES, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _FIXTURES, ids=_fixture_id)
 def test_every_task13_fixture_instantiates_under_the_full_host(path: Path) -> None:
     """The stronger half of the inventory: the module actually LINKS.
 

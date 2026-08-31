@@ -19,6 +19,16 @@ DEFAULT_TARGET_PROTOCOL = 27
 #: higher -- `compute_protocol_floor` never returns less than this.
 BASE_PROTOCOL = 20
 
+#: The protocol at which the host begins honoring the reserved `__constructor`
+#: export: spec SS 13's "`__constructor` (protocol >= 22; ...)" reserved-name row
+#: (dossier S26), the surface CAP-0058 added. This is a FEATURE gate, not an
+#: import gate -- a constructor is an export NAME, so no entry in
+#: `HOST_FUNCTIONS` carries it and `compute_protocol_floor` cannot see it. The
+#: caller that knows whether a module declares a constructor (the compiler
+#: frontend) is the one that folds this into the declared floor; see
+#: `frontend._resolve_protocol`, which owns the feature-gate seam.
+CONSTRUCTOR_MIN_PROTOCOL = 22
+
 _FUNCTIONS_BY_NAME = index_functions_by_name(HOST_FUNCTIONS)
 
 

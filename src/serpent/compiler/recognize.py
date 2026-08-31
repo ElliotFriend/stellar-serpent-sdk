@@ -56,10 +56,19 @@ Dossier SS C.4 draws two lines this module enforces structurally:
    pointer -- a clean "lands later" diagnostic, never a traceback.
 3. **Genuinely unknown** -- anything else reachable off `env` (or a storage
    bucket / `Ledger` / `Events`) gets `SPT2006`, the unresolved-attribute
-   code. `Event.publish(env)` is its own dedicated reject, `SPT1032`
-   (dossier ruling E12): `_serpent_type_` carries no topic/data split (B14),
-   so M1-C recognizes only `env.events().publish(topics, data)` and rejects
-   the `<Event instance>.publish(env)` form outright, pointing at sub-plan E.
+   code.
+
+`Event.publish(env)` used to be a fourth case -- its own dedicated reject,
+`SPT1032` (dossier ruling E12), because `_serpent_type_` carried no topic/data
+split (B14) and a guessed one would have shipped a lying spec. M1-E Task 5
+added the convention (`@contractevent(topics=..., data_format=...)` plus
+`Annotated[T, topic]`), so Task 6 turned the reject into a DESUGAR: the
+authoring form lowers to the same `HostCall("contract_event", (MakeTopics(...),
+<data>))` the canonical `env.events().publish(topics, data)` spelling produces
+(`_event_publish`). `SPT1032` is retired to `codes.NO_FIXTURE_ALLOWLIST` --
+un-renumbered, per D9's append-only rule -- and both spellings are supported.
+Event-instance-as-a-LOCAL stays rejected (`expr.py`'s `SPT1037`):
+construction-and-publish in one expression is the shape the desugar reads.
 
 ## Diagnostic codes: matching the KIND of mistake, not just its severity
 
@@ -178,7 +187,7 @@ from serpent.compiler.ir import (
     SetLocal,
 )
 from serpent.compiler.types_ import Ty, TyTag, resolve_annotation
-from serpent.decorators import _METADATA_ATTR
+from serpent.decorators import _METADATA_ATTR, DATA_LOCATION, TOPIC_LOCATION
 
 # `val_cmp` is the ORACLE's own cross-type ordering (rank, then payload) and is
 # what MJ-15 names for the `MakeMap` key pre-sort. It is not re-exported from
@@ -230,7 +239,6 @@ _HELP: dict[str, str] = {
         "mutate only a local this method owns, and let C rebind it (v = vec_push_back(v, x))"
     ),
     "SPT1037": "rewrite the expression using the serpent subset",
-    "SPT1032": "use env.events().publish(topics, data) instead",
     "SPT1033": "this Env surface is deferred to M2; there is no rewrite available yet",
     "SPT1035": "pass the argument positionally, or by the name the recognized API uses",
     "SPT1038": (
@@ -262,11 +270,18 @@ _COMPREHENSION_HELP = (
 class SurfaceKind(Enum):
     """The lowering SHAPE a `RECOGNIZED` row produces.
 
-    `HOST_CALL`: exactly one `HostCall` (SS C.1's common case). `GET_DEFAULT`:
-    the `has_contract_data` -> `IfExp` -> `get_contract_data`/`default`
-    lowering SS C.4 spells out for `<bucket>.get(key, T, default=d)`.
-    `REJECT`: never reaches a host function at all -- `Event.publish(env)`
-    (E12), rejected pointing at sub-plan E.
+    `HOST_CALL`: exactly one `HostCall` (SS C.1's common case) -- including
+    `Event.publish(env)`, whose desugar produces one `contract_event` call.
+    `GET_DEFAULT`: the `has_contract_data` -> `IfExp` ->
+    `get_contract_data`/`default` lowering SS C.4 spells out for
+    `<bucket>.get(key, T, default=d)`.
+    `REJECT`: never reaches a host function at all. **No row uses it today**:
+    the one that did (`Event.publish(env)`, `SPT1032`, dossier E12) became a
+    lowering row in M1-E Task 6. The branch is kept for future rows -- it is the
+    honest shape for a surface serpent recognizes and deliberately refuses, and
+    reinventing it later would be pointless -- but with no row to exercise it,
+    `test_recognize_env.py`'s REJECT-row invariants are now VACUOUSLY true
+    rather than checked against anything.
 
     The container rows add four shapes (Task 7b). `MUTATOR`: a functional host
     op plus the E11 rebind, i.e. `SetLocal(slot, HostCall(...))` -- a
@@ -377,10 +392,18 @@ RECOGNIZED: dict[str, HostCallSpec] = {
         kind=SurfaceKind.HOST_CALL,
         host_fns=("require_auth_for_args",),
     ),
-    "event.publish_reject": HostCallSpec(
+    "event.publish": HostCallSpec(
+        # M1-E Task 6: the authoring form, DESUGARED. It reaches exactly the
+        # host function `events.publish` reaches, over exactly the same
+        # `MakeTopics`/data argument shape -- which is why the IR node
+        # inventory and the emitter are untouched by the feature (ruling E2).
+        # The container nodes the data payload may be (`MakeStruct` for the
+        # `"map"` format, `MakeVec` for `"vec"`) account for their own host
+        # functions through the frontend's node walk, exactly as they do when
+        # an author writes the struct or the vector out by hand.
         surface="<Event instance>.publish(env)",
-        kind=SurfaceKind.REJECT,
-        reject_code="SPT1032",
+        kind=SurfaceKind.HOST_CALL,
+        host_fns=("contract_event",),
     ),
     # --- containers and structs (Task 7b) ---------------------------------
     "vec.new": HostCallSpec(
@@ -713,8 +736,11 @@ def recognize_call(node: ast.Call, ctx: FuncCtx) -> IRExpr | None:
     if _match_no_arg_chain(base, "events"):
         return _recognize_events_method(node, ctx, method)
 
-    if method == "publish" and _is_event_construction(base, ctx):
-        return _reject_event_publish(node, ctx)
+    if method == "publish":
+        event = _event_construction(base, ctx)
+        if event is not None:
+            construction, name, metadata = event
+            return _event_publish(node, ctx, construction, name, metadata)
 
     if method in ("require_auth", "require_auth_for_args"):
         return _recognize_require_auth(node, ctx, method, base)
@@ -941,19 +967,29 @@ def _match_storage_bucket(node: ast.expr) -> str | None:
     return func.attr
 
 
-def _is_event_construction(node: ast.expr, ctx: FuncCtx) -> bool:
-    """Whether `node` constructs a `@contractevent` instance -- the receiver
-    shape of the rejected `<Event instance>.publish(env)` form (E12)."""
+def _event_construction(
+    node: ast.expr, ctx: FuncCtx
+) -> tuple[ast.Call, str, Mapping[str, Any]] | None:
+    """`(the construction call, the event's name, its metadata)`, or `None`.
+
+    The receiver shape of `<Event instance>.publish(env)`: a DIRECT
+    construction of a `@contractevent` class. `vars(obj)`, not `getattr`, for
+    the same reason `_recognize_construction` reads a struct's metadata that
+    way -- an undecorated subclass of an event inherits `_serpent_type_` and is
+    not itself declared.
+    """
     if not isinstance(node, ast.Call):
-        return False
+        return None
     func = node.func
     if not isinstance(func, ast.Name):
-        return False
+        return None
     obj = ctx.loaded.namespace.get(func.id)
     if not isinstance(obj, type):
-        return False
+        return None
     metadata = vars(obj).get(_METADATA_ATTR)
-    return isinstance(metadata, dict) and metadata.get("kind") == "event"
+    if not isinstance(metadata, dict) or metadata.get("kind") != "event":
+        return None
+    return node, func.id, metadata
 
 
 # --- storage ----------------------------------------------------------------
@@ -1254,17 +1290,143 @@ def _events_publish(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
     return HostCall(loc=loc, ty=Ty.Void, fn_name=fn_name, args=(topics, data))
 
 
-def _reject_event_publish(node: ast.Call, ctx: FuncCtx) -> IRExpr:
+def _event_publish(
+    node: ast.Call,
+    ctx: FuncCtx,
+    construction: ast.Call,
+    name: str,
+    metadata: Mapping[str, Any],
+) -> IRExpr:
+    """`Transfer(from_=a, to=b, amount=x).publish(env)`, DESUGARED (ruling E2).
+
+    The whole point of this function is that it produces NO new IR: the
+    authoring form lowers to the same `HostCall("contract_event", (MakeTopics
+    (...), <data>))` that `env.events().publish(topics, data)` produces, so the
+    emitter needs no knowledge of events at all (`test_frontend_events.py`
+    asserts the two trees are equal).
+
+    The convention is read back from `@contractevent`'s metadata, never
+    re-derived (Task 5 validated all of it at the declaration site):
+
+    * TOPICS -- every `prefix_topics` entry as a `Const` `Symbol`, in order,
+      then every field whose location is `"topic"` in DECLARATION order. A
+      prefix topic past nine characters is legal and simply pools through
+      linear memory; it needs no special case here, because the ordinary
+      `Const` walk in `frontend.py` puts it in `symbols_over_9` and adds
+      `symbol_new_from_linear_memory` to the host-function set.
+    * DATA -- per `data_format`: `"map"` is a `MakeStruct` over the non-topic
+      fields (P7-sorted keys, runtime values -- byte-for-byte a struct's
+      lowering, which is also what feeds `struct_key_descriptor_sets` and
+      `needs_memory`), `"vec"` a `MakeVec` in declaration order, and
+      `"single-value"` the lone data field's expression, bare.
+
+    Construction is KWARGS-ONLY and type-checked through the very same helper
+    `@contracttype` construction uses (review B3): one rule, one message set,
+    one checker path.
+    """
     loc = Loc.from_node(ctx.path, node)
-    spec = RECOGNIZED["event.publish_reject"]
-    assert spec.reject_code is not None
-    _error(
-        ctx,
-        spec.reject_code,
-        loc,
-        "`<Event instance>.publish(env)` is deferred to sub-plan E",
+    spec = RECOGNIZED["event.publish"]
+    bound = _bind(node, ctx, loc, spec.surface, ("env",))
+    if bound is None:
+        return _invalid(loc)
+    if not _is_env_name(bound["env"]):
+        _error(
+            ctx,
+            "SPT1038",
+            loc,
+            "`publish` takes the method's `env` parameter",
+            help=f"write {name}(...).publish(env)",
+        )
+        return _invalid(loc)
+
+    fields: list[tuple[str, Any]] = [
+        (str(field_name), annotation) for field_name, annotation in metadata["fields"]
+    ]
+    values = _bind_record_fields(
+        construction, ctx, Loc.from_node(ctx.path, construction), name, fields
     )
-    return _invalid(loc)
+    if values is None:
+        return _invalid(loc)
+
+    locations: Mapping[str, str] = metadata["locations"]
+    topics: list[IRExpr] = [
+        Const(loc=loc, ty=Ty.Symbol, py_value=prefix) for prefix in metadata["prefix_topics"]
+    ]
+    topics += [
+        values[field_name]
+        for field_name, _annotation in fields
+        if locations[field_name] == TOPIC_LOCATION
+    ]
+
+    data = _event_data(ctx, loc, name, metadata["data_format"], fields, locations, values)
+    if data is None or _failed(data):
+        return _invalid(loc)
+
+    # `MakeTopics.ty` is `Ty.Void` for `_events_publish`'s own reason: the
+    # heterogeneous topic tuple is consumed only as a `HostCall` argument.
+    (fn_name,) = spec.host_fns
+    return HostCall(
+        loc=loc,
+        ty=Ty.Void,
+        fn_name=fn_name,
+        args=(MakeTopics(loc=loc, ty=Ty.Void, topics=tuple(topics)), data),
+    )
+
+
+def _event_data(
+    ctx: FuncCtx,
+    loc: Loc,
+    name: str,
+    data_format: str,
+    fields: Sequence[tuple[str, Any]],
+    locations: Mapping[str, str],
+    values: Mapping[str, IRExpr],
+) -> IRExpr | None:
+    """The `data` argument of one desugared publish, per `data_format`.
+
+    `None` after reporting (sink convention). Every arity and uniformity
+    question is already settled at the declaration site (`decorators.
+    _check_data_format`): `"single-value"` has exactly one data field,
+    `"map"`/`"vec"` at least one, and a `"vec"` payload's fields all share one
+    type -- which is what lets `MakeVec` carry a single `elem_ty` here. The
+    asserts below are those guarantees, not checks a source can trip.
+    """
+    data_fields = [
+        (field_name, annotation)
+        for field_name, annotation in fields
+        if locations[field_name] == DATA_LOCATION
+    ]
+    assert data_fields, f"@contractevent {name} declares no data field for {data_format!r}"
+
+    if data_format == "single-value":
+        assert len(data_fields) == 1, f"@contractevent {name} is not single-valued"
+        (only_name, _annotation) = data_fields[0]
+        return values[only_name]
+
+    if data_format == "vec":
+        elem_ty = resolve_annotation(data_fields[0][1], ctx.loaded, loc, ctx.sink)
+        if elem_ty is None:
+            return None
+        items = [values[field_name] for field_name, _annotation in data_fields]
+        return MakeVec(
+            loc=loc,
+            ty=Ty.Vec(elem_ty),
+            elem_ty=elem_ty,
+            items=tuple(items),
+            all_static=_all_static(items),
+        )
+
+    # `"map"`: the struct lowering, keyed by field name. C owns the P7 sort
+    # (`map_new_from_linear_memory` needs the key descriptors ascending as byte
+    # strings at COMPILE time) exactly as it does for `MyStruct(...)`.
+    assert data_format == "map", data_format
+    pairs = [(field_name, values[field_name]) for field_name, _annotation in data_fields]
+    pairs.sort(key=lambda item: item[0].encode())
+    # No `note_escapes` (unlike `_struct_construction`): this struct is built
+    # for one `contract_event` argument and is never bound, stored or returned,
+    # so no local's handle survives inside it -- the same reason
+    # `_events_publish` does not mark its own arguments as escaping.
+    return MakeStruct(loc=loc, ty=Ty.Struct(name), struct_name=name, fields=tuple(pairs))
 
 
 # --- auth -----------------------------------------------------------------
@@ -1892,26 +2054,29 @@ def _struct_fields(ctx: FuncCtx, name: str) -> Sequence[tuple[str, Any]] | None:
     return None
 
 
-def _struct_construction(
-    node: ast.Call, ctx: FuncCtx, loc: Loc, name: str, metadata: Mapping[str, Any]
-) -> IRExpr:
-    """`MyStruct(field=value, ...)`: KEYWORDS ONLY, every field required.
+def _bind_record_fields(
+    node: ast.Call,
+    ctx: FuncCtx,
+    loc: Loc,
+    name: str,
+    fields: Sequence[tuple[str, Any]],
+) -> dict[str, IRExpr] | None:
+    """One `@contracttype`/`@contractevent` construction's checked field values.
 
-    Keywords only because a struct is a `Map<Symbol, V>` on chain (S9) whose
+    THE kwargs-only construction rule, in one place because both records share
+    it (review B3): keywords only, every declared field required, no unknown
+    field, no `**` unpacking, and each value checked against its declared
+    annotation. Returns `{field name: value}` in DECLARATION order, or `None`
+    after reporting (sink convention).
+
+    Keywords only because a record is a `Map<Symbol, V>` on chain (S9) whose
     field order is the SORTED one, not the declaration one -- positional
     arguments would make the source order look meaningful when it is not. The
-    field sort itself is C's (P7): `map_new_from_linear_memory` needs the key
-    descriptors ascending as byte strings at compile time, and the wrong
-    layout validates and then panics on-chain (F.1.13). The values are checked
-    in DECLARATION order (the order the author wrote is the order any
-    diagnostic reads best in) and the resulting pairs are sorted after.
+    values are nevertheless checked in DECLARATION order, because the order the
+    author wrote is the order any diagnostic reads best in; the caller sorts
+    afterwards if its lowering needs P7 order.
     """
-    declared = metadata.get("fields")
-    assert isinstance(declared, list), f"@contracttype {name} carries no field list"
-    fields: list[tuple[str, Any]] = [
-        (str(field_name), annotation) for field_name, annotation in declared
-    ]
-    names = [field_name for field_name, _ in fields]
+    names = [field_name for field_name, _annotation in fields]
 
     if node.args:
         _error(
@@ -1921,13 +2086,13 @@ def _struct_construction(
             f"`{name}(...)` takes keyword arguments only, got {len(node.args)} positional",
             help=f"name every field, e.g. {name}({names[0]}=...)" if names else None,
         )
-        return _invalid(loc)
+        return None
 
     supplied: dict[str, ast.expr] = {}
     for keyword in node.keywords:
         if keyword.arg is None:
             _error(ctx, "SPT1035", loc, f"`**` unpacking is not a way to build `{name}`")
-            return _invalid(loc)
+            return None
         if keyword.arg not in names:
             _error(
                 ctx,
@@ -1936,10 +2101,10 @@ def _struct_construction(
                 f"`{keyword.arg}` is not a field of `{name}`",
                 help=f"the declared fields are: {', '.join(names)}",
             )
-            return _invalid(loc)
+            return None
         if keyword.arg in supplied:
             _error(ctx, "SPT3020", loc, f"`{name}` got multiple values for `{keyword.arg}`")
-            return _invalid(loc)
+            return None
         supplied[keyword.arg] = keyword.value
 
     missing = [field_name for field_name in names if field_name not in supplied]
@@ -1950,16 +2115,16 @@ def _struct_construction(
             loc,
             f"`{name}` is missing field(s): {', '.join(missing)}",
         )
-        return _invalid(loc)
+        return None
 
-    built: list[tuple[str, IRExpr]] = []
+    built: dict[str, IRExpr] = {}
     for field_name, annotation in fields:
         field_ty = resolve_annotation(annotation, ctx.loaded, loc, ctx.sink)
         if field_ty is None:
-            return _invalid(loc)
+            return None
         value = _check_value(supplied[field_name], ctx, expected=field_ty)
         if _failed(value):
-            return _invalid(loc)
+            return None
         if not _assignable(value.ty, field_ty):
             _error(
                 ctx,
@@ -1967,9 +2132,33 @@ def _struct_construction(
                 loc,
                 f"field `{field_name}` is {value.ty.render()}, not {field_ty.render()}",
             )
-            return _invalid(loc)
-        built.append((field_name, value))
+            return None
+        built[field_name] = value
+    return built
 
+
+def _struct_construction(
+    node: ast.Call, ctx: FuncCtx, loc: Loc, name: str, metadata: Mapping[str, Any]
+) -> IRExpr:
+    """`MyStruct(field=value, ...)`: KEYWORDS ONLY, every field required.
+
+    The construction rule itself is `_bind_record_fields`' (shared with an
+    event's). What is this function's own is the SORT: `map_new_from_linear_
+    memory` needs the key descriptors ascending as byte strings at compile time,
+    and the wrong layout validates and then panics on-chain (F.1.13), so C owns
+    the order and D must not re-sort.
+    """
+    declared = metadata.get("fields")
+    assert isinstance(declared, list), f"@contracttype {name} carries no field list"
+    fields: list[tuple[str, Any]] = [
+        (str(field_name), annotation) for field_name, annotation in declared
+    ]
+
+    values = _bind_record_fields(node, ctx, loc, name, fields)
+    if values is None:
+        return _invalid(loc)
+
+    built = list(values.items())
     note_escapes([value for _, value in built], ctx)
     built.sort(key=lambda item: item[0].encode())
     return MakeStruct(loc=loc, ty=Ty.Struct(name), struct_name=name, fields=tuple(built))
@@ -2167,14 +2356,35 @@ def note_escapes(values: Iterable[IRExpr], ctx: FuncCtx, reason: str | None = No
     one direction is "the container holds my object", the other is "I hold the
     container's object", and both have to be refused.
 
-    Three recognized container-argument positions deliberately do NOT count as
-    escapes: `<bucket>.set(k, v)`, `events().publish(topics, data)`, and
-    `addr.require_auth_for_args(args)`. All three serialize their argument out
-    to the host rather than storing a handle, and tier 1 has no shared-object
-    model to diverge from at any of them (every `env.py` and
-    `types/address.py` body on those paths raises `NotImplementedError`,
-    sub-plan E). If sub-plan E gives those surfaces real tier-1 behaviour, they
-    become escapes and belong in this hook.
+    Four recognized container-argument positions deliberately do NOT count as
+    escapes: `<bucket>.set(k, v)`, `events().publish(topics, data)`,
+    `<Event instance>.publish(env)` (M1-E's desugar, which builds the same
+    topics and data from the construction's own arguments -- `_event_publish`
+    says so at the one place it could have called this hook), and
+    `addr.require_auth_for_args(args)`. All four serialize their argument out
+    to the host rather than storing a handle, and the tier-1 model
+    deep-copies at the boundaries it has bodies for (ruling E5: `set` stores a
+    deep copy, and BOTH publish spellings snapshot their topics and data
+    through one `Events._record`), so tier 1 still has no shared-object model to
+    diverge from -- not because those surfaces cannot run, but because what they
+    keep is a copy.
+    `tests/unit/test_env_model.py`'s isolation property is what holds that
+    justification up. `require_auth_for_args` landed in Task 4: its body
+    deep-copies the args it records (`Address.require_auth_for_args` ->
+    `Env._record_auth`), and that here-shaped property is pinned alongside the
+    other three. If any of the four ever stores a reference instead, that
+    position becomes an escape and belongs in this hook.
+
+    The exemption applies to KEYWORD arguments of those calls as well as
+    positional ones (`collect_never_owned`'s escape-facts note): the spelling of
+    the call cannot change what the host does with the value. That covers the
+    event surface's two spellings too, which is the only way the sentence above
+    can be true of it -- `MyEvent(items=own).publish(env)` carries its
+    serialized values in the CONSTRUCTION's kwargs, so those kwargs are exempt
+    exactly as `events().publish(topics, own)`'s positional data is
+    (`_directly_published_event_constructions`). Only the directly published
+    shape: a construction that is not immediately published has serialized
+    nothing.
 
     One further position belongs to the WIRING task rather than to this hook:
     `<bucket>.get(key, T, default=d)` lowers to an `IfExp` whose `orelse` IS
@@ -2304,12 +2514,50 @@ def _is_serializing_call(func: ast.Attribute) -> bool:
     SERIALIZE their argument out to the host instead of storing a handle --
     `<bucket>.set(k, v)`, `events().publish(topics, data)` and
     `require_auth_for_args(args)`. `note_escapes`' docstring carries the full
-    ruling, including what would change it."""
+    ruling, including what would change it.
+
+    The fourth serializing surface, `<Event instance>.publish(env)`, is not
+    matched here: its serialized values are the arguments of its RECEIVER (the
+    construction), not of this call, so it is answered by
+    `_directly_published_event_constructions` instead.
+    """
     return (
         (func.attr == "set" and _match_storage_bucket(func.value) is not None)
         or (func.attr == "publish" and _match_no_arg_chain(func.value, "events"))
         or func.attr == "require_auth_for_args"
     )
+
+
+def _directly_published_event_constructions(body: Sequence[ast.stmt], ctx: FuncCtx) -> set[int]:
+    """The `id()` of every event CONSTRUCTION that is the receiver of a
+    `.publish(env)` call in the same expression.
+
+    That is the ONE shape `_event_publish` desugars, and its construction
+    arguments are exactly the topics and data `publish` serializes -- so they
+    belong to the serializing-call exemption (`note_escapes`' docstring), the
+    same way `events().publish(topics, data)`'s arguments do. A construction
+    that is NOT immediately published is not matched: nothing has serialized its
+    arguments there.
+
+    A separate pass rather than a test inside `collect_never_owned`'s own walk,
+    because `ast.walk` hands out no parent links and the construction has to be
+    known exempt BEFORE its keywords are read. Identity is the right key (two
+    distinct constructions can be equal as trees) and is safe: every node here
+    is a live child of `body` for as long as the caller runs.
+    """
+    exempt: set[int] = set()
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute) or func.attr != "publish":
+                continue
+            event = _event_construction(func.value, ctx)
+            if event is not None:
+                construction, _name, _metadata = event
+                exempt.add(id(construction))
+    return exempt
 
 
 def _positional_args_escape(node: ast.Call, ctx: FuncCtx) -> bool:
@@ -2381,6 +2629,26 @@ def collect_never_owned(body: Sequence[ast.stmt], ctx: FuncCtx) -> frozenset[str
       `@contracttype` field, `<bucket>.get`'s `default`), or in a positional
       argument of a call that can store it (`_positional_args_escape`).
 
+      The keyword rule has TWO exemptions, both of them serializing calls:
+
+      * the three `_positional_args_escape` already exempts (`<bucket>.set`,
+        `events().publish`, `require_auth_for_args`) do not store a handle in
+        ANY argument position, so `set(key=k, value=own)` is not an escape any
+        more than `set(k, own)` is. Without that, the same write escaped or not
+        depending on whether the author spelled it with keywords -- an
+        asymmetry with no semantic content;
+      * the construction kwargs of a DIRECTLY PUBLISHED event
+        (`MyEvent(items=own).publish(env)`,
+        `_directly_published_event_constructions`). Those kwargs ARE the topics
+        and data the publish serializes -- the desugar builds them from nothing
+        else -- so this is the same asymmetry once more, between the two
+        spellings of one publish rather than between two spellings of one write.
+
+      Every other call's keyword arguments still escape, because a
+      `@contracttype` field and `<bucket>.get`'s `default` both hold on to what
+      they are given -- an event construction that is not immediately published
+      included.
+
     One escape position deliberately has no pre-pass rule: `<bucket>.get(key,
     T, default=d)` lowers to an `IfExp` whose `orelse` IS `d`, so a container
     handed to `default` is a conditional arm of the whole expression --
@@ -2389,6 +2657,7 @@ def collect_never_owned(body: Sequence[ast.stmt], ctx: FuncCtx) -> frozenset[str
     syntactic side of the same position, so the two agree.
     """
     names: set[str] = set()
+    published = _directly_published_event_constructions(body, ctx)
     for stmt in body:
         for node in ast.walk(stmt):
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -2413,8 +2682,13 @@ def collect_never_owned(body: Sequence[ast.stmt], ctx: FuncCtx) -> frozenset[str
                 for element in node.elts:
                     names |= _value_names(element)
             elif isinstance(node, ast.Call):
-                for keyword in node.keywords:
-                    names |= _value_names(keyword.value)
+                func = node.func
+                serializing = (
+                    isinstance(func, ast.Attribute) and _is_serializing_call(func)
+                ) or id(node) in published
+                if not serializing:
+                    for keyword in node.keywords:
+                        names |= _value_names(keyword.value)
                 if _positional_args_escape(node, ctx):
                     for arg in node.args:
                         names |= _value_names(arg)

@@ -12,7 +12,12 @@ U256/I256 are deliberately absent (deferred to M2, per the amended spec).
 `Bytes64` and the `bytes_n(n)` factory.
 """
 
+import typing
+
+import pytest
+
 import serpent
+from serpent import decorators as decorators_module
 from tests.fixtures import token_style
 
 #: Ordered by ruff's `RUF022` `__all__`-sort convention (which `ruff check
@@ -27,7 +32,9 @@ EXPECTED_ALL = [
     "U32",
     "U64",
     "U128",
+    "AbiCheckFailed",
     "Address",
+    "Annotated",
     "ArithmeticOverflow",
     "BadArgument",
     "Bool",
@@ -40,6 +47,7 @@ EXPECTED_ALL = [
     "Env",
     "Event",
     "Map",
+    "MissingValue",
     "String",
     "Symbol",
     "Timepoint",
@@ -51,11 +59,23 @@ EXPECTED_ALL = [
     "contractevent",
     "contracttype",
     "errorcode",
+    "topic",
 ]
 
 
 def test_public_all_is_exactly_the_frozen_export_list() -> None:
     assert serpent.__all__ == EXPECTED_ALL
+
+
+def test_annotated_and_topic_are_authorable_off_the_root() -> None:
+    """A contract module may import ONLY from `serpent` (SPT2005), so the event
+    convention's two spellings -- `typing.Annotated` and serpent's own `topic`
+    marker -- have to be reachable there. `Annotated` is re-exported, never
+    re-defined: `Annotated[Address, topic]` must be the same object a type
+    checker already understands."""
+    assert serpent.Annotated is typing.Annotated
+    assert repr(serpent.topic) == "topic"
+    assert serpent.topic is decorators_module.topic
 
 
 def test_every_name_in_all_is_actually_importable() -> None:
@@ -65,6 +85,18 @@ def test_every_name_in_all_is_actually_importable() -> None:
 
 def test_version_string() -> None:
     assert serpent.__version__ == "0.0.1"
+
+
+def test_missing_value_and_abi_check_failed_are_catchable_off_the_root() -> None:
+    """M4: an author writes `except serpent.MissingValue`, never
+    `except serpent.errors.MissingValue` -- `serpent.errors` is an
+    implementation seam, not the documented surface (module docstring)."""
+    assert issubclass(serpent.MissingValue, serpent.ContractError)
+    assert issubclass(serpent.AbiCheckFailed, serpent.ContractError)
+    with pytest.raises(serpent.MissingValue):
+        raise serpent.MissingValue()
+    with pytest.raises(serpent.AbiCheckFailed):
+        raise serpent.AbiCheckFailed()
 
 
 def test_u256_i256_and_bytesn_are_not_exported() -> None:

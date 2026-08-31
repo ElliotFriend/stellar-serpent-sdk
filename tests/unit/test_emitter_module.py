@@ -112,6 +112,36 @@ class Helped:
         return x + x
 """
 
+#: The topic convention (M1-E Task 5), spelled the only way a contract may
+#: spell it: `Annotated` and `topic` imported from the `serpent` ROOT (SPT2005).
+#: `publish` on the instance is still deferred to Task 6, so the contract emits
+#: the canonical `env.events().publish(topics, data)` line.
+EVENT_SRC = """\
+from serpent import (
+    U32,
+    Address,
+    Annotated,
+    Env,
+    Event,
+    Symbol,
+    contract,
+    contractevent,
+    topic,
+)
+
+
+@contractevent
+class Moved(Event):
+    who: Annotated[Address, topic]
+    amount: U32
+
+
+@contract
+class Mover:
+    def move(self, env: Env, who: Address, amount: U32) -> None:
+        env.events().publish((Symbol("moved"), who), amount)
+"""
+
 #: One `String` literal larger than the whole pool budget (P12: the pool must
 #: not reach `SCRATCH_BASE`, 0x1000).
 TOO_MANY_LITERALS_SRC = """\
@@ -864,11 +894,12 @@ def test_the_spec_payload_is_the_direct_build_spec_entries_call() -> None:
     assert payload == build_spec_entries(contract_cls, types=c.spec_inputs.declared_types_in_order)
 
 
-def test_declared_events_are_never_handed_to_build_spec_entries() -> None:
-    """Review B10: `spec_inputs.events` is a SEPARATE inventory and passing one
-    to `types=` is a hard failure at emission (`_serpent_type_` carries no
-    topic/data split, B14). The proof is byte equality with the call that omits
-    them, over a fixture that really does declare an event."""
+def test_declared_events_reach_the_events_keyword_and_never_types() -> None:
+    """`spec_inputs.events` stays a SEPARATE inventory (review B10/MJ-9):
+    `types=` carries UDT references and refuses an event outright, while
+    `events=` carries the `EVENT_V0` entries. The proof is byte equality with
+    the explicit two-keyword call, over a fixture that really does declare an
+    event."""
     src = _TOKEN_STYLE.read_text(encoding="utf-8")
     c = compiled(src, str(_TOKEN_STYLE))
     contract_cls = c.spec_inputs.contract_cls
@@ -876,8 +907,46 @@ def test_declared_events_are_never_handed_to_build_spec_entries() -> None:
     assert len(c.spec_inputs.events) == 1
     assert len(c.spec_inputs.declared_types_in_order) == 2
     assert sections.spec_payload(c) == build_spec_entries(
-        contract_cls, types=c.spec_inputs.declared_types_in_order
+        contract_cls,
+        types=c.spec_inputs.declared_types_in_order,
+        events=c.spec_inputs.events,
     )
+    with pytest.raises(ValueError, match="events="):
+        build_spec_entries(
+            contract_cls,
+            types=(*c.spec_inputs.declared_types_in_order, *c.spec_inputs.events),
+        )
+
+
+def test_a_built_module_carries_the_event_spec_entry() -> None:
+    """Dossier F.1.11, end to end: a contract module spelling the topic
+    convention -- `from serpent import Annotated, topic` (SPT2005: a contract
+    may import from `serpent` and nowhere else) -- compiles, and the assembled
+    wasm's `contractspecv0` carries the matching `SC_SPEC_ENTRY_EVENT_V0`."""
+    payload = _customs(build(EVENT_SRC))[sections.SPEC_SECTION_NAME]
+    unpacker = Unpacker(payload)
+    events: list[xdr.SCSpecEventV0] = []
+    kinds: list[xdr.SCSpecEntryKind] = []
+    while unpacker.get_position() < len(payload):
+        entry = xdr.SCSpecEntry.unpack(unpacker)
+        kinds.append(entry.kind)
+        if entry.event_v0 is not None:
+            events.append(entry.event_v0)
+
+    # Ruling E2's order: the event entry is LAST, after every function.
+    assert kinds[-1] is xdr.SCSpecEntryKind.SC_SPEC_ENTRY_EVENT_V0
+    assert len(events) == 1
+    event = events[0]
+    assert event.name.sc_symbol == b"Moved"
+    assert [t.sc_symbol for t in event.prefix_topics] == [b"moved"]
+    assert event.data_format is xdr.SCSpecEventDataFormat.SC_SPEC_EVENT_DATA_FORMAT_MAP
+    assert [(p.name, p.location) for p in event.params] == [
+        (
+            b"who",
+            xdr.SCSpecEventParamLocationV0.SC_SPEC_EVENT_PARAM_LOCATION_TOPIC_LIST,
+        ),
+        (b"amount", xdr.SCSpecEventParamLocationV0.SC_SPEC_EVENT_PARAM_LOCATION_DATA),
+    ]
 
 
 def test_the_spec_section_names_every_export(  # B9
@@ -999,7 +1068,7 @@ def test_the_assembled_counter_instantiates_and_runs_under_the_mini_host() -> No
     assert host.invoke("total") == val.pack_u32val(5)
     assert host.invoke("increment", val.pack_u32val(7)) == val.pack_u32val(12)
     assert host.invoke("total") == val.pack_u32val(12)
-    assert store.storage[(STORAGE_PERSISTENT, "TOTAL")] == val.pack_u32val(12)
+    assert store.storage[(STORAGE_PERSISTENT, (15, b"TOTAL"))] == val.pack_u32val(12)
 
 
 def test_the_assembled_counter_raises_its_own_contract_error_past_the_limit() -> None:

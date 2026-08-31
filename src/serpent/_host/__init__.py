@@ -14,6 +14,7 @@ from serpent._host._model import (
 )
 from serpent._host._protocol import (
     BASE_PROTOCOL,
+    CONSTRUCTOR_MIN_PROTOCOL,
     DEFAULT_TARGET_PROTOCOL,
     ProtocolGateError,
     check_protocol_target,
@@ -27,6 +28,7 @@ functions_by_name: dict[str, HostFn] = index_functions_by_name(HOST_FUNCTIONS)
 
 __all__ = [
     "BASE_PROTOCOL",
+    "CONSTRUCTOR_MIN_PROTOCOL",
     "CONTRACT_TTL_EXTENSION",
     "DEFAULT_TARGET_PROTOCOL",
     "ENV_TYPE_TO_WASM_TYPE",

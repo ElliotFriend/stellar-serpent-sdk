@@ -34,6 +34,7 @@ from serpent import (
     I128,
     U32,
     Address,
+    Annotated,
     Bytes32,
     Env,
     Event,
@@ -45,8 +46,10 @@ from serpent import (
     contractevent,
     contracttype,
     errorcode,
+    topic,
 )
 from serpent._host import declared_protocol
+from serpent.decorators import DATA_FORMATS, DATA_LOCATION, TOPIC_LOCATION
 from serpent.spec import (
     SpecDocError,
     SpecNameError,
@@ -55,6 +58,7 @@ from serpent.spec import (
     build_meta,
     build_spec_entries,
 )
+from serpent.spec.sections import _DATA_FORMATS, _PARAM_LOCATIONS
 from tests.fixtures import token_style
 
 # The same eight Phase 0 host functions `test_protocol_floor.py` pins, imported
@@ -159,6 +163,20 @@ class Moved(Event):
     amount: I128
 
 
+@contractevent
+class Sent(Event):
+    """The dossier C.2 shape: two topics, one data field, defaulted name."""
+
+    frm: Annotated[Address, topic]
+    to: Annotated[Address, topic]
+    amount: I128
+
+
+@contractevent(topics=("token", "burn"), data_format="single-value")
+class Burned(Event):
+    amount: I128
+
+
 # --- helpers ----------------------------------------------------------------
 
 
@@ -191,9 +209,18 @@ def _shape(entries: list[xdr.SCSpecEntry]) -> list[tuple[str, str]]:
             shape.append(("struct", entry.udt_struct_v0.name.decode()))
         elif entry.udt_error_enum_v0 is not None:
             shape.append(("error_enum", entry.udt_error_enum_v0.name.decode()))
-        else:  # pragma: no cover - no other kind is emitted in M1-B
+        elif entry.event_v0 is not None:
+            shape.append(("event", entry.event_v0.name.sc_symbol.decode()))
+        else:  # pragma: no cover - no other kind is emitted
             raise AssertionError(f"unexpected entry kind: {entry.kind}")
     return shape
+
+
+def _event(entries: list[xdr.SCSpecEntry], name: str) -> xdr.SCSpecEventV0:
+    for entry in entries:
+        if entry.event_v0 is not None and entry.event_v0.name.sc_symbol.decode() == name:
+            return entry.event_v0
+    raise AssertionError(f"no event entry named {name!r} in {_shape(entries)}")
 
 
 def _function(entries: list[xdr.SCSpecEntry], name: str) -> xdr.SCSpecFunctionV0:
@@ -559,15 +586,185 @@ def test_error_enum_entry_carries_every_errorcode_case() -> None:
     ]
 
 
-def test_an_event_class_in_types_is_refused_pointing_at_sub_plan_e() -> None:
-    """`SCSpecEventV0` needs a `data_format` and per-parameter `location` that
-    M1-A's event metadata does not carry -- a guessed entry would be a
-    valid-but-lying spec."""
+def test_an_event_class_in_types_is_refused_pointing_at_the_events_keyword() -> None:
+    """Events are their own entry kind and their own inventory (MJ-9): `types=`
+    carries UDT references, `events=` carries `SC_SPEC_ENTRY_EVENT_V0`. The
+    refusal stays; it now points at the keyword that DOES take an event."""
     with pytest.raises(SpecTypeError) as exc_info:
         build_spec_entries(Counter, types=(Moved,))
     message = str(exc_info.value)
     assert "Moved" in message
-    assert "sub-plan E" in message
+    assert "events=" in message
+
+
+# --- events (M1-E Task 5) ---------------------------------------------------
+
+
+def test_event_entry_carries_prefix_topics_params_and_locations() -> None:
+    entries = _unpack(build_spec_entries(Counter, events=(Sent,)))
+    event = _event(entries, "Sent")
+    assert event.lib == b""
+    assert event.doc == b"The dossier C.2 shape: two topics, one data field, defaulted name."
+    assert [t.sc_symbol for t in event.prefix_topics] == [b"sent"]
+    assert event.data_format is xdr.SCSpecEventDataFormat.SC_SPEC_EVENT_DATA_FORMAT_MAP
+    topic_list = xdr.SCSpecEventParamLocationV0.SC_SPEC_EVENT_PARAM_LOCATION_TOPIC_LIST
+    data = xdr.SCSpecEventParamLocationV0.SC_SPEC_EVENT_PARAM_LOCATION_DATA
+    assert [(p.name, p.doc, p.type.type, p.location) for p in event.params] == [
+        (b"frm", b"", xdr.SCSpecType.SC_SPEC_TYPE_ADDRESS, topic_list),
+        (b"to", b"", xdr.SCSpecType.SC_SPEC_TYPE_ADDRESS, topic_list),
+        (b"amount", b"", xdr.SCSpecType.SC_SPEC_TYPE_I128, data),
+    ]
+
+
+def test_declared_topics_and_the_three_data_formats_reach_the_xdr() -> None:
+    event = _event(_unpack(build_spec_entries(Counter, events=(Burned,))), "Burned")
+    assert [t.sc_symbol for t in event.prefix_topics] == [b"token", b"burn"]
+    assert event.data_format is (xdr.SCSpecEventDataFormat.SC_SPEC_EVENT_DATA_FORMAT_SINGLE_VALUE)
+
+    @contractevent(data_format="vec")
+    class Vecish(Event):
+        amount: I128
+
+    event = _event(_unpack(build_spec_entries(Counter, events=(Vecish,))), "Vecish")
+    assert event.data_format is xdr.SCSpecEventDataFormat.SC_SPEC_EVENT_DATA_FORMAT_VEC
+
+
+def test_events_are_appended_after_the_functions() -> None:
+    """Ruling E2's entry order: structs, error enums, functions, THEN events --
+    so adding an event cannot move a single byte of an existing spec."""
+    entries = _unpack(build_spec_entries(Spike, types=(Settings, Error), events=(Moved, Sent)))
+    assert _shape(entries) == [
+        ("struct", "Settings"),
+        ("error_enum", "Error"),
+        ("fn", "setup"),
+        ("fn", "bump"),
+        ("event", "Moved"),
+        ("event", "Sent"),
+    ]
+
+
+def test_declaring_no_events_is_byte_identical_to_omitting_the_keyword() -> None:
+    """The half of ruling E2 that protects every existing spec (and the
+    on-chain golden asserted above): `events=()` is exactly the old payload."""
+    with_keyword = build_spec_entries(Spike, types=(Settings, Error), events=())
+    assert with_keyword == build_spec_entries(Spike, types=(Settings, Error))
+
+
+@requires_spike_wasm
+def test_the_on_chain_golden_still_matches_with_the_events_keyword_present() -> None:
+    deployed = _wasm_custom_section(SPIKE_WASM.read_bytes(), "contractspecv0")
+    assert build_spec_entries(Spike, types=(Settings, Error), events=()) == deployed
+
+
+def test_a_non_event_class_in_events_is_refused() -> None:
+    class Plain:
+        pass
+
+    with pytest.raises(SpecTypeError, match="Settings"):
+        build_spec_entries(Counter, events=(Settings,))
+    with pytest.raises(SpecTypeError, match="Plain"):
+        build_spec_entries(Counter, events=(Plain,))
+
+
+def test_prefix_topics_over_the_xdr_cap_are_refused_naming_the_class() -> None:
+    """R5's negative control. The decorator already refuses three topics at the
+    declaration site, so this is the belt-and-braces path -- reached with
+    hand-built metadata -- and it must STILL be a serpent error naming the
+    class, never a bare `stellar_sdk` ValueError from inside an XDR
+    constructor."""
+
+    @contractevent
+    class Overloaded(Event):
+        amount: I128
+
+    vars(Overloaded)["_serpent_type_"]["prefix_topics"] = ("a", "b", "c")
+    with pytest.raises(SpecTypeError) as exc_info:
+        build_spec_entries(Counter, events=(Overloaded,))
+    message = str(exc_info.value)
+    assert "Overloaded" in message
+    assert "2" in message
+
+
+def test_an_unknown_data_format_in_metadata_is_refused_naming_the_class() -> None:
+    @contractevent
+    class Odd(Event):
+        amount: I128
+
+    vars(Odd)["_serpent_type_"]["data_format"] = "tuple"
+    with pytest.raises(SpecTypeError, match="Odd"):
+        build_spec_entries(Counter, events=(Odd,))
+
+
+def test_single_value_over_two_data_params_is_refused_naming_the_class() -> None:
+    """The XDR would encode this happily, and the result would be a LIE: a
+    SINGLE_VALUE event whose spec declares two data params. The arity rule is
+    the decorator's, re-run here because this is where the entry is built."""
+
+    @contractevent
+    class Pair(Event):
+        amount: I128
+        fee: I128
+
+    vars(Pair)["_serpent_type_"]["data_format"] = "single-value"
+    with pytest.raises(SpecTypeError) as exc_info:
+        build_spec_entries(Counter, events=(Pair,))
+    message = str(exc_info.value)
+    assert "Pair" in message
+    assert "exactly one non-topic field" in message
+
+
+def test_a_locations_map_that_does_not_match_the_fields_is_refused() -> None:
+    """A MISSING key was a bare `KeyError` naming nothing; an EXTRA key was
+    silently ignored, which is how a topic field could publish as data."""
+
+    @contractevent
+    class Skewed(Event):
+        who: Annotated[Address, topic]
+        amount: I128
+
+    metadata = vars(Skewed)["_serpent_type_"]
+    original = dict(metadata["locations"])
+
+    metadata["locations"] = {"who": "topic"}
+    with pytest.raises(SpecTypeError) as exc_info:
+        build_spec_entries(Counter, events=(Skewed,))
+    assert "Skewed" in str(exc_info.value)
+    assert "missing amount" in str(exc_info.value)
+
+    metadata["locations"] = {**original, "ghost": "data"}
+    with pytest.raises(SpecTypeError, match="unknown field"):
+        build_spec_entries(Counter, events=(Skewed,))
+
+    metadata["locations"] = {**original, "amount": "footer"}
+    with pytest.raises(SpecTypeError, match="'footer'"):
+        build_spec_entries(Counter, events=(Skewed,))
+
+    metadata["locations"] = original
+    assert build_spec_entries(Counter, events=(Skewed,))
+
+
+def test_every_authorable_data_format_and_location_has_an_xdr_case() -> None:
+    """The authoring surface (`decorators.DATA_FORMATS`, and the two location
+    constants) and this module's XDR tables cannot drift: a new format string
+    with no case here would `KeyError` at emission."""
+    assert set(_DATA_FORMATS) == set(DATA_FORMATS)
+    assert len(set(_DATA_FORMATS.values())) == len(DATA_FORMATS)
+    assert set(_PARAM_LOCATIONS) == {TOPIC_LOCATION, DATA_LOCATION}
+
+
+def test_an_event_name_over_the_symbol_cap_is_refused() -> None:
+    """`SCSpecEventV0.name` is an `SCSymbol` (32), NOT a `string<60>` like a UDT
+    name -- so an event's cap is the tighter one. (`topics=` is declared here
+    because the DEFAULT prefix topic derived from a 33-character class name is
+    itself over the Symbol cap, and the decorator refuses that first.)"""
+
+    @contractevent(topics=("ok",))
+    class ThisEventsClassNameIsThirtyThreeX(Event):  # 33 characters
+        amount: I128
+
+    assert len(ThisEventsClassNameIsThirtyThreeX.__name__) == 33
+    with pytest.raises(SpecNameError, match="capped at 32"):
+        build_spec_entries(Counter, events=(ThisEventsClassNameIsThirtyThreeX,))
 
 
 def test_a_non_contract_class_is_refused() -> None:

@@ -10,6 +10,7 @@ decorator also catches at runtime.
 
 import dataclasses
 import pathlib
+from typing import Annotated
 
 import pytest
 
@@ -23,6 +24,7 @@ from serpent.decorators import (
     contractevent,
     contracttype,
     errorcode,
+    topic,
 )
 from serpent.env import (
     ChainValue,
@@ -37,6 +39,7 @@ from serpent.env import (
 )
 from serpent.errors import RESERVED_CODE_MIN, ContractError
 from serpent.types import U32, U64, Address, Bool, Map, String, Symbol, Vec
+from tests.unit.conftest import deployed_env
 
 
 def test_contracterror_members_are_exception_classes() -> None:
@@ -331,11 +334,328 @@ def test_contracttype_reports_unresolvable_annotation() -> None:
             inner: "Inner"
 
 
-def test_contractevent_publishes_under_sub_plan_e() -> None:
-    assert _meta(Bumped) == {"kind": "event", "fields": [("count", U32)]}
+def test_contractevent_records_the_convention_publish_reads() -> None:
+    """The metadata shape Task 6's desugar and `Event.publish` both read back.
+
+    `publish` is now implemented (M1-E Task 6), so the tier-1 half is exercised
+    in `test_env_model.py`; what this pins is that the metadata carries every
+    piece of the convention -- and that an UNDEPLOYED `Env` still refuses the
+    publish for the ordinary frame reason, not for a missing implementation.
+    """
+    assert _meta(Bumped) == {
+        "kind": "event",
+        "fields": [("count", U32)],
+        "locations": {"count": "data"},
+        "prefix_topics": ("bumped",),
+        "data_format": "map",
+    }
     event = Bumped(count=U32(1))
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
+    with pytest.raises(RuntimeError, match="before the contract was deployed"):
         event.publish(Env())
+
+
+# --- the topic convention (M1-E Task 5) -------------------------------------
+
+
+def test_the_topic_marker_is_a_named_sentinel_not_a_bare_object() -> None:
+    """A bare `object()` would render as `<object object at 0x...>` in every
+    error message and repr an author ever sees."""
+    assert repr(topic) == "topic"
+    assert type(topic) is not object
+
+
+def test_a_marked_field_is_a_topic_and_the_annotation_is_stripped() -> None:
+    """The one seam: `_build_record` reads hints with `include_extras=True`,
+    records the marker, and stores the STRIPPED annotation -- so every
+    downstream consumer (`typemap`, the compiler's `resolve_annotation`) sees a
+    plain chain type and needs no edit."""
+
+    @contractevent
+    class Sent(Event):
+        frm: Annotated[Address, topic]
+        to: Annotated[Address, topic]
+        amount: U32
+
+    metadata = _meta(Sent)
+    assert metadata["fields"] == [("frm", Address), ("to", Address), ("amount", U32)]
+    # Identity, not equality: an `Annotated[...]` alias compares equal to
+    # nothing here, but a leak would show up as a non-`type` object.
+    fields = metadata["fields"]
+    assert isinstance(fields, list)
+    assert all(isinstance(annotation, type) for _name, annotation in fields)
+    assert metadata["locations"] == {"frm": "topic", "to": "topic", "amount": "data"}
+    assert metadata["prefix_topics"] == ("sent",)
+    assert metadata["data_format"] == "map"
+
+
+def test_an_annotated_field_without_the_marker_is_still_stripped() -> None:
+    """`Annotated` is a general-purpose seam; only serpent's own marker means
+    anything to the event convention."""
+
+    @contractevent
+    class Documented(Event):
+        count: Annotated[U32, "not serpent's marker"]
+
+    assert _meta(Documented)["fields"] == [("count", U32)]
+    assert _meta(Documented)["locations"] == {"count": "data"}
+
+    @contracttype
+    class Struct:
+        count: Annotated[U32, "not serpent's marker"]
+
+    assert _meta(Struct) == {"kind": "struct", "fields": [("count", U32)]}
+
+
+def test_the_default_prefix_topic_is_the_snake_case_class_name() -> None:
+    """The three vectors the algorithm has to get right: a plain CamelCase
+    name, an acronym run in the middle, and an acronym run at the front."""
+
+    @contractevent
+    class MyEvent(Event):
+        amount: U32
+
+    @contractevent
+    class MyHTTPEvent(Event):
+        amount: U32
+
+    @contractevent
+    class HTTPEvent(Event):
+        amount: U32
+
+    assert _meta(MyEvent)["prefix_topics"] == ("my_event",)
+    assert _meta(MyHTTPEvent)["prefix_topics"] == ("my_http_event",)
+    assert _meta(HTTPEvent)["prefix_topics"] == ("http_event",)
+
+
+def test_explicit_topics_and_data_format_are_recorded() -> None:
+    @contractevent(topics=("token", "transfer"), data_format="vec")
+    class Renamed(Event):
+        amount: U32
+
+    metadata = _meta(Renamed)
+    assert metadata["prefix_topics"] == ("token", "transfer")
+    assert metadata["data_format"] == "vec"
+    # Still a frozen dataclass, and still kwargs-constructible under
+    # `mypy --strict` (`dataclass_transform` survives the factory form).
+    assert Renamed(amount=U32(1)) == Renamed(amount=U32(1))
+
+
+def test_a_prefix_topic_longer_than_nine_characters_is_legal() -> None:
+    """`fits_symbol_small` (<=9) is the WRONG cap here: a longer prefix topic is
+    a perfectly valid Symbol that pools via linear memory at the publish site
+    (S19)."""
+
+    @contractevent(topics=("transfer_from",))
+    class Long(Event):
+        amount: U32
+
+    assert _meta(Long)["prefix_topics"] == ("transfer_from",)
+
+
+def test_no_prefix_topics_at_all_is_legal() -> None:
+    """Deliberate (review M3): an event whose topic list is exactly its
+    `Annotated[T, topic]` fields is an accurate spec, not a lie.
+
+    The first marked field carries `topics[0]`'s job, so it is a `Symbol` --
+    see `test_a_prefixless_event_needs_a_symbol_first_topic_field`.
+    """
+
+    @contractevent(topics=())
+    class Prefixless(Event):
+        kind: Annotated[Symbol, topic]
+        who: Annotated[Address, topic]
+        amount: U32
+
+    assert _meta(Prefixless)["prefix_topics"] == ()
+    assert _meta(Prefixless)["locations"] == {"kind": "topic", "who": "topic", "amount": "data"}
+
+
+def test_a_prefixless_event_needs_a_symbol_first_topic_field() -> None:
+    """Task 6 review I1: the `topics[0]`-names-the-event convention (S10/S11),
+    held at the declaration.
+
+    With `topics=()` the first MARKED FIELD is `topics[0]`, so an
+    `Annotated[Address, topic]` first field would publish an Address where every
+    indexer and RPC filter expects a Symbol naming the event. The canonical
+    spelling refuses exactly that at compile time (`SPT3019`), so refusing the
+    declaration keeps both spellings -- and the spec entry -- telling one story.
+    """
+    with pytest.raises(ValueError, match="must therefore be a Symbol") as exc_info:
+
+        @contractevent(topics=())
+        class AddressFirst(Event):
+            who: Annotated[Address, topic]
+            amount: U32
+
+    message = str(exc_info.value)
+    assert "AddressFirst.who" in message
+    # The remedy is named, spelled the way the author would write it.
+    assert "topics=('address_first',)" in message
+
+
+def test_a_bare_string_of_topics_is_refused_not_exploded() -> None:
+    """`str` IS a `Sequence[str]`, so mypy accepts `topics="transfer"` with no
+    complaint (this line carries no `type: ignore`, and `--strict` would flag an
+    unused one) and `tuple()` would make it eight one-letter topics. Reported as
+    the missing comma it is, not as "at most 2 prefix topics (got 8)"."""
+    with pytest.raises(ValueError, match="not one string") as exc_info:
+
+        @contractevent(topics="transfer")
+        class Stringy(Event):
+            amount: U32
+
+    assert "topics=('transfer',)" in str(exc_info.value)
+
+
+def test_an_over_long_DERIVED_prefix_topic_blames_the_class_name() -> None:
+    """The author never wrote this topic, so the message must not read as if
+    they did: it names the derivation and points at `topics=` (review M2)."""
+    with pytest.raises(ValueError) as exc_info:
+
+        @contractevent
+        class ThisEventsClassNameIsThirtyThreeX(Event):  # 33 characters
+            amount: U32
+
+    message = str(exc_info.value)
+    assert "derived from the class name" in message
+    assert "topics=" in message
+    assert "this_events_class_name_is_thirty_three_x" in message
+
+
+def test_three_prefix_topics_are_refused_at_the_declaration_site() -> None:
+    """The XDR caps `prefix_topics` at 2 (R5's negative control: a serpent error
+    naming the class, never a bare `stellar_sdk` ValueError from deep inside an
+    XDR constructor)."""
+    with pytest.raises(ValueError, match="Three.*at most 2"):
+
+        @contractevent(topics=("a", "b", "c"))
+        class Three(Event):
+            amount: U32
+
+
+def test_a_prefix_topic_that_is_not_a_valid_symbol_is_refused() -> None:
+    with pytest.raises(ValueError, match="valid Symbol"):
+
+        @contractevent(topics=("not a symbol",))
+        class Spaced(Event):
+            amount: U32
+
+    with pytest.raises(ValueError, match="valid Symbol"):
+
+        @contractevent(topics=("t" * 33,))
+        class TooLong(Event):
+            amount: U32
+
+    with pytest.raises(ValueError, match="valid Symbol"):
+
+        @contractevent(topics=("",))
+        class Empty(Event):
+            amount: U32
+
+
+def test_single_value_requires_exactly_one_non_topic_field() -> None:
+    @contractevent(data_format="single-value")
+    class Fine(Event):
+        who: Annotated[Address, topic]
+        amount: U32
+
+    assert _meta(Fine)["data_format"] == "single-value"
+
+    with pytest.raises(ValueError, match="single-value"):
+
+        @contractevent(data_format="single-value")
+        class Two(Event):
+            amount: U32
+            fee: U32
+
+    with pytest.raises(ValueError, match="single-value"):
+
+        @contractevent(data_format="single-value")
+        class NoneAtAll(Event):
+            who: Annotated[Address, topic]
+
+
+def test_an_unknown_data_format_is_refused() -> None:
+    with pytest.raises(ValueError, match="data_format"):
+
+        @contractevent(data_format="tuple")
+        class Odd(Event):
+            amount: U32
+
+
+# --- the three M1 shape restrictions (Task 6's desugar, ruling (a)) ----------
+
+
+def test_vec_data_takes_uniformly_typed_fields_in_m1() -> None:
+    """An M1 restriction, and a narrow one (Task 6, controller ruling (a)).
+
+    `data_format="vec"` publishes the data fields as one `Vec`, and the IR node
+    for a vector -- `MakeVec` -- carries exactly ONE `elem_ty`, because tier
+    1's `Vec` is statically typed in its element class. A heterogeneous
+    `Vec<Val>` has no node (`MakeTopics` is the heterogeneous vec, and it is
+    topics-only by contract), so the declaration is refused HERE rather than
+    compiling into a vector whose element type is a guess.
+    """
+
+    @contractevent(data_format="vec")
+    class Uniform(Event):
+        who: Annotated[Address, topic]
+        first: U32
+        second: U32
+
+    assert _meta(Uniform)["data_format"] == "vec"
+
+    with pytest.raises(ValueError, match="same type"):
+
+        @contractevent(data_format="vec")
+        class Mixed(Event):
+            amount: U32
+            memo: String
+
+
+@pytest.mark.parametrize("data_format", ["map", "vec"])
+def test_map_and_vec_data_need_at_least_one_data_field(data_format: str) -> None:
+    """Every field a topic, with a container data format, has nothing to put in
+    the container -- and neither `map_new_from_linear_memory` over an empty key
+    array nor a `Vec` with no element type is a thing that exists. Refused at
+    the declaration (R5) instead of at the publish site."""
+    with pytest.raises(ValueError, match="at least one"):
+
+        @contractevent(data_format=data_format)
+        class AllTopics(Event):
+            who: Annotated[Address, topic]
+
+
+def test_an_event_with_no_topic_at_all_is_refused() -> None:
+    """`topics=()` is legal (review M3) BECAUSE the marked fields carry the
+    topic list. With neither, the published topic list would be empty -- which
+    the tier-1 model refuses ("an event needs at least one topic, naming it")
+    and which no indexer can filter on."""
+    with pytest.raises(ValueError, match="at least one topic"):
+
+        @contractevent(topics=())
+        class Topicless(Event):
+            amount: U32
+
+
+def test_the_topic_marker_is_meaningless_on_a_struct_field() -> None:
+    """Silently accepting it would let an author believe a struct field is a
+    topic; nothing in the pipeline would ever read it."""
+    with pytest.raises(ValueError, match="topic"):
+
+        @contracttype
+        class Marked:
+            who: Annotated[Address, topic]
+
+
+def test_the_topic_marker_must_wrap_the_WHOLE_field_annotation() -> None:
+    """`Annotated[Address, topic] | None` hides the marker inside a union, where
+    the strip would not find it -- refused rather than silently untopicked."""
+    with pytest.raises(ValueError, match="whole"):
+
+        @contractevent
+        class Nested(Event):
+            who: Annotated[Address, topic] | None
 
 
 def test_contract_metadata_lists_constructor_and_public_methods() -> None:
@@ -386,33 +706,49 @@ def test_contract_accepts_constructor_returning_none() -> None:
     assert _meta(Ok)["kind"] == "contract"
 
 
-def test_env_surface_is_complete_and_defers_to_sub_plan_e() -> None:
-    env = Env()
-    for call in (env.storage, env.ledger, env.events):
-        with pytest.raises(NotImplementedError, match="sub-plan E"):
-            call()
+def test_env_surface_is_complete_and_backed_by_the_tier_1_model() -> None:
+    """Every method on the surface now has a body, except the ones whose own
+    task is still open.
+
+    Rewritten (never deleted) from the assertion that every body raised
+    `NotImplementedError`: the surface stays pinned, but by what it DOES.
+    `tests/unit/test_env_model.py` is where the model's semantics are pinned;
+    this test's job is coverage of the SHAPE -- every accessor, every bucket
+    operation, once.
+    """
+    env = deployed_env()
+    storage = env.storage()
+    assert isinstance(storage, Storage)
+    assert isinstance(env.ledger(), Ledger)
+    assert isinstance(env.events(), Events)
+    assert isinstance(storage.instance(), InstanceStorage)
+    assert isinstance(storage.persistent(), PersistentStorage)
+    assert isinstance(storage.temporary(), TemporaryStorage)
+
     key = Symbol("K")
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        InstanceStorage().extend_ttl(U32(1), U32(2))
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        PersistentStorage().extend_ttl(key, U32(1), U32(2))
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        TemporaryStorage().extend_ttl(key, U32(1), U32(2))
-    bucket = InstanceStorage()
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        bucket.get(key, U32)
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        bucket.set(key, U32(1))
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        bucket.has(key)
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        bucket.del_(key)
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        Storage().instance()
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        Ledger().sequence()
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        Events().publish((Symbol("e"),), U32(1))
+    bucket = storage.instance()
+    assert not bucket.has(key)
+    bucket.set(key, U32(1))
+    assert bucket.has(key)
+    assert bucket.get(key, U32) == U32(1)
+    bucket.del_(key)
+    assert not bucket.has(key)
+    assert bucket.get(key, U32, U32(9)) == U32(9)
+
+    env.events().publish((Symbol("e"),), U32(1))
+    assert env.published_events == (((Symbol("e"),), U32(1)),)
+    assert isinstance(env.ledger().timestamp(), U64)
+    assert isinstance(env.ledger().sequence(), U32)
+
+    # The TTL model, which is PARTIAL by design -- no clamp and no trap, since
+    # no maximum live-until ledger is reachable in M1. Shape only here (the
+    # keyless instance form, the keyed forms); `tests/unit/test_env_ttl.py`
+    # owns the algebra, the expiry and the two enumerated non-models.
+    storage.instance().extend_ttl(U32(1), U32(2))
+    storage.persistent().set(key, U32(1))
+    storage.persistent().extend_ttl(key, U32(1), U32(2))
+    storage.temporary().set(key, U32(1))
+    storage.temporary().extend_ttl(key, U32(1), U32(2))
 
 
 # --------------------------------------------------------------------------
@@ -424,10 +760,13 @@ def test_storage_keys_accept_the_whole_chain_value_surface() -> None:
     """(a) Keys are any chain value or `@contracttype` struct.
 
     The static half of this is the `credit` method on `Example` above (a
-    struct key) plus `_key_surface_probe` below; here we only pin that the
-    widened signatures still reach the sub-plan E stub for every key shape.
+    struct key) plus `_key_surface_probe` below; the runtime half used to pin
+    that the widened signatures reached the sub-plan E stub, and now pins that
+    every key shape ROUND TRIPS through the tier-1 model -- including through
+    `extend_ttl`, which finds the entry a `set` of the same key wrote (a live
+    entry, so the dead-entry error does not fire).
     """
-    bucket = PersistentStorage()
+    bucket = deployed_env().storage().persistent()
     address = Address("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ")
     keys: list[ChainValue] = [
         Symbol("SYM"),
@@ -437,11 +776,11 @@ def test_storage_keys_accept_the_whole_chain_value_surface() -> None:
         Vec(Symbol, [Symbol("a")]),
         Map(Symbol, U32),
     ]
-    for key in keys:
-        with pytest.raises(NotImplementedError, match="sub-plan E"):
-            bucket.get(key, U32)
-        with pytest.raises(NotImplementedError, match="sub-plan E"):
-            bucket.extend_ttl(key, U32(1), U32(2))
+    for index, key in enumerate(keys):
+        bucket.set(key, U32(index))
+    for index, key in enumerate(keys):
+        assert bucket.get(key, U32) == U32(index)
+        bucket.extend_ttl(key, U32(1), U32(2))
 
 
 def _key_surface_probe(env: Env, address: Address) -> None:
@@ -496,8 +835,9 @@ def test_event_topics_are_heterogeneous_tuples() -> None:
     """(c) The canonical shape is `(Symbol, Address, Address)`."""
     address = Address("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ")
     topics: tuple[ChainValue, ...] = (Symbol("transfer"), address, address)
-    with pytest.raises(NotImplementedError, match="sub-plan E"):
-        Events().publish(topics, U32(1))
+    env = deployed_env()
+    env.events().publish(topics, U32(1))
+    assert env.published_events == ((topics, U32(1)),)
 
 
 def test_metadata_is_identical_with_and_without_pep_563() -> None:

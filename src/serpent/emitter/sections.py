@@ -15,10 +15,11 @@ The three payloads, per dossier B.1's custom-section row:
   was, "users may raise, never lower" (S6) -- so there is nothing for this
   module to decide (review M5).
 * ``contractspecv0`` <- ``build_spec_entries(contract_cls,
-  types=declared_types_in_order)`` (B8/B9). ``spec_inputs.events`` is NEVER
-  passed (review B10): `_serpent_type_` carries no topic/data split, so an
-  event handed to ``types=`` is a hard failure at emission rather than a
-  valid-but-lying spec.
+  types=declared_types_in_order, events=events)`` (B8/B9). The two inventories
+  stay SEPARATE (review B10/MJ-9): ``types=`` carries the structs and error
+  enums a UDT reference can name and refuses an event outright, while
+  ``events=`` carries the ``EVENT_V0`` entries the topic convention (M1-E Task
+  5) put in ``_serpent_type_``.
 * ``contractmetav0`` <- ``build_meta(contract name, version, user pairs)``
   (ruling E8). The contract's own name is the ``@contract`` CLASS name;
   ``version`` is written only when the caller supplied one, because inventing a
@@ -77,11 +78,12 @@ def env_meta_payload(compiled: CompiledModule) -> bytes:
 
 
 def spec_payload(compiled: CompiledModule) -> bytes:
-    """``contractspecv0``: the exported interface plus the declared types (B8/B9).
+    """``contractspecv0``: the exported interface, declared types and events (B8/B9).
 
     ``types=`` takes ``declared_types_in_order`` -- B9's "declared, not
-    discovered" inventory, in declaration order -- and never
-    ``spec_inputs.events`` (B10).
+    discovered" inventory, in declaration order -- and ``events=`` takes
+    ``spec_inputs.events``, the separate event inventory (B10). This function is
+    the whole seam: ``module.py`` needs no knowledge of either.
     """
     contract_cls = compiled.spec_inputs.contract_cls
     if contract_cls is None:
@@ -90,7 +92,11 @@ def spec_payload(compiled: CompiledModule) -> bytes:
             "diagnostic, and a module with diagnostics never reaches the emitter "
             "(dossier C.3) -- reaching it here is a compiler bug"
         )
-    return build_spec_entries(contract_cls, types=compiled.spec_inputs.declared_types_in_order)
+    return build_spec_entries(
+        contract_cls,
+        types=compiled.spec_inputs.declared_types_in_order,
+        events=compiled.spec_inputs.events,
+    )
 
 
 def meta_payload(compiled: CompiledModule, meta: Mapping[str, str], version: str | None) -> bytes:

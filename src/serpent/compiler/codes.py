@@ -297,7 +297,8 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "SPT1032",
         "SPT1xxx",
         "Call -- <Event instance>.publish(env)",
-        "deferred to sub-plan E; use env.events().publish(topics, data)",
+        "superseded by M1-E: `<Event instance>.publish(env)` is supported and lowers to "
+        "the same contract_event call env.events().publish(topics, data) does",
         "Task 7a",
     ),
     CodeEntry(
@@ -929,7 +930,11 @@ CODES: frozenset[str] = frozenset(entry.code for entry in REGISTRY)
 #: today no C-emitted host function carries a protocol gate above the base
 #: (the frontend only ever emits the ungated v1 TTL form), so no real
 #: source can trip SPT6001 -- it is proven end-to-end by a synthetic-bindings
-#: unit test (Task 10) instead of a fixture. `SPT1009`/`SPT4018`/`SPT7003`
+#: unit test (Task 10) instead of a fixture. (Rider, constructor-floor fix:
+#: SPT6001 also gates any constructor-bearing contract below protocol 22
+#: (CAP-0058) -- a real source-level trigger -- but only via an explicit
+#: `target_protocol`, a `compile_module` keyword no `must_reject` fixture can
+#: set, so the allowlisting still holds.) `SPT1009`/`SPT4018`/`SPT7003`
 #: were added by controller ruling during Task 11b's fixture-completion
 #: round: each is a dead dispatch/check branch an earlier, always-first check
 #: already claims on every real-source path (see `NO_FIXTURE_REASONS`), kept
@@ -937,9 +942,16 @@ CODES: frozenset[str] = frozenset(entry.code for entry in REGISTRY)
 #: `SPT8xxx` rows joined for a different reason: they are EMITTER-side limits,
 #: raised from `serpent.emitter` over a module the frontend already accepted,
 #: so no small source fixture can trip one (see `NO_FIXTURE_REASONS`).
+#: `SPT1032` joined in M1-E for a THIRD reason, and it is the one this list was
+#: always meant to absorb: the construct it rejected became SUPPORTED (sub-plan
+#: E's `Event.publish(env)` desugar), so there is no longer any source that
+#: trips it. The registry row survives un-renumbered (D9 is append-only, and
+#: reversal is not a thing a published code may do); its `message_intent` now
+#: says it is superseded, and its fixture was deleted in the same commit.
 NO_FIXTURE_ALLOWLIST: frozenset[str] = frozenset(
     {
         "SPT1009",
+        "SPT1032",
         "SPT4018",
         "SPT6001",
         "SPT7003",
@@ -957,14 +969,23 @@ NO_FIXTURE_REASONS: dict[str, str] = {
         "SPT1013 (direct slice) or SPT1014 (multi-dim tuple); branch retained as "
         "defense-in-depth"
     ),
+    "SPT1032": (
+        "retired by M1-E (sub-plan E): the form it rejected is now supported -- "
+        "`<Event instance>.publish(env)` desugars into the canonical event lowering, so "
+        "no source can trip it; the row stays under the append-only rule (D9), and it "
+        "leaves this allowlist with a fixture if it ever becomes reachable again"
+    ),
     "SPT4018": (
         "superseded by SPT3020 per the Task 7b review adjudication (struct positional "
         "args ARE a call-arity shape); row retained under the append-only rule, never "
         "emitted"
     ),
     "SPT6001": (
-        "no gated authoring surface at M1-C; band wired end-to-end via a "
-        "synthetic-bindings unit test (Task 10)"
+        "no fixture-reachable trigger: no host function the frontend emits is gated above "
+        "the base protocol (that arm is wired end-to-end via a synthetic-bindings unit "
+        "test, Task 10), and the one FEATURE gate -- a contract with a constructor needs "
+        "protocol >= 22, CAP-0058 -- fires only against an explicit target_protocol, which "
+        "is a compile_module keyword a must_reject fixture cannot set"
     ),
     "SPT7003": (
         "unreachable end-to-end: CPython's compile() rejects break/continue outside a "

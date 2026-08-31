@@ -18,11 +18,19 @@ Two purposes, both load-bearing:
 * Methods take `self` first (ordinary, strict-clean Python methods).
 * `NAME = errorcode(N)` error-enum members (`raise TokenError.NAME` type-checks
   because `errorcode` is annotated `-> type[ContractError]`).
-* A `@contractevent` class inheriting `Event`, declared and mypy-visible. It is
-  NOT published through `Transfer(...).publish(env)`: ruling E12 defers that
-  form's topic/data split to sub-plan E (`_serpent_type_` carries none, B14),
-  so M1-C compiles only the canonical `env.events().publish(topics, data)`
-  line below -- which is exactly what `transfer` emits.
+* A `@contractevent` class inheriting `Event`, published through the AUTHORING
+  form `Transfer(from_=..., to=..., amount=...).publish(env)` (M1-E ruling E2).
+  Its topic convention is spelled out so the published event is exactly the one
+  this fixture used to build by hand: `topics=("transfer",)` with `from_`/`to`
+  marked `Annotated[Address, topic]` makes the topic tuple
+  `(Symbol("transfer"), frm, to)`, and `data_format="single-value"` over the
+  one non-topic field makes the data the bare `amount`. That is what makes the
+  both-spellings equivalence PROVABLE rather than merely asserted: the frontend
+  desugars this line into the same `contract_event` call
+  `env.events().publish((Symbol("transfer"), frm, to), amount)` produces, and
+  `tests/goldens/ir/token_style.ir.txt` did not move when the spelling changed.
+  The canonical spelling keeps a fixture of its own,
+  `tests/fixtures/token_style_canonical.py`.
 * Storage keys demonstrate BOTH halves of the widened key surface (Task 9's
   ruling): a plain `Symbol` key (`ADMIN`, `NAME_KEY`) and a `@contracttype`
   struct key (`BalanceKey`, keyed on an `Address` -- the dominant real-world
@@ -38,6 +46,7 @@ proves the import succeeds at runtime too.
 from serpent import (
     U32,
     Address,
+    Annotated,
     Bool,
     Env,
     Event,
@@ -48,6 +57,7 @@ from serpent import (
     contractevent,
     contracttype,
     errorcode,
+    topic,
 )
 
 ADMIN = Symbol("ADMIN")
@@ -67,10 +77,16 @@ class BalanceKey:
     owner: Address
 
 
-@contractevent
+@contractevent(topics=("transfer",), data_format="single-value")
 class Transfer(Event):
-    frm: Address
-    to: Address
+    """The `(Symbol("transfer"), from, to)` / bare-amount shape, declared.
+
+    `from_` carries the trailing underscore Python forces (`from` is a
+    keyword); the spec entry and the topic list use the field name as written.
+    """
+
+    from_: Annotated[Address, topic]
+    to: Annotated[Address, topic]
     amount: U32
 
 
@@ -93,6 +109,15 @@ class TokenStyle:
         key = BalanceKey(owner=owner)
         return env.storage().persistent().get(key, U32, default=U32(0))
 
+    # UNENFORCED BY DESIGN: the `admin` here is a caller-supplied PARAMETER, so
+    # `require_auth` is applied to whichever address the caller names rather
+    # than to the `ADMIN` this contract stored -- anyone can mint by naming
+    # themselves. The shape is kept because this fixture is chain-anchored (it
+    # mirrors a Rust original, and its shape is what the goldens and the spec
+    # entries are pinned to), not because it is the shape to copy.
+    # `examples/allowance_token.py`'s `mint` is the ENFORCED form: it drops the
+    # parameter, reads `ADMIN` back out of instance storage, and authorizes
+    # that.
     def mint(self, env: Env, admin: Address, to: Address, amount: U32) -> None:
         admin.require_auth()
         key = BalanceKey(owner=to)
@@ -109,5 +134,8 @@ class TokenStyle:
         to_balance = env.storage().persistent().get(to_key, U32, default=U32(0))
         env.storage().persistent().set(from_key, from_balance - amount)
         env.storage().persistent().set(to_key, to_balance + amount)
-        # The canonical heterogeneous topic shape: (Symbol, Address, Address).
-        env.events().publish((Symbol("transfer"), frm, to), amount)
+        # The authoring form. It desugars to the same call the canonical
+        # spelling makes -- `env.events().publish((Symbol("transfer"), frm,
+        # to), amount)` -- which `tests/fixtures/token_style_canonical.py`
+        # keeps under test.
+        Transfer(from_=frm, to=to, amount=amount).publish(env)

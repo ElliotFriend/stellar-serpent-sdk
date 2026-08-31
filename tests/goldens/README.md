@@ -112,9 +112,10 @@ also carries the class label and the regeneration command as an in-file
 header comment: WAT's `;;` comment syntax makes that free, where the `ir/`
 renderer's dataclass-style dump has no comment syntax to carry it in.
 
-- Source of truth: `tests/unit/test_emitter_printer.py` -- `FIXTURE_NAMES`
-  names the four fixtures, `render_golden` builds each one through
-  `serpent.emitter.build_file` and renders it with
+- Source of truth: `tests/unit/test_emitter_printer.py` -- `FIXTURE_SOURCES`
+  pairs every snapshotted source (in `tests/fixtures/` and, since M1-E, in
+  `examples/`) with its golden stem, and `render_golden` builds each one
+  through `serpent.emitter.build_file` and renders it with
   `serpent.emitter.printer.disassemble`.
 - Regenerate all of them with:
 
@@ -123,10 +124,13 @@ renderer's dataclass-style dump has no comment syntax to carry it in.
   The test writes the file and then compares, so a regeneration run is also
   a passing run. **Read the diff.** A golden diff here is a behavioral
   change to what sub-plan D emits, not noise.
-- The four fixtures: `spike1_reauthored` (Phase 0's re-authored spike, F.2.9),
-  `token_style` (the one realistic hand-authored contract, F.2.7), and the
-  two promoted sandbox contracts `sandbox_counter`/`sandbox_hello_world`
-  (F.2.8) -- the same fixture set `tests/unit/test_emitter_end_to_end.py`
+- The sources, which are `FIXTURE_SOURCES` in
+  `tests/unit/test_emitter_printer.py` and are listed there rather than
+  counted here: `spike1_reauthored` (Phase 0's re-authored spike, F.2.9), the
+  `token_style` pair (the realistic hand-authored contract and its canonical
+  event spelling, F.2.7), the promoted sandbox contracts
+  `sandbox_counter`/`sandbox_hello_world` (F.2.8), and the shipped
+  `examples/` -- the same fixture set `tests/unit/test_emitter_end_to_end.py`
   builds and runs, so a reader who wants BEHAVIOR rather than a lowering diff
   knows exactly where to look.
 - Like `ir/`, no golden may carry an object address, an `id()`, or an

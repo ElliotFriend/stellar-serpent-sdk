@@ -472,6 +472,31 @@ Format:
   surface becomes breaking-after-docs (D4's own note) — which is why it
   lands now, in the last cheap moment.
 
+## 2026-08-28 Constructor-bearing contracts raise the protocol floor to 22
+- Context: Elliot caught a live gap while playing — his rolodex contract
+  (with __init__ → __constructor) declared protocol 20. The floor is
+  computed over host-function IMPORTS (D13/E9), but the constructor is an
+  EXPORT-name capability gated at protocol 22 (spec §13 / dossier S26,
+  CAP-0058) and invisible to declared_protocol. Bytes declaring 20 with a
+  __constructor would deploy on a 20/21 network and simply never run the
+  constructor: deployable-but-uninitialized, the honest-declaration rule
+  violated.
+- Decision: the floor computation gains FEATURE gates alongside import
+  gates. CONSTRUCTOR_MIN_PROTOCOL = 22 lives in serpent._host._protocol
+  with the S26 citation; compile_module's resolved protocol is
+  max(import_floor, 22) when the module declares a constructor; an
+  explicit target_protocol below 22 with a constructor is a located
+  SPT6001 at the __init__ definition naming the gate. Pins updated:
+  constructor-bearing fixtures/examples now declare 22; constructor-less
+  ones (counter, spike1_reauthored — whose on-chain env-meta anchor is
+  unchanged) stay at the import floor.
+- Why: S6's "declared protocol is computed, never hand-set" only stays
+  honest if the computation sees every gated capability the module uses,
+  not just its imports. This is the first non-import gate; the mechanism
+  is named so future ones (if any) extend it rather than re-deriving.
+- Reversal cost: none — raising a floor is the safe direction; the change
+  is test-pinned in both directions.
+
 ## 2026-08-28 M1-E plan-review rulings (all findings adopted)
 - Context: adversarial review of the M1-E plan — 7 blockers, 8 majors, 10
   minors, all probe-evidenced (triage record:
@@ -505,6 +530,57 @@ Format:
   under deepcopy for every ChainValue shape probed — the escape flip's
   four-site edit list is dead barring a Task 2 surprise.
 - Reversal cost: per-item low pre-execution.
+
+## 2026-08-31 Tagged unions / int enums get a late-M1 addendum sub-plan
+- Context: Elliot caught (2026-08-28, journal-captured) that tagged unions
+  and int enums have no authoring surface and no sub-plan schedule, despite
+  spec §2's conventions (union → Vec led by variant Symbol; int enum → u32)
+  and §11's M1 scope sentence naming "structs/unions/enums" explicitly. The
+  M1-E ledger recorded that a controller decision was owed: late-M1 addendum
+  vs an explicit M2 deferral.
+- Decision: a late-M1 addendum sub-plan (working name M1-E2, dossier → plan
+  → review → SDD, the standard loop) scheduled after the M1-E merge and
+  before M1's closing deployment. Until it lands, the documented workaround
+  stays per-variant @contracttype keys + Symbol constants (token_style's
+  shape).
+- Why: the spec is the binding authority and its M1 sentence is explicit; a
+  deferral would ship M1 incomplete against its own scope line and require
+  amending the spec instead. Sizing note: the surface touches decorators,
+  typemap, spec sections (union/enum UDT entries), frontend lowering, and
+  the emitter's descriptor inventory — a real sub-plan, not a rider on E/F.
+- Reversal cost: schedule-only today (nothing is built); Elliot can
+  downgrade it to an M2 deferral by striking this entry and adding the spec
+  amendment note.
+
+## 2026-08-31 M1-E final-review rulings (fix wave)
+- Context: the Fable whole-branch review returned 0 Critical / 4 Important;
+  two of the fixes graze settled rulings, so the calls are recorded here.
+- Tier-1 `get` ADOPTS a non-ChainValue default through the requested `ty`
+  (mirroring M1-C literal adoption): `get(k, U32, default=0)` now answers
+  `U32(0)` at tier 1, matching the compiled IfExp's adopted literal. E5's
+  "default returns un-copied" is grazed, not reversed — adopting a raw
+  literal is not copying a caller's chain value; a chain-value default
+  still passes through un-copied and identity-pinned. The review proved
+  the old behavior was a silent cross-tier type divergence (raw `0` vs
+  `U32(0)`, equality-invisible).
+- Escape analysis: the construction kwargs of a DIRECTLY PUBLISHED event
+  (`MyEvent(x=v).publish(env)`) join the serializing-call exemption in
+  `collect_never_owned` — the two publish spellings now share one escape
+  rule, which E2's one-convention position requires and note_escapes'
+  docstring already claimed. Accepts strictly grow.
+- The allowance-token example's `mint` enforces the STORED admin (reads
+  it back and auths against it, parameter dropped) — the shipped example
+  documented an auth check it did not perform.
+- Ratified retroactively: loader's acceptance of the `@contractevent(...)`
+  Call form (44dea69, Task 6 fix round) as a licensed deviation — the
+  sanctioned factory spelling required it; test-pinned.
+- Parked with reasons (the review's triage, recorded in the M1-E ledger):
+  the SPT3019 relax-to-32 pass and the method-parameter `topic` refusal
+  both feed M1-E2's dossier; `from_` aliasing is a G/M2 docs item;
+  env.py at ~1,550 lines fires E10's package-promotion trigger for M2.
+- Reversal cost: the `get` adoption is a behavior change on a 3-day-old
+  surface, trivially revertable; the escape exemption only widens accepts;
+  the mint change is example-local.
 
 ## 2026-08-27 M1-C final-review minors folded into parked passes
 - Minors 2 and 3 from the final whole-branch review (registry intent strings

@@ -223,10 +223,15 @@ def test_token_style_spec_inputs_keep_events_separate(token_style: CompiledModul
     assert not set(spec_inputs.events) & set(spec_inputs.declared_types_in_order)
 
 
-def test_token_style_declares_the_base_protocol(token_style: CompiledModule) -> None:
-    # Nothing token_style reaches is gated above the base, so the COMPUTED
-    # floor (never hand-set, S18) is the base itself.
-    assert token_style.declared_protocol == BASE_PROTOCOL
+def test_token_style_declares_the_constructor_gate(token_style: CompiledModule) -> None:
+    # Nothing token_style IMPORTS is gated above the base, so its import floor
+    # is `BASE_PROTOCOL` -- but it has an `__init__`, and `__constructor` is a
+    # capability the host only honors from protocol 22 (spec SS 13 / CAP-0058).
+    # The COMPUTED floor (never hand-set, S18) sees both kinds of gate.
+    from serpent._host import CONSTRUCTOR_MIN_PROTOCOL, compute_protocol_floor
+
+    assert compute_protocol_floor(token_style.host_fns_reachable) == BASE_PROTOCOL
+    assert token_style.declared_protocol == CONSTRUCTOR_MIN_PROTOCOL == 22
 
 
 def test_token_style_module_level_facts(token_style: CompiledModule) -> None:
@@ -595,6 +600,181 @@ def _expect_reject_kwargs(source: str, code: str, **kwargs: Any) -> CompileError
     return info.value
 
 
+# --- the constructor FEATURE gate (2026-08-28 ruling; spec SS 13 / CAP-0058) --
+
+_WITH_CONSTRUCTOR = """
+from serpent import Env, U32, Symbol, contract
+
+
+@contract
+class C:
+    def __init__(self, env: Env, start: U32) -> None:
+        env.storage().instance().set(Symbol("N"), start)
+
+    def go(self, env: Env) -> U32:
+        return env.storage().instance().get(Symbol("N"), U32)
+"""
+
+
+def test_the_constructor_min_protocol_constant_is_pinned_with_its_citation() -> None:
+    # Spec SS 13's "`__constructor` (protocol >= 22 ...)" row (dossier S26,
+    # CAP-0058). The constant lives with the other protocol facts, next to
+    # BASE_PROTOCOL and DEFAULT_TARGET_PROTOCOL, and is re-exported.
+    from serpent import _host
+    from serpent._host import _protocol
+
+    assert _protocol.CONSTRUCTOR_MIN_PROTOCOL == 22
+    assert _host.CONSTRUCTOR_MIN_PROTOCOL == 22
+    assert _protocol.CONSTRUCTOR_MIN_PROTOCOL > BASE_PROTOCOL
+    assert _protocol.CONSTRUCTOR_MIN_PROTOCOL <= DEFAULT_TARGET_PROTOCOL
+
+
+def test_a_constructor_raises_the_floor_to_twenty_two_with_no_target() -> None:
+    # The import floor over what this module reaches is 20 (nothing it touches
+    # is gated), but `__constructor` is an EXPORT-name capability the host only
+    # honors from protocol 22 -- so the honest declaration is 22.
+    from serpent._host import compute_protocol_floor
+
+    compiled = _compile(_WITH_CONSTRUCTOR)
+    assert any(f.kind is FuncKind.CONSTRUCTOR for f in compiled.functions)
+    assert compute_protocol_floor(compiled.host_fns_reachable) == BASE_PROTOCOL
+    assert compiled.declared_protocol == 22
+
+
+def test_a_constructor_bearing_modules_env_meta_bytes_declare_twenty_two() -> None:
+    from serpent.spec import build_env_meta
+
+    compiled = _compile(_WITH_CONSTRUCTOR)
+    assert build_env_meta(compiled.declared_protocol) == build_env_meta(22)
+    assert build_env_meta(compiled.declared_protocol) != build_env_meta(BASE_PROTOCOL)
+
+
+def test_an_explicit_target_above_the_constructor_gate_is_returned_verbatim() -> None:
+    # The target already clears the gate, so nothing is raised and nothing is
+    # rejected: "users may raise, never lower" (B4/S6).
+    compiled = _compile(_WITH_CONSTRUCTOR, target_protocol=27)
+    assert compiled.declared_protocol == 27
+
+
+def test_an_explicit_target_below_the_constructor_gate_is_located_spt6001() -> None:
+    exc = _expect_reject_kwargs(_WITH_CONSTRUCTOR, "SPT6001", target_protocol=21)
+    gate = next(d for d in exc.diagnostics if d.code == "SPT6001")
+    assert "constructor" in gate.message
+    assert "22" in gate.message and "CAP-0058" in gate.message
+    # Located at the `__init__` definition -- the thing that needs 22 -- not at
+    # the whole file (P2: a real span whenever one exists).
+    assert gate.loc.kind is LocKind.NODE
+    assert gate.loc.line == (
+        _WITH_CONSTRUCTOR.strip()
+        .splitlines()
+        .index("    def __init__(self, env: Env, start: U32) -> None:")
+        + 1
+    )
+
+
+def test_a_constructor_less_module_still_declares_the_import_floor() -> None:
+    # The counterpart pin: the feature gate must not raise a module that has no
+    # constructor, at any target.
+    compiled = _compile(_MINIMAL)
+    assert not any(f.kind is FuncKind.CONSTRUCTOR for f in compiled.functions)
+    assert compiled.declared_protocol == BASE_PROTOCOL
+
+
+# --- the feature gate COMPOSES with the import gate (E16 collect-all) --------
+#
+# Review finding: the feature-gate check must run UNCONDITIONALLY, not on the
+# import check's success path, or the constructor diagnostic is silently
+# dropped whenever the import side fails first. Both shapes below have an
+# import-side failure AND a constructor-side one, and E16's collect-all means
+# one `CompileError` must carry both -- a contract's `__init__` does not stop
+# needing protocol 22 because some import is also gated outside the target.
+
+_RAISES_WITH_CONSTRUCTOR = """
+from serpent import Env, U32, Symbol, contract, contracterror, errorcode
+
+
+@contracterror
+class E:
+    Nope = errorcode(1)
+
+
+@contract
+class C:
+    def __init__(self, env: Env, start: U32) -> None:
+        env.storage().instance().set(Symbol("N"), start)
+
+    def go(self, env: Env) -> U32:
+        raise E.Nope
+"""
+
+
+def _constructor_gate(exc: CompileError) -> Diagnostic:
+    """The one located constructor-gate SPT6001 in `exc`, or fail saying so."""
+    gates = [d for d in exc.diagnostics if d.code == "SPT6001" and "constructor" in d.message]
+    assert len(gates) == 1, [(d.code, d.message) for d in exc.diagnostics]
+    return gates[0]
+
+
+def test_a_target_below_the_base_protocol_reports_the_floor_AND_the_constructor() -> None:
+    """Target 19 with a constructor: TWO independent facts, two diagnostics.
+
+    19 is below `BASE_PROTOCOL`, so `declared_protocol` raises its
+    below-the-floor `ValueError` -- a module-scoped fact reported at the whole
+    file. 19 is also below the constructor gate, which is a fact about the
+    `__init__` and is reported there. Neither subsumes the other, and the
+    import failure must not swallow the feature one.
+    """
+    exc = _expect_reject_kwargs(_RAISES_WITH_CONSTRUCTOR, "SPT6001", target_protocol=19)
+
+    gate = _constructor_gate(exc)
+    assert gate.loc.kind is LocKind.NODE
+    assert "22" in gate.message and "CAP-0058" in gate.message
+
+    below_floor = [
+        d
+        for d in exc.diagnostics
+        if d.code == "SPT6001" and "below the computed floor" in d.message
+    ]
+    assert len(below_floor) == 1, [(d.code, d.message) for d in exc.diagnostics]
+    assert below_floor[0].loc.kind is LocKind.WHOLE_FILE
+
+
+def test_a_gated_import_and_a_constructor_both_report_in_one_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gated import AND a constructor, both outside target 21.
+
+    `protocol_gated_dummy` is a real pinned binding with `max_protocol=19`, so
+    at target 21 the import side raises `ProtocolGateError` and reports the
+    offender at the `raise` that reached it. The constructor gate is a separate
+    offender at a separate location, and E16 means the author sees both
+    problems from one compile rather than one per run.
+    """
+    monkeypatch.setattr(frontend, "_RAISE_HOST_FN", "protocol_gated_dummy")
+    exc = _expect_reject_kwargs(_RAISES_WITH_CONSTRUCTOR, "SPT6001", target_protocol=21)
+
+    gate = _constructor_gate(exc)
+    assert gate.loc.line == (
+        _RAISES_WITH_CONSTRUCTOR.strip()
+        .splitlines()
+        .index("    def __init__(self, env: Env, start: U32) -> None:")
+        + 1
+    )
+
+    imports = [d for d in exc.diagnostics if d.code == "SPT6001" and "max_protocol=19" in d.message]
+    assert len(imports) == 1, [(d.code, d.message) for d in exc.diagnostics]
+    assert "protocol_gated_dummy" in imports[0].message
+    # Two SPT6001s at two different locations, which is exactly what E16 buys.
+    assert imports[0].loc != gate.loc
+
+
+def test_the_feature_gate_does_not_double_report_when_it_is_the_only_offender() -> None:
+    # The composition must not cost a duplicate: target 21 with a constructor
+    # and no gated import is still exactly ONE diagnostic.
+    exc = _expect_reject_kwargs(_WITH_CONSTRUCTOR, "SPT6001", target_protocol=21)
+    assert len(exc.diagnostics) == 1, [(d.code, d.message) for d in exc.diagnostics]
+
+
 # --- SPT6xxx wired end to end through a fake gated HostFn -------------------
 
 _RAISES = """
@@ -666,8 +846,24 @@ def test_a_gated_pinned_host_fn_also_maps_to_spt6001(monkeypatch: pytest.MonkeyP
 
 
 def test_spt6001_is_allowlisted_with_its_reason() -> None:
+    """The row survives the 2026-08-28 constructor-floor ruling, and the reason
+    now says which of the two gate kinds is un-fixturable and why.
+
+    The ruling gave SPT6001 a real source-level trigger for the first time: a
+    contract with an `__init__` and a `target_protocol` below 22. But
+    `target_protocol` is a `compile_module` KEYWORD, and a `tests/must_reject/`
+    fixture is only ever compiled at the default (`None`) -- so the code still
+    cannot be tripped by any fixture, and the row stays. What changed is that
+    "no gated authoring surface" stopped being true, so the reason string may
+    not say it.
+    """
     assert "SPT6001" in codes.NO_FIXTURE_ALLOWLIST
-    assert codes.NO_FIXTURE_REASONS["SPT6001"].startswith("no gated authoring surface at M1-C")
+    reason = codes.NO_FIXTURE_REASONS["SPT6001"]
+    assert reason.startswith("no fixture-reachable trigger")
+    assert "target_protocol" in reason
+    assert "constructor" in reason
+    # The claim the ruling falsified must be gone, not merely qualified.
+    assert "no gated authoring surface" not in reason
 
 
 def test_an_unpinned_host_fn_name_is_a_compiler_bug(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -704,6 +900,13 @@ def test_a_container_built_up_in_a_loop_compiles() -> None:
     A pre-pass that over-approximated escapes would make this a false reject,
     which would leave the diagnostics recommending something the compiler
     refuses.
+
+    Ruling E5 is what keeps this green now that tier 1 can actually run the
+    body: `env.storage().persistent().set(..., rows)` is exempt from the escape
+    rule because the model stores a DEEP COPY, so mutating `rows` afterwards
+    cannot be seen through storage at either tier. Had the model stored a
+    reference, this write would have had to become an escape and this test
+    would have had to be deleted along with the `help:` text it protects.
     """
     compiled = _compile(
         """
@@ -959,10 +1162,19 @@ def test_a_container_type_cannot_be_requested_from_storage_get() -> None:
     )
 
 
-def test_a_container_in_a_keyword_position_loses_ownership() -> None:
-    # The pre-pass rule that covers the GET_DEFAULT `default=` position (and
-    # every `@contracttype` field), stated on its own.
-    _expect_reject(
+def test_a_container_in_a_serializing_calls_keyword_position_keeps_ownership() -> None:
+    """Ruling E5: the three serializing calls do not store a handle, in EITHER
+    argument position.
+
+    This test used to assert the opposite, because the pre-pass marked every
+    keyword-argument value unconditionally while `_positional_args_escape`
+    exempted `<bucket>.set`/`events().publish`/`require_auth_for_args` -- so
+    the same write escaped or not depending on whether the author spelled it
+    with keywords. The tier-1 model deep-copies at every one of those
+    boundaries, so neither spelling shares an object with the store, and the
+    asymmetry is closed in the exemption's direction.
+    """
+    compiled = _compile(
         """
         from serpent import Env, Symbol, U32, Vec, contract
 
@@ -974,9 +1186,129 @@ def test_a_container_in_a_keyword_position_loses_ownership() -> None:
                 env.storage().persistent().set(key=k, value=own)
                 own.push_back(U32(2))
                 return len(own)
+        """
+    )
+    assert {"put_contract_data", "vec_push_back"} <= compiled.host_fns_used
+
+
+def test_both_publish_spellings_share_one_escape_rule() -> None:
+    """The same asymmetry closure, for the OTHER pair of spellings.
+
+    `MyEvent(items=own).publish(env)` used to mark `own` never-owned (its
+    construction is a keyword call, and the pre-pass marked every keyword value)
+    while the equivalent `env.events().publish(topics, own)` left `own` mutable
+    -- so which of two spellings of one publish the author picked decided
+    whether a later `own.push_back(...)` was `SPT1034`. `note_escapes`' own
+    docstring says the spelling of the call cannot change what the host does
+    with the value, and it cannot here either: `publish` deep-copy-serializes
+    its data through ONE `Events._record` for both spellings (ruling E5), so the
+    construction kwargs of a DIRECTLY published event join the serializing-call
+    exemption.
+
+    Both spellings are compiled here, in one test, because the claim is that
+    they AGREE: a future change that closed the gap in the reject direction
+    would fail on the canonical leg instead.
+    """
+    canonical = _compile(
+        """
+        from serpent import Env, Symbol, U32, Vec, contract
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> U32:
+                own = Vec(U32, [U32(1)])
+                env.events().publish((Symbol("logged"),), own)
+                own.push_back(U32(2))
+                return len(own)
+        """
+    )
+    declared = _compile(
+        """
+        from serpent import Env, Event, U32, Vec, contract, contractevent
+
+
+        @contractevent(topics=("logged",), data_format="single-value")
+        class Logged(Event):
+            items: Vec[U32]
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> U32:
+                own = Vec(U32, [U32(1)])
+                Logged(items=own).publish(env)
+                own.push_back(U32(2))
+                return len(own)
+        """
+    )
+    for compiled in (canonical, declared):
+        assert {"contract_event", "vec_push_back"} <= compiled.host_fns_used
+
+
+def test_an_unpublished_event_construction_still_loses_ownership() -> None:
+    """The exemption is the DIRECTLY-PUBLISHED shape only.
+
+    A bare `Logged(items=own)` bound to a local is not a publish, and nothing
+    has serialized `own`; that shape is refused elsewhere anyway (an event
+    instance is not a value M1 can hold), so the conservative answer here is the
+    one that cannot be wrong. Pinned so the exemption cannot widen into "any
+    event construction" by accident.
+    """
+    _expect_reject(
+        """
+        from serpent import Env, Event, U32, Vec, contract, contractevent
+
+
+        @contractevent(topics=("logged",), data_format="single-value")
+        class Logged(Event):
+            items: Vec[U32]
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> U32:
+                own = Vec(U32, [U32(1)])
+                e = Logged(items=own)
+                own.push_back(U32(2))
+                return len(own)
         """,
         "SPT1034",
     )
+
+
+def test_a_container_in_a_struct_field_keyword_loses_ownership() -> None:
+    """The general keyword rule, on its own and unconfounded.
+
+    Every OTHER call's keyword arguments still escape -- a `@contracttype`
+    field STORES the handle, and after `Holder(items=own)` a later
+    `own.push_back(x)` is visible through the struct at tier 1 and cannot be on
+    chain. The straight-line shape matters: the older pin for this rule
+    (`test_mutation_before_an_escape_in_a_for_body_is_rejected`) puts the same
+    construction inside a `for` body, whose target and iterable escape too, so
+    it cannot show the keyword rule alone.
+    """
+    exc = _expect_reject(
+        """
+        from serpent import Env, U32, Vec, contract, contracttype
+
+
+        @contracttype
+        class Holder:
+            items: Vec[U32]
+
+
+        @contract
+        class C:
+            def go(self, env: Env) -> U32:
+                own = Vec(U32, [U32(1)])
+                h = Holder(items=own)
+                own.push_back(U32(2))
+                return len(own)
+        """,
+        "SPT1034",
+    )
+    assert _codes(exc) == ["SPT1034"], _codes(exc)
 
 
 # --- recognition wired into real bodies ------------------------------------
@@ -1129,8 +1461,11 @@ def test_struct_construction_and_field_read_lower_through_recognition() -> None:
     assert compiled.literals.struct_key_descriptor_sets == (("amount", "owner"),)
 
 
-def test_an_event_publish_instance_form_is_still_deferred() -> None:
-    _expect_reject(
+def test_an_event_publish_instance_form_compiles_to_contract_event() -> None:
+    """M1-E Task 6 turned the old `SPT1032` reject into a desugar. Asserted
+    here at the `compile_module` level -- the whole-module outputs -- while
+    `test_frontend_events.py` owns the lowered shape itself."""
+    compiled = _compile(
         """
         from serpent import Address, Env, Event, U32, contract, contractevent
 
@@ -1145,9 +1480,10 @@ def test_an_event_publish_instance_form_is_still_deferred() -> None:
             def go(self, env: Env, who: Address) -> U32:
                 Moved(who=who).publish(env)
                 return U32(0)
-        """,
-        "SPT1032",
+        """
     )
+    assert "contract_event" in compiled.host_fns_used
+    assert [event.__name__ for event in compiled.spec_inputs.events] == ["Moved"]
 
 
 # --- the two output invariants compile_module asserts ----------------------

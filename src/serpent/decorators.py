@@ -18,7 +18,11 @@ type checking with the decorator treated as an identity function:
   trick rescues it). `@contracterror` rejects bare ints with a message showing
   the `errorcode(...)` form.
 * `@contracttype` / `@contractevent` are `@dataclass_transform()`-annotated,
-  so kwargs construction type-checks against the field annotations.
+  so kwargs construction type-checks against the field annotations. That holds
+  for `@contractevent`'s FACTORY spelling too (`@contractevent(topics=...)`):
+  the transform is declared on the overloads, and mypy synthesizes the same
+  `__init__` either way (probe-verified -- `Transfer(nope=1)` is a `call-arg`
+  error under both spellings).
 * `@contractevent` classes inherit `Event`, so `Transfer(...).publish(env)`
   resolves to a method the checker can actually see. The same rule in reverse
   is why `_serpent_type_` is *never* read through `getattr` in typed code: a
@@ -26,6 +30,16 @@ type checking with the decorator treated as an identity function:
   compiler, not part of the authoring surface.
 * `@contract` methods take `self` first, which is what makes them ordinary,
   strict-clean Python methods (the compiler ignores `self`).
+
+**The event topic convention's one seam** is `_build_record`'s
+`get_type_hints(..., include_extras=True)`. `Annotated[Address, topic]` is how
+an author marks a topic field, and WITHOUT that flag `get_type_hints` strips
+the `Annotated` wrapper silently, so the marker would never be seen and every
+event would compile as all-data. The marker is read there and the annotation
+recorded in `_serpent_type_` is the STRIPPED one, which is why nothing
+downstream -- `spec.typemap`, the compiler's annotation resolver -- knows
+`Annotated` exists at all. `topic` and `Annotated` are both exported from the
+`serpent` root because a contract may import from `serpent` and nowhere else.
 
 NOTE (Python 3.11 floor): `dataclass_transform(frozen_default=True)` is 3.12+,
 and serpent takes no runtime dependencies, so the transform cannot advertise
@@ -42,12 +56,13 @@ import dataclasses
 import inspect
 import types
 import typing
-from typing import Any, NoReturn, TypeVar, cast, dataclass_transform
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Final, NoReturn, TypeVar, cast, dataclass_transform, overload
 
 from serpent import val
 from serpent.env import Event
 from serpent.errors import RESERVED_CODE_MIN, ContractError
-from serpent.types import Map, Vec
+from serpent.types import Map, Symbol, Vec
 from serpent.types._base import _ChainValue
 
 __all__ = [
@@ -56,6 +71,7 @@ __all__ = [
     "contractevent",
     "contracttype",
     "errorcode",
+    "topic",
 ]
 
 _T = TypeVar("_T")
@@ -67,6 +83,42 @@ NAME_LIMIT = 30
 
 #: The metadata every serpent-decorated class carries. Sub-plan C reads it.
 _METADATA_ATTR = "_serpent_type_"
+
+#: An event's `prefix_topics` is an XDR `SCSymbol<2>`: two, never three. The cap
+#: is pre-validated HERE, at the declaration site, so an author never sees the
+#: `stellar_sdk` constructor's field-only ValueError (R5).
+PREFIX_TOPIC_LIMIT: Final = 2
+
+#: The three `SCSpecEventDataFormat` cases, spelled as an author writes them.
+#: `"single-value"` carries the field arity rule: the host publishes ONE data
+#: value, so the event must declare exactly one non-topic field.
+DATA_FORMATS: Final = ("map", "vec", "single-value")
+
+#: A field's `location` in `SCSpecEventParamV0`: a topic-list entry or a data
+#: member. Recorded per field in an event's metadata under `"locations"`.
+TOPIC_LOCATION: Final = "topic"
+DATA_LOCATION: Final = "data"
+
+
+class _Topic:
+    """The type of the `topic` marker (`Annotated[Address, topic]`).
+
+    A class of its own rather than a bare `object()` so the marker has a
+    `__repr__`: an author who prints an annotation, or reads it back off a
+    traceback, sees `topic` and not `<object object at 0x...>`.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "topic"
+
+
+#: The event-topic marker. `Annotated[T, topic]` says "this field is published
+#: as a TOPIC, not as event data"; an unmarked field is data. Exported from the
+#: `serpent` root next to `Annotated` itself, because a contract module may
+#: import from `serpent` and nowhere else (SPT2005).
+topic: Final = _Topic()
 
 
 class _ErrorCode:
@@ -196,41 +248,356 @@ def contracttype(cls: type[_T]) -> type[_T]:
     return _build_record(cls, "struct")
 
 
+@overload
+def contractevent(cls: type[_T], /) -> type[_T]: ...
+
+
+@overload
+def contractevent(
+    *, topics: Sequence[str] | None = ..., data_format: str = ...
+) -> Callable[[type[_T]], type[_T]]: ...
+
+
 @dataclass_transform()
-def contractevent(cls: type[_T]) -> type[_T]:
-    """Declare a contract event.
+def contractevent(
+    cls: type[Any] | None = None,
+    /,
+    *,
+    topics: Sequence[str] | None = None,
+    data_format: str = "map",
+) -> Any:
+    """Declare a contract event, bare or with its topic convention spelled out.
 
     Same field rules and frozen-dataclass treatment as `@contracttype`. The
     class **must** inherit `serpent.env.Event`, which is where `publish` comes
     from: a decorator cannot add a member a type checker can see, so
     `Transfer(...).publish(env)` only type-checks if `publish` is inherited
     from a real base class.
+
+    **The topic convention** (dossier C.2). An event publishes a topic LIST and
+    one data payload; which is which is declared here, so the compiler never
+    has to guess:
+
+    * `prefix_topics` are the leading, constant topics -- by default the single
+      snake_cased class name (`Transfer` -> `transfer`, `MyHTTPEvent` ->
+      `my_http_event`), overridden with `topics=("token", "transfer")`. The XDR
+      caps the list at two, and each one is a Symbol of at most 32 characters
+      (a topic longer than 9 is perfectly legal; it simply pools through linear
+      memory at the publish site instead of being a small-value Symbol).
+    * a field marked `Annotated[T, topic]` is published as a topic, after the
+      prefix topics and in declaration order; every unmarked field is data.
+    * `data_format` picks the `SCSpecEventDataFormat` case: `"map"` (the
+      default, a `Map<Symbol, Val>` keyed by field name), `"vec"`, or
+      `"single-value"` -- which publishes the ONE data value bare and therefore
+      requires exactly one non-topic field. `"map"` and `"vec"` publish a
+      container OF the data fields, so each needs at least one; and in M1
+      `"vec"`'s data fields must all have the SAME type (see
+      `_check_data_format` -- the compiler's vector node carries one element
+      type, because tier 1's `Vec` is statically typed in its element class).
+      A mixed payload is what the default `"map"` format is for.
+
+    Both spellings are one decorator: `@contractevent` applies directly, and
+    `@contractevent(...)` returns the decorator. Every validation happens at
+    decoration time, naming the class, so a malformed event is a `ValueError`
+    at the declaration and never a lying spec entry (R5).
     """
-    if Event not in cls.__mro__:
-        raise ValueError(
-            f"{cls.__name__}: @contractevent classes must inherit `Event` "
-            f"(`class {cls.__name__}(Event):`). `publish` is inherited from it "
-            "-- a decorator cannot add a method that mypy can see."
-        )
-    return _build_record(cls, "event")
+
+    def decorate(target: type[_T]) -> type[_T]:
+        if Event not in target.__mro__:
+            raise ValueError(
+                f"{target.__name__}: @contractevent classes must inherit `Event` "
+                f"(`class {target.__name__}(Event):`). `publish` is inherited from it "
+                "-- a decorator cannot add a method that mypy can see."
+            )
+        return _build_record(target, "event", topics=topics, data_format=data_format)
+
+    if cls is None:
+        return decorate
+    return decorate(cls)
 
 
-def _build_record(cls: type[_T], kind: str) -> type[_T]:
-    """The shared `@contracttype`/`@contractevent` body."""
+def _build_record(
+    cls: type[_T],
+    kind: str,
+    *,
+    topics: Sequence[str] | None = None,
+    data_format: str = "map",
+) -> type[_T]:
+    """The shared `@contracttype`/`@contractevent` body.
+
+    **Annotations are read with `include_extras=True`** -- the one seam the
+    whole event convention hangs off. Without that flag `get_type_hints`
+    silently STRIPS `Annotated`, the `topic` marker vanishes before anything
+    can see it, and every event would compile as all-data. With it, the marker
+    is read here and the annotation stored in the metadata is the STRIPPED one,
+    so `spec.typemap.to_spec_type`, the compiler's `resolve_annotation` and
+    every other downstream consumer keep seeing plain chain types and need no
+    knowledge of `Annotated` at all.
+
+    `topics`/`data_format` are the event-only arguments and are ignored for a
+    struct, which cannot carry a topic (a marked struct field is refused
+    outright rather than silently ignored).
+    """
     _reject_redecoration(cls)
     fields: list[tuple[str, object]] = []
-    for name, annotation in _annotations_of(cls).items():
+    locations: dict[str, str] = {}
+    for name, annotation in _annotations_of(cls, include_extras=True).items():
         _check_name(cls, name, "field")
-        if not _is_contract_annotation(annotation):
+        stripped, is_topic = _split_topic(cls, name, annotation)
+        if is_topic and kind != "event":
             raise ValueError(
-                f"{cls.__name__}.{name}: annotation {_render(annotation)} is not a "
+                f"{cls.__name__}.{name}: `topic` marks a field of a @contractevent "
+                "class as a published topic; a @contracttype struct has no topics, "
+                "so the marker would be silently ignored here"
+            )
+        if not _is_contract_annotation(stripped):
+            raise ValueError(
+                f"{cls.__name__}.{name}: annotation {_render(stripped)} is not a "
                 "chain type, a `@contracttype` struct, or `X | None` of one"
             )
-        fields.append((name, annotation))
+        fields.append((name, stripped))
+        locations[name] = TOPIC_LOCATION if is_topic else DATA_LOCATION
+
+    metadata: dict[str, Any] = {"kind": kind, "fields": fields}
+    if kind == "event":
+        # `fields` stays a (name, annotation) PAIR list, shared with a struct's:
+        # the per-field location is a parallel `locations` map instead of a
+        # third tuple element, because `compiler/loader.py`'s F.1.14 field
+        # cross-check and `compiler/decls.py`'s field resolution both unpack
+        # `metadata["fields"]` as pairs for structs AND events alike.
+        metadata["locations"] = locations
+        metadata["prefix_topics"] = _prefix_topics(cls, topics)
+        metadata["data_format"] = _check_data_format(cls, data_format, fields, locations)
+        _check_topic_list(cls, metadata["prefix_topics"], fields, locations)
 
     decorated = dataclasses.dataclass(frozen=True, eq=True)(cls)
-    setattr(decorated, _METADATA_ATTR, {"kind": kind, "fields": fields})
+    setattr(decorated, _METADATA_ATTR, metadata)
     return decorated
+
+
+def _split_topic(cls: type[Any], name: str, annotation: object) -> tuple[object, bool]:
+    """One field's `(stripped annotation, is a topic)`.
+
+    Only a marker on the WHOLE annotation counts. `Annotated[U32, topic] | None`
+    hides it inside a union, where stripping the outer layer would not find it
+    and the field would quietly become data -- so that spelling is refused
+    rather than misread.
+    """
+    if typing.get_origin(annotation) is typing.Annotated:
+        args = typing.get_args(annotation)
+        return args[0], any(isinstance(extra, _Topic) for extra in args[1:])
+    if _mentions_topic(annotation):
+        raise ValueError(
+            f"{cls.__name__}.{name}: `topic` must mark the whole field annotation "
+            f"(`Annotated[T, topic]`), not a type nested inside it -- got "
+            f"{_render(annotation)}"
+        )
+    return annotation, False
+
+
+def _mentions_topic(annotation: object) -> bool:
+    """Whether the marker appears anywhere inside a composite annotation."""
+    args = typing.get_args(annotation)
+    if typing.get_origin(annotation) is typing.Annotated:
+        return any(isinstance(extra, _Topic) for extra in args[1:])
+    return any(_mentions_topic(arg) for arg in args)
+
+
+def _prefix_topics(cls: type[Any], topics: Sequence[str] | None) -> tuple[str, ...]:
+    """The validated `prefix_topics` tuple: the author's, or the default one.
+
+    `topics=()` is DELIBERATELY legal (review M3). An event with no prefix topic
+    at all is an accurate spec -- its topic list is exactly whatever its
+    `Annotated[T, topic]` fields are -- not a lie, so nothing here refuses the
+    empty case, and Task 6's desugar publishes an empty prefix knowingly.
+    """
+    if isinstance(topics, str):
+        _reject_string_topics(cls, topics)
+    derived = topics is None
+    # Spelled out rather than a conditional expression so the `None` narrowing
+    # is one mypy can see.
+    declared: tuple[str, ...]
+    if topics is None:
+        declared = (_snake_case(cls.__name__),)
+    else:
+        declared = tuple(topics)
+    if len(declared) > PREFIX_TOPIC_LIMIT:
+        raise ValueError(
+            f"{cls.__name__}: an event declares at most {PREFIX_TOPIC_LIMIT} prefix "
+            f"topics (got {len(declared)}) -- `SCSpecEventV0.prefix_topics` is an "
+            "XDR `SCSymbol<2>`; publish the rest as `Annotated[T, topic]` fields"
+        )
+    for declared_topic in declared:
+        # `is_valid_symbol`, NOT `fits_symbol_small`: the cap is the Symbol's 32
+        # characters, not the 9 that fit in a small value. A longer topic pools
+        # through linear memory at the publish site, which is a cost, not an
+        # error.
+        if not isinstance(declared_topic, str) or not val.is_valid_symbol(declared_topic):
+            raise ValueError(_bad_prefix_topic(cls, declared_topic, derived=derived))
+    return declared
+
+
+def _reject_string_topics(cls: type[Any], topics: str) -> NoReturn:
+    """Refuse `topics="transfer"`: a sequence of characters, not of topics.
+
+    A `str` IS a `Sequence[str]`, so mypy accepts it with no complaint and
+    `tuple(...)` would explode it into one prefix topic PER CHARACTER -- which
+    an author would then read as "at most 2 prefix topics (got 8)" for what is
+    really a missing comma.
+
+    A `ValueError` like every other decoration-site failure here, and in its own
+    function so the raise is not lexically inside an `isinstance` guard (the
+    same reason `_reject_bare_member` and `_reject_bound_method` exist).
+    """
+    raise ValueError(
+        f"{cls.__name__}: topics= takes a sequence of topics, not one string -- "
+        f"write `topics=({topics!r},)`. A bare string is a sequence of its "
+        "characters, which would declare one prefix topic per letter"
+    )
+
+
+def _bad_prefix_topic(cls: type[Any], declared_topic: object, *, derived: bool) -> str:
+    """Why one prefix topic is unusable -- worded for who actually wrote it.
+
+    A DEFAULT topic is derived from the class name, so blaming "prefix topic
+    'this_events_class_name_is_thirty_three'" sends the author looking for a
+    `topics=` argument they never passed (review M2). Name the derivation and
+    the remedy instead.
+    """
+    cap = f"a valid Symbol of 1 to {val.SCSYMBOL_LIMIT} characters (a-z, A-Z, 0-9, _)"
+    if derived:
+        return (
+            f"{cls.__name__}: the default prefix topic {declared_topic!r}, derived from "
+            f"the class name, is not {cap} -- declare a shorter one explicitly with "
+            "`@contractevent(topics=(...))`"
+        )
+    return f"{cls.__name__}: prefix topic {declared_topic!r} must be {cap}"
+
+
+def _check_data_format(
+    cls: type[Any],
+    data_format: str,
+    fields: Sequence[tuple[str, object]],
+    locations: Mapping[str, str],
+) -> str:
+    """Validate `data_format` against the event's data fields.
+
+    Three rules, one per case, all of them about ARITY or TYPE UNIFORMITY of
+    the non-topic fields:
+
+    * `"single-value"` publishes ONE data value, so exactly one data field;
+    * `"map"` and `"vec"` publish a container OF the data fields, so at least
+      one -- `map_new_from_linear_memory` over an empty key array has nothing
+      to describe, and a `Vec` with no element has no element type;
+    * `"vec"` additionally needs every data field to share ONE type, an M1
+      restriction (Task 6's controller ruling (a)): the IR's `MakeVec` carries a
+      single `elem_ty` because tier 1's `Vec` is statically typed in its element
+      class, and the heterogeneous vector node (`MakeTopics`) is topics-only by
+      contract. Refused here, at the declaration, rather than compiling to a
+      vector whose element type is a guess.
+
+    Shared with `spec.sections._event_entry`, which re-runs it against the
+    metadata it is handed rather than keeping a second copy of the rule: a
+    `SINGLE_VALUE` entry over two data params is valid XDR and a lie, so the
+    arity has to be checked wherever the entry is actually built.
+    """
+    if data_format not in DATA_FORMATS:
+        raise ValueError(
+            f"{cls.__name__}: data_format must be one of "
+            f"{', '.join(repr(f) for f in DATA_FORMATS)} (got {data_format!r})"
+        )
+    data_fields = [
+        (name, annotation) for name, annotation in fields if locations.get(name) == DATA_LOCATION
+    ]
+    names = [name for name, _annotation in data_fields]
+    if data_format == "single-value" and len(data_fields) != 1:
+        raise ValueError(
+            f"{cls.__name__}: data_format 'single-value' publishes exactly one "
+            f"data value, so the event needs exactly one non-topic field (got "
+            f"{len(data_fields)}: {', '.join(names) or 'none'})"
+        )
+    if data_format in ("map", "vec") and not data_fields:
+        raise ValueError(
+            f"{cls.__name__}: data_format {data_format!r} publishes the non-topic "
+            "fields as a container, so the event needs at least one of them "
+            "(every field here is marked `topic`)"
+        )
+    if data_format == "vec":
+        distinct = {_render(annotation) for _name, annotation in data_fields}
+        if len(distinct) > 1:
+            raise ValueError(
+                f"{cls.__name__}: data_format 'vec' publishes the data fields as one "
+                f"Vec, so in M1 they must all have the same type (got "
+                f"{', '.join(f'{name}: {_render(annotation)}' for name, annotation in data_fields)})"
+                " -- use the default 'map' format for a mixed payload"
+            )
+    return data_format
+
+
+def _check_topic_list(
+    cls: type[Any],
+    prefix_topics: tuple[str, ...],
+    fields: Sequence[tuple[str, object]],
+    locations: Mapping[str, str],
+) -> None:
+    """Refuse a published topic list that breaks the `topics[0]` convention.
+
+    Two rules, and both only bite when `topics=()` -- which is deliberately
+    legal (review M3) BECAUSE the marked fields carry the topic list:
+
+    * there must be at least one topic. With neither a prefix topic nor an
+      `Annotated[T, topic]` field there is none at all, which the tier-1 model
+      refuses on the way in ("an event needs at least one topic, naming it")
+      and which no indexer can filter on.
+    * `topics[0]` must be a `Symbol` (S11/S10's convention: the first topic
+      NAMES the event, and indexers and RPC filtering assume it). With no
+      prefix topic, `topics[0]` is the first marked FIELD, so its declared type
+      is what decides -- an `Annotated[Address, topic]` first field would put an
+      Address there. The canonical spelling refuses exactly that at compile time
+      (`SPT3019`), so refusing it here is what keeps the two spellings, and the
+      spec entry, telling one story.
+
+    Both are refused at the declaration site, where the fix is, rather than at
+    every publish site.
+    """
+    if prefix_topics:
+        return
+    topic_fields = [
+        (name, annotation) for name, annotation in fields if locations.get(name) == TOPIC_LOCATION
+    ]
+    if not topic_fields:
+        raise ValueError(
+            f"{cls.__name__}: an event publishes at least one topic, and this one has "
+            "no prefix topic and no `Annotated[T, topic]` field -- drop `topics=()` to "
+            "get the class-name topic back, or mark a field as a topic"
+        )
+    first_name, first_annotation = topic_fields[0]
+    if first_annotation is not Symbol:
+        raise ValueError(
+            f"{cls.__name__}.{first_name}: with `topics=()` this field is the event's "
+            f"topics[0], which names the event and must therefore be a Symbol (got "
+            f"{_render(first_annotation)}) -- declare a prefix topic instead, e.g. "
+            f"`@contractevent(topics=({_snake_case(cls.__name__)!r},))`"
+        )
+
+
+def _snake_case(name: str) -> str:
+    """A class name as its default prefix topic: `MyHTTPEvent` -> `my_http_event`.
+
+    An underscore goes before every uppercase letter that FOLLOWS a lowercase
+    letter or digit (the ordinary CamelCase boundary) and before the last
+    uppercase letter of an acronym run, which is the one that begins the next
+    word (`MyHTTPEvent` -> `my_http_event`, `HTTPEvent` -> `http_event`).
+    """
+    out: list[str] = []
+    for index, char in enumerate(name):
+        if index and char.isupper():
+            previous = name[index - 1]
+            following = name[index + 1] if index + 1 < len(name) else ""
+            if previous.islower() or previous.isdigit() or following.islower():
+                out.append("_")
+        out.append(char.lower())
+    return "".join(out)
 
 
 def _reject_redecoration(cls: type[Any]) -> None:
@@ -386,7 +753,7 @@ def _check_name(cls: type[Any], name: str, what: str) -> None:
         )
 
 
-def _annotations_of(owner: Any) -> dict[str, Any]:
+def _annotations_of(owner: Any, *, include_extras: bool = False) -> dict[str, Any]:
     """Annotations of a class or function, resolved to real type objects.
 
     Always goes through `typing.get_type_hints`, so a contract module that
@@ -394,9 +761,15 @@ def _annotations_of(owner: Any) -> dict[str, Any]:
     is a string at runtime) yields exactly the same result as one that does
     not. An unresolvable name is reported against the owner instead of leaking
     a bare `NameError`.
+
+    `include_extras` keeps `Annotated[...]` wrappers intact instead of letting
+    `get_type_hints` strip them, which is what `_build_record` needs to see the
+    `topic` marker at all. It defaults to False so the METHOD path
+    (`_check_method`) is untouched: a parameter annotation flows straight into
+    the spec and has no marker convention.
     """
     try:
-        return typing.get_type_hints(owner)
+        return typing.get_type_hints(owner, include_extras=include_extras)
     except NameError as exc:
         raise ValueError(
             f"{owner.__qualname__}: cannot resolve annotations ({exc}). "

@@ -1,4 +1,4 @@
-"""End to end: four whole contracts, built and RUN (F.2.2/F.2.3/F.2.4/F.2.7/F.2.8).
+"""End to end: every whole contract the repo has, built and RUN (F.2.2/F.2.3/F.2.4/F.2.7/F.2.8).
 
 `tests/unit/test_emitter_semantics.py` runs one expression per module. This
 file runs whole contracts -- storage, structs, error enums, events, auth, a
@@ -12,12 +12,24 @@ the headline one is anchored to Phase 0:
   bytes, and the behavior sequence -- because each is anchored to a different
   recorded fact.
 * **`token_style.py`** (F.2.7) is the realistic shape: a struct storage key, a
-  heterogeneous event topic tuple, `require_auth`, an `Address` comparison.
+  heterogeneous event topic tuple, `require_auth`, an `Address` comparison. Its
+  event is published through the AUTHORING form (`Transfer(...).publish(env)`,
+  M1-E), and **`token_style_canonical.py`** publishes the equivalent event the
+  CANONICAL way (`env.events().publish((Symbol, Address, Address), data)`) --
+  the pair is what proves the desugar and the hand-written call reach the host
+  with the same topics and the same data
+  (`test_both_publish_spellings_record_the_same_event`).
 * **the two promoted sandbox contracts** (F.2.8) are the contracts an author
   actually plays with, copied into `tests/fixtures/` so that playing with
   `sandbox/` cannot turn the suite red. Each copy is asserted to build to a
   module byte-identical to its `sandbox/` original, which is what keeps the
   copy honest without a text compare that a reflowed comment would break.
+* **the `examples/` contracts** (M1-E, `EXAMPLES`) are the SHIPPED examples, and
+  they are fixtures of this suite for the same reason the sandbox copies are:
+  every whole-contract property in this file's last section runs over them for
+  free, so a shipped example cannot rot. Their tier-1 runs and the
+  tier-1-vs-wasm cross-checks live in `tests/unit/test_examples.py`, which
+  imports `EXAMPLES` from here so there is one list.
 
 ## `spikes/` is read-only, and `spike.wasm` is not tracked (R5, review M14)
 
@@ -51,8 +63,10 @@ from serpent.compiler.types_ import Ty
 from serpent.emitter import BuildResult, build_file, build_wasm
 from serpent.spec import build_env_meta
 from serpent.types import U32, Address, Bool, String, Symbol
+from tests.fixtures.token_style import Transfer
 from tests.harness import engine
 from tests.harness.hostfns import FullHost
+from tests.unit.conftest import deployed_env
 from tests.unit.test_emitter_semantics import decode_val
 
 # The eight Phase 0 host functions, imported from the file that pins them.
@@ -73,14 +87,43 @@ CONTRACT = "CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI"
 
 SPIKE1 = _ROOT / "tests" / "fixtures" / "spike1_reauthored.py"
 TOKEN_STYLE = _ROOT / "tests" / "fixtures" / "token_style.py"
+TOKEN_STYLE_CANONICAL = _ROOT / "tests" / "fixtures" / "token_style_canonical.py"
 SANDBOX_COUNTER = _ROOT / "tests" / "fixtures" / "sandbox_counter.py"
 SANDBOX_HELLO_WORLD = _ROOT / "tests" / "fixtures" / "sandbox_hello_world.py"
+
+#: `examples/` -- the SHIPPED contracts (M1-E sub-plan G's wave 1), which are
+#: fixtures of this suite as well as documentation. Defined here rather than in
+#: `tests/unit/test_examples.py` so that `EXAMPLES` and `FIXTURES` cannot
+#: disagree: the tier-1 legs import these names FROM here, and
+#: `test_examples_is_a_flat_directory_of_modules` asserts the tuple is the whole
+#: directory, so a new example joins the whole-contract property sweep (build,
+#: validate, size, `needed <= linked`, exports, protocol floor) by existing.
+EXAMPLES_DIR = _ROOT / "examples"
+EXAMPLE_COUNTER = EXAMPLES_DIR / "counter.py"
+EXAMPLE_ERRORS = EXAMPLES_DIR / "errors.py"
+EXAMPLE_STRUCTS = EXAMPLES_DIR / "structs.py"
+EXAMPLE_EVENTS = EXAMPLES_DIR / "events.py"
+EXAMPLE_ALLOWANCE_TOKEN = EXAMPLES_DIR / "allowance_token.py"
+EXAMPLES: tuple[Path, ...] = (
+    EXAMPLE_COUNTER,
+    EXAMPLE_ERRORS,
+    EXAMPLE_STRUCTS,
+    EXAMPLE_EVENTS,
+    EXAMPLE_ALLOWANCE_TOKEN,
+)
 
 #: THE fixture list this sub-plan's whole-contract properties run over. Defined
 #: here, where the contracts are built and invoked, and imported by
 #: `tests/unit/test_emitter_fuzz.py` for the two budget-shaped properties (the
 #: size tripwire and `needed <= linked`) so there is ONE list of fixtures.
-FIXTURES: tuple[Path, ...] = (SPIKE1, TOKEN_STYLE, SANDBOX_COUNTER, SANDBOX_HELLO_WORLD)
+FIXTURES: tuple[Path, ...] = (
+    SPIKE1,
+    TOKEN_STYLE,
+    TOKEN_STYLE_CANONICAL,
+    SANDBOX_COUNTER,
+    SANDBOX_HELLO_WORLD,
+    *EXAMPLES,
+)
 
 #: `pytest.mark.skipif` for every assertion that reads the deployed artifact
 #: (review M14). The file is NOT git-tracked, so a fresh clone legitimately
@@ -310,6 +353,142 @@ def test_token_style_runs_a_full_mint_and_transfer_sequence() -> None:
     assert host.chain_value(data) == U32(40)
 
 
+def test_the_wasm_event_equals_the_tier_1_record_for_the_same_publish() -> None:
+    """The S13 differential for `Event.publish`, stated DIRECTLY (review m8).
+
+    Two absolute pins ("the WASM leg records these words", "the tier-1 leg
+    records these values") can BOTH be updated to agree with a drifting
+    convention. This compares the two legs to each other instead: the same
+    `Transfer` publish, once compiled and run under `FullHost`, once executed by
+    the tier-1 model through the ordinary authoring surface, decoded to the same
+    chain values.
+
+    Same fixture class on both sides (`tests.fixtures.token_style.Transfer`), so
+    the convention is read from ONE declaration -- which is the whole point of
+    the five-layer design: the decorator metadata is what both tiers consume.
+    """
+    _built, host, mini = start(TOKEN_STYLE)
+    admin = host.val_word(Address(ACCOUNT))
+    other = host.val_word(Address(CONTRACT))
+    mini.invoke("__constructor", admin, host.val_word(String("Serpent")))
+    mini.invoke("mint", admin, other, val.pack_u32val(100))
+    mini.invoke("transfer", other, admin, val.pack_u32val(40))
+    ((topics, data),) = host.events
+    from_wasm = (tuple(host.chain_value(t) for t in topics), host.chain_value(data))
+
+    env = deployed_env()
+    Transfer(from_=Address(CONTRACT), to=Address(ACCOUNT), amount=U32(40)).publish(env)
+    (from_tier_1,) = env.published_events
+
+    assert from_wasm == from_tier_1
+
+
+def test_both_publish_spellings_record_the_same_event() -> None:
+    """The end-to-end half of M1-E's both-spellings equivalence (ruling E2).
+
+    `token_style.transfer` publishes through `Transfer(...).publish(env)` and
+    `token_style_canonical.send` publishes the same event through
+    `env.events().publish((Symbol("transfer"), frm, to), amount)`. Run under the
+    mini host, the two must arrive at `contract_event` with the SAME topic words
+    and the same data word -- compared as decoded chain values, because the
+    handles are per-instantiation.
+
+    This is the claim that makes "the emitter needed no change" observable: the
+    frontend IR goldens show the two trees are equal, and this shows the two
+    modules really do call the host the same way.
+    """
+    _built, host, mini = start(TOKEN_STYLE)
+    admin = host.val_word(Address(ACCOUNT))
+    other = host.val_word(Address(CONTRACT))
+    mini.invoke("__constructor", admin, host.val_word(String("Serpent")))
+    mini.invoke("mint", admin, other, val.pack_u32val(100))
+    mini.invoke("transfer", other, admin, val.pack_u32val(40))
+    ((desugared_topics, desugared_data),) = host.events
+
+    _built2, host2, mini2 = start(TOKEN_STYLE_CANONICAL)
+    admin2 = host2.val_word(Address(ACCOUNT))
+    other2 = host2.val_word(Address(CONTRACT))
+    mini2.invoke("__constructor", admin2)
+    mini2.invoke("send", other2, admin2, val.pack_u32val(40))
+    ((canonical_topics, canonical_data),) = host2.events
+
+    assert [host.chain_value(t) for t in desugared_topics] == [
+        host2.chain_value(t) for t in canonical_topics
+    ]
+    assert host.chain_value(desugared_data) == host2.chain_value(canonical_data)
+    # ... and both are the shape D4 calls canonical.
+    assert [host2.chain_value(t) for t in canonical_topics] == [
+        Symbol("transfer"),
+        Address(CONTRACT),
+        Address(ACCOUNT),
+    ]
+
+
+#: The two data formats no fixture publishes, in one throwaway contract: the
+#: default `"map"` (a heterogeneous payload -- `U32` and `String`) and `"vec"`.
+#: The fixtures cover `"single-value"` twice over.
+_EVENT_FORMATS = '''"""Both container data formats, published through the authoring form."""
+
+from serpent import Address, Annotated, Env, Event, String, U32, contract, contractevent, topic
+
+
+@contractevent
+class Traded(Event):
+    who: Annotated[Address, topic]
+    amount: U32
+    memo: String
+
+
+@contractevent(data_format="vec")
+class Scored(Event):
+    first: U32
+    second: U32
+
+
+@contract
+class Formats:
+    def trade(self, env: Env, who: Address, amount: U32, memo: String) -> None:
+        Traded(who=who, amount=amount, memo=memo).publish(env)
+
+    def score(self, env: Env, first: U32, second: U32) -> None:
+        Scored(first=first, second=second).publish(env)
+'''
+
+
+def test_the_container_event_data_formats_build_and_run_unchanged() -> None:
+    """`"map"` and `"vec"` event data, through the UNTOUCHED emitter (E2).
+
+    The desugar's premise is that an event's data payload is already an IR node
+    the emitter lowers: `"map"` is a `MakeStruct` (compile-time sorted `Symbol`
+    key descriptors + runtime `Val` words, `map_new_from_linear_memory`) and
+    `"vec"` is a `MakeVec`. This runs both and reads the host objects back, so
+    the claim is observed rather than argued -- including the ORDER of the map's
+    keys, which the host requires ascending and which C, not D, decided.
+    """
+    built = build_wasm(compile_module(_EVENT_FORMATS, "contracts/formats.py"))
+    host = FullHost()
+    mini = engine.MiniHost(built.wasm, imports=host.bindings())
+    host.attach(mini)
+
+    who = host.val_word(Address(ACCOUNT))
+    mini.invoke("trade", who, val.pack_u32val(5), host.val_word(String("hi")))
+    mini.invoke("score", val.pack_u32val(1), val.pack_u32val(2))
+
+    (map_topics, map_data), (vec_topics, vec_data) = host.events
+    assert [host.chain_value(t) for t in map_topics] == [Symbol("traded"), Address(ACCOUNT)]
+    # The map's keys are `(tag, bytes)` pairs as the store normalizes them; what
+    # matters here is the names, their ASCENDING order, and the values.
+    keys = [key for key in host._map(map_data)]
+    names = [key[1] for key in keys if isinstance(key, tuple)]
+    assert len(names) == len(keys)
+    assert names == [b"amount", b"memo"] == sorted(names)
+    values = [host.chain_value(word) for word in host._map(map_data).values()]
+    assert values == [U32(5), String("hi")]
+
+    assert [host.chain_value(t) for t in vec_topics] == [Symbol("scored")]
+    assert [host.chain_value(item) for item in host._vec(vec_data)] == [U32(1), U32(2)]
+
+
 def test_token_style_refuses_a_transfer_larger_than_the_balance() -> None:
     """`raise TokenError.InsufficientBalance` -> `errorcode(1)`, Contract type,
     and the state is UNCHANGED: the check is before both writes, so a partial
@@ -339,13 +518,26 @@ def test_token_style_refuses_a_transfer_larger_than_the_balance() -> None:
     [
         (SANDBOX_COUNTER, _ROOT / "sandbox" / "counter.py"),
         (SANDBOX_HELLO_WORLD, _ROOT / "sandbox" / "hello_world.py"),
+        (EXAMPLE_COUNTER, _ROOT / "sandbox" / "counter.py"),
     ],
-    ids=["counter", "hello_world"],
+    ids=["counter", "hello_world", "graduated_counter"],
 )
 def test_a_promoted_sandbox_copy_builds_the_same_module_as_its_original(
     promoted: Path, original: Path
 ) -> None:
     """The anti-drift check for F.2.8's promotion, stated on the BUILDS.
+
+    **The third row is M1-E Task 7's graduation.** `examples/counter.py` is
+    `tests/fixtures/sandbox_counter.py`'s contract verbatim, promoted out of the
+    test suite into the shipped examples, and the brief offered two ways to keep
+    the chain honest: turn the fixture into a path constant that re-exports the
+    example, or point the byte compare at the example. The second is by far the
+    smaller edit -- one parametrize row -- because the fixture is named by four
+    separate inventories (`FIXTURES` here, `FIXTURE_NAMES` and a golden in
+    `test_emitter_printer.py`, `_FIXTURES` in `test_harness_hostfns.py`, the fuzz
+    corpus in `test_frontend_fuzz.py`), every one of which builds it as a
+    contract. So the row is ADDED rather than retargeted: all three files now
+    build to the same module, and any two of them drifting apart fails here.
 
     A text compare would break on the added docstring and on `ruff format`'s
     spacing, neither of which can change a single emitted byte. A build compare
@@ -463,16 +655,44 @@ def test_sandbox_hello_world_refuses_the_unimaginative_greeting() -> None:
 # ===========================================================================
 
 
+#: The fixtures with an `__init__`, i.e. a `__constructor` export. The host
+#: only honors that reserved name from protocol 22 (spec SS 13 / CAP-0058), so
+#: the computed floor over these is 22 even though nothing they IMPORT is gated
+#: -- see `test_every_fixture_instantiates_and_declares_the_protocol_floor`.
+CONSTRUCTOR_BEARING: frozenset[Path] = frozenset(
+    {
+        TOKEN_STYLE,
+        TOKEN_STYLE_CANONICAL,
+        SANDBOX_HELLO_WORLD,
+        EXAMPLE_ERRORS,
+        EXAMPLE_ALLOWANCE_TOKEN,
+    }
+)
+
+
 @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)
 def test_every_fixture_instantiates_and_declares_the_protocol_floor(path: Path) -> None:
-    """Every one of the four links under the full mini host and declares the
-    computed floor. `declared_protocol == 20` for all four is not a coincidence
-    worth hiding: none of them reaches a protocol-gated host function, so the
-    floor is `BASE_PROTOCOL`, and a fixture that started declaring something
-    else would mean a gated function crept into one of them."""
+    """Every fixture links under the full mini host and declares the computed
+    floor -- and the floor SPLITS, which is the property worth stating.
+
+    None of these fixtures reaches a protocol-gated host function, so their
+    IMPORT floor is `BASE_PROTOCOL` (20) across the board; a fixture that
+    started declaring something higher for an import reason would mean a gated
+    function crept into one of them. But the floor also counts FEATURE gates
+    (2026-08-28 ruling): a `__constructor` export needs protocol 22 (spec SS 13
+    / CAP-0058), so the four constructor-bearing fixtures declare 22 and the
+    constructor-less four declare 20. Both halves are asserted, and which half
+    a fixture is in is derived from its own IR rather than restated, so adding
+    an `__init__` to a fixture cannot silently drop it out of the pin.
+    """
     built, _host, _mini = start(path)
-    assert built.declared_protocol == 20
     assert built.target_protocol is None
+
+    # `__constructor` in the ASSEMBLED exports is the derivation: it is the
+    # export name the gate is about, read back off the bytes.
+    has_constructor = "__constructor" in built.exports
+    assert has_constructor == (path in CONSTRUCTOR_BEARING), (path.stem, has_constructor)
+    assert built.declared_protocol == (22 if has_constructor else 20)
 
 
 @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)

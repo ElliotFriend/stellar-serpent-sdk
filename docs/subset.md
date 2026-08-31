@@ -11,7 +11,7 @@ ever disagree; the failure message names the regeneration command.
 
 serpent compiles a restricted subset of Python to a Soroban contract.
 This document is generated, in full, from the compiler's own registry
-of diagnostic codes, its `tests/must_reject/` fixture suite (95 minimal counter-examples, one per rejected
+of diagnostic codes, its `tests/must_reject/` fixture suite (94 minimal counter-examples, one per rejected
 construct), and its recognized-surface tables -- never hand-authored,
 so it cannot say something the compiler does not actually do.
 
@@ -49,6 +49,7 @@ surface:
 
 | Python | Host function(s) |
 | --- | --- |
+| `<Event instance>.publish(env)` | `contract_event` |
 | `<bucket>.del_(key)` | `del_contract_data` |
 | `<bucket>.get(key, T)` | `get_contract_data` |
 | `<bucket>.get(key, T, default=d)` | `has_contract_data`, `get_contract_data` |
@@ -824,33 +825,6 @@ class Contract:
 - **help:** a contract module's top level may contain only `from __future__ import annotations`, `from serpent import ...`, module-level chain constants, serpent-decorated classes, and module-level helper functions
 - **note:** `AnnAssign` is not a supported top-level statement
 - **note:** a module constant is written `NAME = U32(1)`; its type is the constructor
-
-#### SPT1032
-
-**Construct:** Call -- <Event instance>.publish(env)
-
-**Intent:** deferred to sub-plan E; use env.events().publish(topics, data)
-
-#### <Event instance>.publish(env) (`constructs/event_instance_publish.py`)
-
-```python
-from serpent import Env, Event, U32, contract, contractevent
-
-
-@contractevent
-class Transfer(Event):
-    amount: U32
-
-
-@contract
-class Contract:
-    def compute(self, env: Env, x: U32) -> U32:
-        Transfer(amount=x).publish(env)  # HERE
-        return x
-```
-
-- **message:** deferred to sub-plan E; use env.events().publish(topics, data): `<Event instance>.publish(env)` is deferred to sub-plan E
-- **help:** use env.events().publish(topics, data) instead
 
 #### SPT1033
 
@@ -2347,8 +2321,9 @@ each proven end to end some other way instead:
 | Code | Band | Reason |
 | --- | --- | --- |
 | `SPT1009` | `SPT1xxx` | dead dispatch branch by construction: a bare Slice is always intercepted by SPT1013 (direct slice) or SPT1014 (multi-dim tuple); branch retained as defense-in-depth |
+| `SPT1032` | `SPT1xxx` | retired by M1-E (sub-plan E): the form it rejected is now supported -- `<Event instance>.publish(env)` desugars into the canonical event lowering, so no source can trip it; the row stays under the append-only rule (D9), and it leaves this allowlist with a fixture if it ever becomes reachable again |
 | `SPT4018` | `SPT4xxx` | superseded by SPT3020 per the Task 7b review adjudication (struct positional args ARE a call-arity shape); row retained under the append-only rule, never emitted |
-| `SPT6001` | `SPT6xxx` | no gated authoring surface at M1-C; band wired end-to-end via a synthetic-bindings unit test (Task 10) |
+| `SPT6001` | `SPT6xxx` | no fixture-reachable trigger: no host function the frontend emits is gated above the base protocol (that arm is wired end-to-end via a synthetic-bindings unit test, Task 10), and the one FEATURE gate -- a contract with a constructor needs protocol >= 22, CAP-0058 -- fires only against an explicit target_protocol, which is a compile_module keyword a must_reject fixture cannot set |
 | `SPT7003` | `SPT7xxx` | unreachable end-to-end: CPython's compile() rejects break/continue outside a loop as a SyntaxError (bridged to SPT1037) before the frontend's loop-depth check runs; the stmt-layer check is retained as defense-in-depth for AST-only entry |
 | `SPT8001` | `SPT8xxx` | emitter-side limit: reported by build_wasm over an already-accepted module, so no small source fixture can deterministically trigger it (a 131072-byte module would be a fixture nobody could read); proven by an emitter unit test instead |
 | `SPT8002` | `SPT8xxx` | emitter-side limit: reported by build_wasm over an already-accepted module, so no small source fixture can deterministically trigger it (the pool reaches 0x1000 only for thousands of literals); proven by an emitter unit test instead |

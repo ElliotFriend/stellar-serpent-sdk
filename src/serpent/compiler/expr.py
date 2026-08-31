@@ -231,7 +231,7 @@ _LEN_SCOPE_NOTE = (
     "a Symbol's or String's length is not an operation M1 exposes; MJ-1 scopes len() "
     "to Vec, Map, and Bytes"
 )
-_TIME_ALGEBRA_NOTE = "time algebra is a sub-plan E decision (D4/A17)"
+_TIME_ALGEBRA_NOTE = "time algebra is deferred to M2 (D4/A17/E3)"
 _ORACLE_SURPRISE_NOTE = (
     "the compiler validates a literal by constructing the tier-1 chain value; this "
     "constructor raised something other than the ValueError/TypeError serpent's error "
@@ -1245,8 +1245,9 @@ def _check_call(node: ast.Call, ctx: FuncCtx) -> IRExpr:
                 return recognized
             # An `@contract` class, or a `@contractevent` construction that is
             # not immediately `.publish(env)`-ed: neither is a value. The
-            # publish form itself is refused by `recognize_call`, pointing at
-            # sub-plan E (E12).
+            # publish form itself is DESUGARED by `recognize_call` (M1-E Task
+            # 6), and construction-and-publish in one expression is exactly the
+            # supported shape -- an event instance never becomes a local.
             return _unrecognized(
                 node, ctx, loc, f"`{name}(...)` is a {kind} class, which is not a value"
             )

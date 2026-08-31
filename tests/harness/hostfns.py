@@ -79,12 +79,18 @@ from collections.abc import Callable
 from functools import cmp_to_key
 
 from serpent import val
+
+# The ledger stubs' starting values, IMPORTED rather than restated: one
+# definition across tiers (S13). `serpent.env` carries the rationale for the
+# deliberately-not-zero numbers; they stay settable per instance here
+# (`host.ledger_timestamp = ...`).
+from serpent.env import DEFAULT_LEDGER_SEQUENCE, DEFAULT_LEDGER_TIMESTAMP
 from serpent.types import (
     U64,
     Address,
     Bytes,
 )
-from tests.harness.engine import HostError, HostTrap
+from tests.harness.errors import HostError, HostTrap
 from tests.harness.i256 import Wide256Host
 from tests.harness.objects import ObjectStore
 
@@ -108,13 +114,6 @@ INVALID_POSITION_ERROR_VAL = val.error_val(0, val.ERROR_TYPE_OBJECT)
 #: contract ("Any other valid or invalid strkey (e.g. 'S...') will trigger an
 #: error"). Unpinned XDR code, same convention as above.
 BAD_STRKEY_ERROR_VAL = val.error_val(0, val.ERROR_TYPE_VALUE)
-
-#: The ledger stubs' starting values. Arbitrary but deliberately not zero: a
-#: zero timestamp is a plausible-looking answer, and a contract that read one
-#: without the callback ever running would look like it worked. Settable per
-#: instance (`host.ledger_timestamp = ...`).
-DEFAULT_LEDGER_TIMESTAMP = 1_700_000_000
-DEFAULT_LEDGER_SEQUENCE = 1_000_000
 
 
 class _SharedWide(Wide256Host):

@@ -16,7 +16,8 @@ one rejected construct, declared by a machine-readable `# serpent:` header
    already exists; this is the review gate the task brief names).
 3. Meta-test B: every non-`NO_FIXTURE_ALLOWLIST` registry code has >= 1
    fixture -- a hard, enforced check since Task 11b completed the fixture
-   set (95 fixtures covering all 92 required codes).
+   set (94 fixtures covering all 91 required codes -- M1-E deleted the
+   `SPT1032` fixture when that form became supported).
 4. The per-fixture runner test (live since Task 10 landed `compile_module`):
    compiles the fixture AS TEXT -- never imported, because importing would
    execute decorators outside the loader's own bridging and defeat the point
@@ -143,11 +144,12 @@ FIXTURES: list[FixtureSpec] = _discover_fixtures()
 
 
 def test_seed_fixtures_are_discovered() -> None:
-    # A floor, not a moving target: Task 11b completes the fixture set (95
+    # A floor, not a moving target: Task 11b completed the fixture set (95
     # fixtures covering the 92 required registry codes -- 100 total minus the
-    # eight in `codes.NO_FIXTURE_ALLOWLIST`, SPT6001/SPT1009/SPT4018/SPT7003/
-    # SPT8001/SPT8002/SPT8003/SPT8004). This guards the completed tree does
-    # not regress under a later edit, not the exact count.
+    # eight then in `codes.NO_FIXTURE_ALLOWLIST`). M1-E retired SPT1032 to that
+    # allowlist (the form it rejected is now supported) and deleted its fixture,
+    # so the tree is 94 fixtures over 91 required codes. This guards the
+    # completed tree does not regress under a later edit, not the exact count.
     assert len(FIXTURES) >= 90
 
 

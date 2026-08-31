@@ -1,14 +1,21 @@
-"""Compile a sandbox contract and show what the frontend produced.
+"""Compile a sandbox contract, show what the frontend produced, and (since
+M1-D) build the deployable WASM next to the source.
 
 Usage (from the repo root):
 
     uv run python sandbox/compile.py sandbox/counter.py
+    # writes sandbox/counter.wasm on success
+
+The .wasm is validated before it is written (an invalid module is a compile
+error, never an output file), and the bytes are ready for the stock CLI:
+`stellar contract deploy --wasm sandbox/counter.wasm ...`.
 """
 
 import sys
 from pathlib import Path
 
 from serpent.compiler import CompileError, compile_module
+from serpent.emitter import build_wasm
 
 
 def main() -> int:
@@ -35,6 +42,12 @@ def main() -> int:
     for fn in out.functions:
         params = ", ".join(f"{name}: {ty.repr_form.name}" for name, ty, _loc in fn.params)
         print(f"    {fn.export_name}({params}) -> {fn.ret.repr_form.name}")
+
+    built = build_wasm(out)
+    wasm_path = path.with_suffix(".wasm")
+    wasm_path.write_bytes(built.wasm)
+    print(f"\nBUILT {wasm_path} ({built.module_size} bytes, "
+          f"env-meta protocol={built.declared_protocol})")
     return 0
 
 

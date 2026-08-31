@@ -28,12 +28,17 @@ interesting if the same source produces it:
   against the AST-derived `FuncIR` list, which is what catches F.1.14's
   import/AST skew.
 * **F.2.6, the host-fn <-> protocol cross-check.** `declared_protocol` must
-  equal the max `min_protocol` over `host_fns_reachable`, computed two
-  independent ways, and no function in the used set may be gated above the
-  target. Nothing M1-C can reach is gated today, so the per-example answer is
-  always `BASE_PROTOCOL` -- which is recorded as its own assertion, and is why
-  `_independent_floor` is additionally exercised on synthetic gated/ungated
-  inputs rather than only on the examples.
+  equal the max `min_protocol` over `host_fns_reachable` **raised by the
+  feature gates**, computed two independent ways, and no function in the used
+  set may be gated above the target. Nothing M1-C can reach is gated today, so
+  the per-example IMPORT floor is always `BASE_PROTOCOL` -- which is recorded as
+  its own assertion, and is why `_independent_floor` is additionally exercised
+  on synthetic gated/ungated inputs rather than only on the examples. The one
+  FEATURE gate (2026-08-28 ruling) is `__constructor`, which the host honors
+  only from protocol 22 (spec SS 13 / CAP-0058) and which no binding can carry
+  because it is an export NAME, not an import: `_independent_expected_protocol`
+  applies it here, so the two examples with an `__init__` (`memoryless`,
+  `token_style`) are cross-checked at 22 and the other three at 20.
 
 ## Two obligations, two different strengths -- deliberately
 
@@ -92,7 +97,12 @@ from xdrlib3 import Unpacker
 
 import serpent
 from serpent._host import functions_by_name
-from serpent._host._protocol import BASE_PROTOCOL, DEFAULT_TARGET_PROTOCOL, declared_protocol
+from serpent._host._protocol import (
+    BASE_PROTOCOL,
+    CONSTRUCTOR_MIN_PROTOCOL,
+    DEFAULT_TARGET_PROTOCOL,
+    declared_protocol,
+)
 from serpent.compiler.diagnostics import CompileError, Loc
 from serpent.compiler.frontend import CompiledModule, compile_module
 from serpent.compiler.ir import (
@@ -932,15 +942,16 @@ def test_the_spec_stream_decoder_round_trips(examples: dict[str, CompiledModule]
 def test_events_stay_out_of_the_declared_type_inventory(
     examples: dict[str, CompiledModule],
 ) -> None:
-    """MJ-9/B14: `spec_inputs.events` is a SEPARATE field, and handing an event
-    to `types=` is a hard failure rather than a silent wrong spec."""
+    """MJ-9: `spec_inputs.events` is a SEPARATE field, and handing an event to
+    `types=` is a hard failure rather than a silent wrong spec. The refusal now
+    points at the `events=` keyword that DOES take one (M1-E Task 5)."""
     compiled = examples["token_style"]
     (event,) = compiled.spec_inputs.events
     assert event.__name__ == "Transfer"
     assert event not in compiled.spec_inputs.declared_types_in_order
     contract_cls = compiled.spec_inputs.contract_cls
     assert contract_cls is not None
-    with pytest.raises(SpecTypeError, match="deferred to sub-plan E"):
+    with pytest.raises(SpecTypeError, match=r"pass it in `events=`"):
         build_spec_entries(
             contract_cls, types=(*compiled.spec_inputs.declared_types_in_order, event)
         )
@@ -1020,19 +1031,54 @@ def test_the_independent_floor_actually_discriminates() -> None:
     assert _GATED_BINDING_MIN_PROTOCOL > BASE_PROTOCOL
 
 
+def _has_constructor(compiled: CompiledModule) -> bool:
+    """Whether the module declares a `__constructor` export (spec SS 13 / S26).
+
+    Asked of the ASSEMBLY's own `FuncKind`, which is the same fact
+    `frontend._constructor_loc` reads -- the point of the cross-check below is
+    that the FEATURE gate is applied to the right modules, not that this test
+    can re-detect an `__init__` from source text.
+    """
+    contract = compiled.ir.contract
+    assert contract is not None
+    return any(m.kind is FuncKind.CONSTRUCTOR for m in contract.methods)
+
+
+def _independent_expected_protocol(compiled: CompiledModule) -> int:
+    """`_independent_floor` over the reachable set, raised by the FEATURE gates.
+
+    The import floor is what `_host` can compute from `HOST_FUNCTIONS`; a
+    feature gate is a capability that is NOT an import, so no binding carries
+    it and the max-over-bindings computation cannot see it. Today there is
+    exactly one: `__constructor`, honored only from
+    `CONSTRUCTOR_MIN_PROTOCOL` (spec SS 13 / CAP-0058, 2026-08-28 ruling).
+    """
+    floor = _independent_floor(compiled.host_fns_reachable)
+    if _has_constructor(compiled):
+        floor = max(floor, CONSTRUCTOR_MIN_PROTOCOL)
+    return floor
+
+
 def test_no_m1c_reachable_host_fn_is_gated_today(
     examples: dict[str, CompiledModule],
 ) -> None:
-    """The constant-20 fact, recorded as an assertion rather than a comment.
+    """The constant-20 IMPORT-floor fact, recorded as an assertion rather than a
+    comment.
 
     This is why `test_the_independent_floor_actually_discriminates` has to
     exist. It is also a genuine property worth watching: the day a re-pin (or a
     new recognized surface) puts a gated function inside M1-C's reach, this
     fails and the SPT6001 band stops being reachable only through
     `test_frontend.py`'s fake gated `HostFn`.
+
+    The claim is about IMPORTS, so it is stated over
+    `_independent_floor(host_fns_reachable)` rather than over
+    `declared_protocol` -- which, since the 2026-08-28 ruling, may also carry a
+    FEATURE gate that has nothing to do with whether a host function is gated.
+    That other half is `test_declared_protocol_is_the_floor_over_the_reachable_set`'s.
     """
     for name, compiled in examples.items():
-        assert compiled.declared_protocol == BASE_PROTOCOL, (name, compiled.declared_protocol)
+        assert _independent_floor(compiled.host_fns_reachable) == BASE_PROTOCOL, name
         gated = sorted(
             fn
             for fn in compiled.host_fns_reachable
@@ -1046,20 +1092,47 @@ def test_declared_protocol_is_the_floor_over_the_reachable_set(
     name: str, examples: dict[str, CompiledModule]
 ) -> None:
     """F.2.6: `declared_protocol` equals the max `min_protocol` over
-    `host_fns_reachable`, computed two ways.
+    `host_fns_reachable` raised by the feature gates, computed two ways.
 
     The REACHABLE set, not the used set, is the right domain: sub-plan D
     chooses between lowering forms for `MakeVec`/`MakeMap`/`MakeTopics`
     (MJ-15), so a floor computed over `host_fns_used` alone could be too low
     for what D actually emits (`frontend.py`'s module docstring).
+
+    `_host.declared_protocol` answers only the IMPORT half -- it is fed names
+    and can only see gates a binding carries -- so the second comparison adds
+    the `__constructor` gate to its answer the same way `frontend` does.
     """
     compiled = examples[name]
-    assert compiled.declared_protocol == _independent_floor(compiled.host_fns_reachable)
+    assert compiled.declared_protocol == _independent_expected_protocol(compiled)
     # And the same answer through `_host.declared_protocol`, which is THE
-    # function sub-plan D will call for `build_env_meta` (B4).
-    assert compiled.declared_protocol == declared_protocol(
-        sorted(compiled.host_fns_reachable), None
+    # function sub-plan D will call for `build_env_meta` (B4), plus the feature
+    # gate `_host` cannot see.
+    import_answer = declared_protocol(sorted(compiled.host_fns_reachable), None)
+    expected = (
+        max(import_answer, CONSTRUCTOR_MIN_PROTOCOL)
+        if _has_constructor(compiled)
+        else import_answer
     )
+    assert compiled.declared_protocol == expected
+
+
+@pytest.mark.parametrize("name", EXAMPLE_NAMES)
+def test_the_constructor_gate_splits_the_examples_two_and_three(
+    name: str, examples: dict[str, CompiledModule]
+) -> None:
+    """The split stated absolutely, so the derivation above cannot agree with
+    itself while both halves drift.
+
+    `memoryless` and `token_style` have an `__init__`; `containers`,
+    `control_flow` and `spike1_reauthored` do not. Nothing any of the five
+    imports is gated, so the difference in what they declare is the FEATURE
+    gate and nothing else.
+    """
+    compiled = examples[name]
+    expected_constructor = name in {"memoryless", "token_style"}
+    assert _has_constructor(compiled) is expected_constructor
+    assert compiled.declared_protocol == (22 if expected_constructor else 20)
 
 
 @pytest.mark.parametrize("name", EXAMPLE_NAMES)

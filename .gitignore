@@ -9,3 +9,4 @@ dist/
 spikes/**/target/
 spikes/**/*.wasm
 test_snapshots/
+sandbox/*.wasm

@@ -34,8 +34,17 @@ its own, and higher layers depend only on the ones below them:
   function (`LimitExceeded = errorcode(7)`, not a decorator): the authoring
   surface that attaches the metadata later layers consume.
 - **Env surface** (`serpent/env.py`) -- the `Env`/`ChainValue`/`Event` API a
-  contract method calls against for storage, events, and other host-mediated
-  effects.
+  contract method calls against for storage, events, TTL, ledger reads and
+  auth. It ships with a deliberately minimal in-Python tier-1 model
+  (`deploy`/`Env`) that runs a contract's own methods for real, with no WASM
+  build in the loop, as a fast inner dev loop; the same contract also
+  compiles and runs as WASM under `tests/harness`'s mini host, and
+  `tests/unit/test_env_differential.py` checks the two agree on 58 stateful
+  scenarios.
+- **Examples** (`examples/`) -- five complete contracts (a counter, error
+  codes, structs, events, an allowance-style token) exercising the authoring
+  surface end to end; each one compiles, builds to WASM, and runs both at
+  tier 1 and under the mini host in `tests/unit/test_examples.py`.
 - **`_host` bindings** (`serpent/_host/`) -- the pinned, code-generated table
   of all 199 Soroban host functions (from a pinned `env.json`), with export
   codes, arities, and the protocol-gate logic used to compute a build's
@@ -53,6 +62,16 @@ its own, and higher layers depend only on the ones below them:
   `serpent.emitter.printer.disassemble` renders any such module back to a
   reviewable, WAT-style text -- section headers, host calls by name -- for
   when a change to a lowering needs to be read rather than trusted.
+
+**Honest boundary.** The tier-1 `Env` and the mini host are two models this
+repo wrote, not the chain: their agreement is self-consistency, not proof
+against a real host. `ENV_SCENARIOS` (`tests/semantics/env_scenarios.py`) is
+importable specifically so a real host can re-run the same corpus later and
+turn that agreement into evidence. Named gaps neither model attempts today:
+frame rollback, storage footprint, TTL clamp/trap at the exact chain-defined
+bound, and a time-arithmetic algebra for `Timepoint`/`Duration` (bridge
+through `to_u64()`/`from_u64()` in the meantime -- `examples/structs.py` has a
+worked example).
 
 Design rationale, the full milestone plan, and load-bearing facts (interface
 counts, byte layouts, on-chain-verified constants) live in

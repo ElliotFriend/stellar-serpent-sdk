@@ -2,12 +2,16 @@ import pytest
 
 from serpent import val
 from serpent.errors import (
+    CODE_ABI_CHECK_FAILED,
     CODE_ARITHMETIC_OVERFLOW,
     CODE_BAD_ARGUMENT,
+    CODE_MISSING_VALUE,
     RESERVED_CODE_MIN,
+    AbiCheckFailed,
     ArithmeticOverflow,
     BadArgument,
     ContractError,
+    MissingValue,
 )
 
 
@@ -51,3 +55,20 @@ def test_reserved_codes() -> None:
     assert ArithmeticOverflow().code == CODE_ARITHMETIC_OVERFLOW
     assert BadArgument().code == CODE_BAD_ARGUMENT
     assert CODE_ARITHMETIC_OVERFLOW >= RESERVED_CODE_MIN
+
+
+def test_missing_value_carries_its_reserved_code() -> None:
+    """Raised by Task 2's tier-1 `get` on a missing key (no `default`)."""
+    err = MissingValue()
+    assert isinstance(err, ContractError)
+    assert err.code == CODE_MISSING_VALUE
+    assert err.to_val() == val.error_val(CODE_MISSING_VALUE)
+
+
+def test_abi_check_failed_carries_its_reserved_code() -> None:
+    """Raised by Task 2's tier-1 `get` ty-check, and the emitter's prologue/
+    narrow checks (which already emit CODE_ABI_CHECK_FAILED as a raw Val)."""
+    err = AbiCheckFailed()
+    assert isinstance(err, ContractError)
+    assert err.code == CODE_ABI_CHECK_FAILED
+    assert err.to_val() == val.error_val(CODE_ABI_CHECK_FAILED)

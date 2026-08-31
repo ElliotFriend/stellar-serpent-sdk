@@ -214,7 +214,8 @@ def test_error_enum_declarations_carry_their_codes() -> None:
 def test_events_are_tracked_separately_from_the_spec_types() -> None:
     """MJ-9: `spec.sections` REFUSES an event class, so an event must never
     reach the `types=` inventory -- but it is still a declaration C records
-    (its topic/data split is sub-plan E's, B14/D8)."""
+    (its topic/data split lives in `_serpent_type_` metadata, added by M1-E
+    Task 5, not in this IR node; B14/D8)."""
     decls = _ok()
     (event,) = decls.events
     assert isinstance(event, EventDecl)

@@ -211,6 +211,37 @@ def test_events_are_a_separate_inventory() -> None:
     assert "Transfer" not in {d.name for d in loaded.decorated_types_in_order}
 
 
+def test_the_contractevent_factory_spelling_is_a_recognized_decorator() -> None:
+    """`@contractevent(topics=..., data_format=...)` is an `ast.Call`, not an
+    `ast.Name` (M1-E Task 5's factory form), and the class-shape check reads
+    both spellings. Missing that made the FACTORY form -- the only way to
+    declare a topic convention at all -- `SPT4015` "carries no serpent
+    decorator" in every compiled contract.
+    """
+    loaded = load(
+        """
+from serpent import Address, Annotated, Env, Event, U32, contract, contractevent, topic
+
+
+@contractevent(topics=("transfer",), data_format="single-value")
+class Transfer(Event):
+    from_: Annotated[Address, topic]
+    amount: U32
+
+
+@contract
+class C:
+    def go(self, env: Env, who: Address, amount: U32) -> None:
+        Transfer(from_=who, amount=amount).publish(env)
+"""
+    )
+    assert loaded.diagnostics.diagnostics == ()
+    (event,) = loaded.events
+    assert event.name == "Transfer"
+    assert event.metadata["prefix_topics"] == ("transfer",)
+    assert event.metadata["data_format"] == "single-value"
+
+
 def test_module_consts_are_collected_with_their_executed_values() -> None:
     # P5: module-level chain constants.
     loaded = load(TOKEN_SHAPED)

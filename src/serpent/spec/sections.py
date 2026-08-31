@@ -3,7 +3,7 @@
 One builder per section (spec Sec.7):
 
 * `contractenvmetav0` -> `build_env_meta(protocol)`
-* `contractspecv0`    -> `build_spec_entries(contract_cls, types=...)`
+* `contractspecv0`    -> `build_spec_entries(contract_cls, types=..., events=...)`
 * `contractmetav0`    -> `build_meta(name, version, pairs)`
 
 Each returns a **bare stream of XDR entries** with no outer length prefix: a
@@ -22,26 +22,33 @@ the offending line. The caps:
 
 | what | cap | why that number |
 |---|---|---|
-| function name, function input name, struct field name | 30 | `decorators.NAME_LIMIT`; the XDR caps inputs/fields at 30 |
+| function name, function input name, struct field name, event param name | 30 | `decorators.NAME_LIMIT`; the XDR caps inputs/fields/event params at 30 |
 | type name (struct, error enum) | 60 | `SCSpecTypeUDT.name` is a `string<60>`, so a longer name could be declared but never *referenced* |
 | error-enum case name | 60 | `SCSpecUDTErrorEnumCaseV0.name` is a `string<60>` |
+| event name, prefix topic | 32 | both are an `SCSymbol` (`val.SCSYMBOL_LIMIT`), NOT a `string<60>` -- an event's name cap is the tighter one |
+| event prefix-topic count | 2 | `SCSpecEventV0.prefix_topics` is an `SCSymbol<2>` |
 | any doc | 1024 | `SC_SPEC_DOC_LIMIT` |
+| `lib` | 80 | always `b""` here: serpent has no cross-crate type references |
 
 **What the decorators do NOT check, and this module must:** `__init__`'s name
 (it is skipped there, and is emitted here as `__constructor`), *parameter*
 names, class names, and error-enum case names. Everything this module emits
 goes through `_check_name` regardless of whether a decorator already saw it.
 
+**Events are their own keyword, not a `types=` member.** `SC_SPEC_ENTRY_EVENT_V0`
+is built from `@contractevent`'s topic convention (M1-E Task 5): the metadata
+carries `prefix_topics`, a per-field `locations` map (topic vs data) and a
+`data_format`, so nothing here has to guess. They arrive via `events=` and are
+emitted AFTER the functions (ruling E2), which is what keeps every spec that
+declares no event -- the on-chain-verified spike1 golden included -- byte for
+byte where it was. An event handed to `types=` is still refused: a UDT
+reference names a type, and an event is not one.
+
 **Deferred, deliberately:**
 
-* `SC_SPEC_ENTRY_EVENT_V0` -- `SCSpecEventV0` needs a `data_format` and a
-  per-parameter `location` (topic vs data), and M1-A's `@contractevent`
-  metadata carries no topic/data split (the events ruling left topics
-  call-site-level). Guessing would ship a spec that is valid XDR and a lie, so
-  an event class in `types` is refused, pointing at sub-plan E.
-* Per-field and per-input docs are `b""`: `_serpent_type_` records no per-field
-  doc. A real gap, noted for sub-plan C. *Class* and *method* docstrings ARE
-  emitted.
+* Per-field, per-input and per-event-param docs are `b""`: `_serpent_type_`
+  records no per-field doc. A real gap, noted for sub-plan C. *Class* and
+  *method* docstrings ARE emitted.
 """
 
 import inspect
@@ -53,7 +60,14 @@ from stellar_sdk import xdr
 
 import serpent
 from serpent import val
-from serpent.decorators import _METADATA_ATTR, NAME_LIMIT
+from serpent.decorators import (
+    _METADATA_ATTR,
+    DATA_LOCATION,
+    NAME_LIMIT,
+    PREFIX_TOPIC_LIMIT,
+    TOPIC_LOCATION,
+    _check_data_format,
+)
 from serpent.env import Env
 from serpent.spec.typemap import SpecTypeError, to_spec_type
 
@@ -134,16 +148,21 @@ def build_env_meta(protocol: int) -> bytes:
 # --- contractspecv0 --------------------------------------------------------
 
 
-def build_spec_entries(contract_cls: type, *, types: Sequence[type] = ()) -> bytes:
+def build_spec_entries(
+    contract_cls: type, *, types: Sequence[type] = (), events: Sequence[type] = ()
+) -> bytes:
     """The `contractspecv0` payload for one `@contract` class.
 
-    **`types` is not discovered, it is declared.** This function cannot find the
-    `@contracttype` structs and `@contracterror` enums a contract's signatures
-    mention -- an annotation only yields a UDT *reference*, never the entry it
-    points at. Sub-plan D collects the module's decorated classes and passes
-    them here; **a caller that omits `types` silently emits a spec whose UDT
-    references have no matching entries**, which decodes fine and renders as an
-    unknown type. When in doubt, pass every decorated class in the module.
+    **`types` is not discovered, it is declared** -- and so is `events`. This
+    function cannot find the `@contracttype` structs and `@contracterror` enums
+    a contract's signatures mention -- an annotation only yields a UDT
+    *reference*, never the entry it points at -- and it cannot find the
+    `@contractevent` classes a module declares either. Sub-plan D collects the
+    module's decorated classes and passes them here; **a caller that omits
+    `types` silently emits a spec whose UDT references have no matching
+    entries**, which decodes fine and renders as an unknown type. When in
+    doubt, pass every decorated class in the module: structs and error enums in
+    `types`, events in `events`.
 
     Entry order is pinned (and tested independently of the golden bytes),
     matching `spikes/spike1/sections.py`'s recorded rationale -- a stable order
@@ -151,7 +170,12 @@ def build_spec_entries(contract_cls: type, *, types: Sequence[type] = ()) -> byt
 
     1. `UDT_STRUCT_V0`, in `types` order,
     2. `UDT_ERROR_ENUM_V0`, in `types` order,
-    3. `FUNCTION_V0`: `__constructor` first, then declaration order.
+    3. `FUNCTION_V0`: `__constructor` first, then declaration order,
+    4. `EVENT_V0`, in `events` order.
+
+    **Events go LAST on purpose** (ruling E2): appending them cannot move a
+    single byte of a spec that declares none, which is what lets the on-chain
+    spike1 golden stay byte-identical now that this keyword exists.
 
     A leading `env: Env` parameter is dropped from every signature: the host
     passes the environment implicitly, so it is not a spec input. (The Stellar
@@ -193,7 +217,9 @@ def build_spec_entries(contract_cls: type, *, types: Sequence[type] = ()) -> byt
         for name, params, returns in _constructor_first(methods)
     ]
 
-    return b"".join(entry.to_xdr_bytes() for entry in structs + enums + functions)
+    event_entries = [_event_entry(declared) for declared in events]
+
+    return b"".join(entry.to_xdr_bytes() for entry in structs + enums + functions + event_entries)
 
 
 def _declared_type_entry(declared: type) -> tuple[str, xdr.SCSpecEntry]:
@@ -206,10 +232,11 @@ def _declared_type_entry(declared: type) -> tuple[str, xdr.SCSpecEntry]:
         return "error_enum", _enum_entry(declared, metadata)
     if kind == "event":
         raise SpecTypeError(
-            f"{declared.__name__}: event spec entries are deferred to sub-plan E. "
-            "SCSpecEventV0 requires a data_format and a per-parameter location "
-            "(topic vs data), and @contractevent metadata carries no topic/data "
-            "split -- emitting a guessed entry would ship a valid-but-lying spec"
+            f"{declared.__name__} is a @contractevent class -- pass it in `events=`, "
+            "not in `types=`. An event is its own entry kind (EVENT_V0) with its own "
+            "prefix topics, per-parameter locations and data format; `types=` carries "
+            "the structs and error enums a UDT reference can name, and an event is "
+            "not one of those"
         )
     if kind == "contract":
         raise SpecTypeError(
@@ -323,6 +350,136 @@ def _enum_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntry:
             ],
         ),
     )
+
+
+#: `@contractevent`'s `data_format` string -> its `SCSpecEventDataFormat` case.
+#: Its keys are exactly `decorators.DATA_FORMATS`, the strings an author writes.
+#: A dict literal cannot express that tie, so `test_sections.py` pins it: a
+#: format the decorator accepts with no case here would `KeyError` at emission.
+_DATA_FORMATS: Final[dict[str, xdr.SCSpecEventDataFormat]] = {
+    "map": xdr.SCSpecEventDataFormat.SC_SPEC_EVENT_DATA_FORMAT_MAP,
+    "vec": xdr.SCSpecEventDataFormat.SC_SPEC_EVENT_DATA_FORMAT_VEC,
+    "single-value": xdr.SCSpecEventDataFormat.SC_SPEC_EVENT_DATA_FORMAT_SINGLE_VALUE,
+}
+
+#: A field's recorded `location` -> its `SCSpecEventParamLocationV0` case. The
+#: keys are the decorator's own constants, never restated string literals.
+_PARAM_LOCATIONS: Final[dict[str, xdr.SCSpecEventParamLocationV0]] = {
+    TOPIC_LOCATION: xdr.SCSpecEventParamLocationV0.SC_SPEC_EVENT_PARAM_LOCATION_TOPIC_LIST,
+    DATA_LOCATION: xdr.SCSpecEventParamLocationV0.SC_SPEC_EVENT_PARAM_LOCATION_DATA,
+}
+
+
+def _event_entry(declared: type) -> xdr.SCSpecEntry:
+    """One `@contractevent` class's `SC_SPEC_ENTRY_EVENT_V0` entry.
+
+    Every cap and every rule is re-checked here, source-located, before
+    `stellar_sdk` sees a byte (R5): the event's own name and its prefix topics
+    against the SCSymbol cap of 32, the prefix-topic COUNT against the XDR's
+    `SCSymbol<2>`, each param name against the 30-byte cap, the `fields` and
+    `locations` views against each other, and the `data_format` -- including
+    `"single-value"`'s field arity -- through the DECORATOR's own
+    `_check_data_format`, so there is exactly one copy of that rule.
+
+    **Belt and braces, not paranoia.** `@contractevent` refuses all of this at
+    the declaration site, so a failure here means metadata that did not come
+    from the decorator. But this is the function that turns metadata into a
+    published spec, and every one of these rules is a case where the XDR would
+    happily encode a LIE: `SINGLE_VALUE` over two data params, a param whose
+    location was never recorded. Refusing here, naming the class, is what keeps
+    "valid XDR" and "true" the same thing.
+    """
+    metadata = _metadata_of(declared)
+    if metadata is None or metadata.get("kind") != "event":
+        raise SpecTypeError(
+            f"{declared.__name__} is not a @contractevent class, so it has no "
+            "contractspecv0 event entry -- `events=` takes the module's "
+            "@contractevent classes"
+        )
+    name = _check_name(declared.__name__, declared, "event", val.SCSYMBOL_LIMIT)
+
+    prefix_topics: Sequence[str] = metadata["prefix_topics"]
+    if len(prefix_topics) > PREFIX_TOPIC_LIMIT:
+        raise SpecTypeError(
+            f"{declared.__name__}: an event declares at most {PREFIX_TOPIC_LIMIT} "
+            f"prefix topics (got {len(prefix_topics)}) -- "
+            "`SCSpecEventV0.prefix_topics` is an XDR `SCSymbol<2>`"
+        )
+
+    fields: Sequence[tuple[str, object]] = metadata["fields"]
+    locations: Mapping[str, str] = metadata["locations"]
+    _check_locations(declared, fields, locations)
+
+    data_format: str = metadata["data_format"]
+    try:
+        # ONE copy of the format/arity rule, the decorator's. Its `ValueError`
+        # already names the class; re-raising as `SpecTypeError` puts it in the
+        # family every other refusal in this module belongs to.
+        _check_data_format(declared, data_format, fields, locations)
+    except ValueError as exc:
+        raise SpecTypeError(str(exc)) from exc
+
+    return xdr.SCSpecEntry(
+        kind=xdr.SCSpecEntryKind.SC_SPEC_ENTRY_EVENT_V0,
+        event_v0=xdr.SCSpecEventV0(
+            # As for a struct and an error enum: emitting the class docstring is
+            # serpent's own choice, and NOT covered by the on-chain anchor
+            # (spike1 declares no event at all).
+            doc=_doc_bytes(_class_doc(declared), declared.__name__),
+            lib=b"",
+            name=xdr.SCSymbol(name.encode("utf-8")),
+            prefix_topics=[
+                xdr.SCSymbol(
+                    _check_name(prefix_topic, declared, "prefix topic", val.SCSYMBOL_LIMIT).encode(
+                        "utf-8"
+                    )
+                )
+                for prefix_topic in prefix_topics
+            ],
+            params=[
+                xdr.SCSpecEventParamV0(
+                    doc=b"",
+                    name=_check_name(field_name, declared, "event parameter", NAME_LIMIT).encode(
+                        "utf-8"
+                    ),
+                    type=to_spec_type(annotation),
+                    location=_PARAM_LOCATIONS[locations[field_name]],
+                )
+                for field_name, annotation in fields
+            ],
+            data_format=_DATA_FORMATS[data_format],
+        ),
+    )
+
+
+def _check_locations(
+    declared: type, fields: Sequence[tuple[str, object]], locations: Mapping[str, str]
+) -> None:
+    """Refuse a `fields` / `locations` skew, naming the class and the skew.
+
+    The two views must describe exactly the same field set. Without this check a
+    MISSING key is a bare `KeyError('amount')` that names neither the class nor
+    what went wrong, and an EXTRA key is worse: silently ignored, so an event
+    whose metadata says a field is a topic can publish a spec that says it is
+    data. An unknown location value is caught here too, for the same reason.
+    """
+    named = [name for name, _annotation in fields]
+    missing = [name for name in named if name not in locations]
+    extra = sorted(set(locations) - set(named))
+    if missing or extra:
+        raise SpecTypeError(
+            f"{declared.__name__}: the event's `locations` map does not describe its "
+            f"fields -- {'missing ' + ', '.join(missing) if missing else ''}"
+            f"{'; ' if missing and extra else ''}"
+            f"{'unknown field(s) ' + ', '.join(extra) if extra else ''}. Every field "
+            "carries exactly one location, and only the fields do"
+        )
+    unknown = sorted({locations[name] for name in named} - set(_PARAM_LOCATIONS))
+    if unknown:
+        raise SpecTypeError(
+            f"{declared.__name__}: location {', '.join(repr(u) for u in unknown)} is "
+            f"not one of {', '.join(repr(k) for k in _PARAM_LOCATIONS)}"
+        )
 
 
 # --- contractmetav0 --------------------------------------------------------
