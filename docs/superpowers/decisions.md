@@ -582,6 +582,83 @@ Format:
   surface, trivially revertable; the escape exemption only widens accepts;
   the mint change is example-local.
 
+## 2026-08-31 M1-E2 rulings (dossier E1-E13, all recommendations adopted)
+- Context: the M1-E2 inputs dossier (specs/2026-08-31-m1e2-inputs-dossier.md)
+  posed thirteen questions with recommendations; controller adopted all
+  thirteen. The dossier's one Rust-source-only foundation (§B.1: unit
+  variant = ONE-ELEMENT ScVec [Symbol], tuple payload follows in
+  declaration order; int enum = bare U32; the union/enum spec-entry
+  shapes) was upgraded to byte-verified ground truth before ruling: a
+  real `#[contracttype]` build, ScVal debug prints and decoded
+  contractspecv0, identical across soroban-sdk 22.0.11 and 27.0.6
+  (scratch crate retained for audit this session).
+- E1 (authoring surface): descriptor-typed factories — `Empty = variant()`,
+  `Circle = variant(U32)`, `Red = enumvalue(0)` — with exported
+  ContractUnion/ContractEnum bases; the ONLY probed candidate both
+  mypy-strict-clean and compilable. serpent.__all__ grows by the
+  sanctioned surface names (up to five), test_public_api.py updated in
+  the same commit.
+- E2 (read surface): `tag() -> Symbol` + `payload(index, ty)` on the base
+  (Q12's pass-ty-explicitly convention). Sub-rulings: payload index is
+  0-based over the PAYLOAD (not the underlying Vec); statically decidable
+  payload() misuse (index above the union's max arity, ty matching no
+  variant's slot) is a compile reject.
+- E3/E4 (IR): ONE new MakeUnion node dispatched to the existing
+  _lower_make_vec (MakeVec.elem_ty is consumed as truth by the for-in
+  desugar, so reuse would lie); TyTag.UNION + TyTag.ENUM with ABI rows
+  UNION→TAG_VEC_OBJECT, ENUM→TAG_U32; int enums ride Const's U32 path —
+  zero emitter change for enums, one dispatch line + two derived-set rows
+  for unions. SPT8004 stays dormant only if the node joins lower.py's
+  dispatch in the same task that adds it to ir.py (stated in the plan).
+- E5 (int enums): mandatory explicit `enumvalue(N)` discriminants (Rust
+  parity; implicit numbering would invent on-chain values that reorder
+  silently) + an exported base (a base-less value is not statically a
+  ChainValue). No `.value` introspection in M1 (additive to relax).
+- E6 (shapes): unit + single-payload + multi-payload tuple variants IN,
+  arity capped at 12 (S4's tuple cap — one arity story). Refused at
+  declaration: 0-element tuple variants, named-field variants (Rust
+  refuses both), empty union bodies.
+- E7 (spec entries): XDR kind order — structs, unions, int enums, error
+  enums, functions, events; the on-chain golden constrains nothing here
+  (it declares neither kind). Unions/enums travel in the existing
+  `types=` inventory, no new keyword.
+- E8 (name caps): union variant names cap at 32 (the name BECOMES a
+  runtime Symbol; Rust caps identically), int-enum case names at 60 (XDR;
+  never a Symbol). SANCTIONED registry edit: SPT5003's wording widens
+  from "@contracterror case name" to every UDT case name with per-kind
+  limits in the message (same check, no new code).
+- E9 (tier-1 representation): a union instance holds an immutable Vec
+  internally and is NOT a dataclass — a dataclass union would silently
+  match the Struct Protocol and classify as a Map (wrong family, key, and
+  ABI tag, no error). Unions are hashable storage keys but NOT orderable
+  at tier 1 (multi-entry Map[union, V] uses D10's "not modelled in tier
+  1" wording). Int-enum instances order/hash exactly like U32.
+- E10 (topic-marker refusal, fed item): refuse the two SILENT positions
+  (method parameter, method return) at decorator time; re-code the
+  struct-field refusal off SPT1037 onto an honest code with its bridge
+  row + fixture; the function-body case stays on SPT3013. The
+  include_extras=True read in _check_method is a NAMED second Annotated
+  seam (D5's stripped-annotation property preserved and stated).
+- E11 (SPT3019, fed item): DROP the length arm entirely — Symbol's own
+  32-char enforcement (frozen semantics case + constructor) makes any
+  length check dead code; the code's meaning NARROWS to "topics[0] is
+  not a Symbol" (D7-compliant; accepts strictly grow). Rider adopted:
+  rename the events example's Tally back to a descriptive name in its
+  own commit and rewrite the now-stale cap-asymmetry prose in
+  examples/events.py in the same pass.
+- E12 (get overloads, rider): the three-overload get lands (raw-literal
+  arm FIRST — probe-verified the order is load-bearing), WITH a
+  positional-default arm added so today's positional spelling keeps
+  compiling (no accepts-shrink).
+- E13 (footprint): a sixth example (examples/shapes.py or similar)
+  joining all seven inventories as a NAMED task (the inventories do not
+  fail loudly), plus must_reject fixtures per new code, plus
+  env_surface/env_scenarios rows so the new value kinds ride the E9
+  stateful differential that F re-runs on tier-2b.
+- Reversal cost: per-item low before the plan's tasks consume them; the
+  E8/E11 registry edits are the usual append-only-discipline sanctions;
+  every scope restriction in the dossier's §D table is additive to relax.
+
 ## 2026-08-27 M1-C final-review minors folded into parked passes
 - Minors 2 and 3 from the final whole-branch review (registry intent strings
   hardcode limit numbers; frontend.py imports _host._protocol via the private
