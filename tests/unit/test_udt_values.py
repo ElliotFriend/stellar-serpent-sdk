@@ -20,7 +20,7 @@ decorator will do) and tests the value layer on its own.
 
 import copy
 from collections.abc import Callable
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 import pytest
 
@@ -166,6 +166,39 @@ def test_a_payload_read_hands_back_the_held_element_without_a_copy() -> None:
     assert _shape_module().Shape.Boxed(inner).payload(U32(0), Vec) is inner
 
 
+def test_a_struct_payload_reads_back_under_its_own_type() -> None:
+    """`payload(index, ty)` goes through `env._require_ty`, the same door a
+    storage `get` uses, so a `@contracttype` payload is decoded under the
+    struct class itself -- and a WRONG struct-shaped `ty` still fails there."""
+    at = Wrapped.At(Point(x=U32(4)))
+    assert at.payload(U32(0), Point) == Point(x=U32(4))
+    with pytest.raises(AbiCheckFailed):
+        at.payload(U32(0), U32)
+
+
+def test_a_twelve_payload_variant_constructs_at_the_arity_cap() -> None:
+    """The `_VARIANT_CLASSES[12]` path, which nothing else reaches: the widest
+    payload E6 allows, built and read back end to end (the descriptor table has
+    one class per arity, so the last one is a real, separately-typed row)."""
+
+    class Widest(ContractUnion):
+        All = variant(*([U32] * MAX_PAYLOAD_ARITY))
+
+    _bind_cases(Widest)
+    # Constructed through an UNTYPED reference, the same way the arity-cap test
+    # below asks `variant` itself: a splatted payload list matches the
+    # zero-argument overload statically, so the twelve-payload descriptor is
+    # only reachable at runtime -- which is precisely the path under test.
+    build = cast("Callable[..., Widest]", Widest.All)
+    value = build(*[U32(i) for i in range(MAX_PAYLOAD_ARITY)])
+    assert value.tag() == Symbol("All")
+    assert [value.payload(U32(i), U32) for i in range(MAX_PAYLOAD_ARITY)] == [
+        U32(i) for i in range(MAX_PAYLOAD_ARITY)
+    ]
+    with pytest.raises(IndexError):
+        value.payload(U32(MAX_PAYLOAD_ARITY), U32)
+
+
 # --- ruling E9: neither kind is a dataclass ----------------------------------
 
 
@@ -228,6 +261,40 @@ def test_two_equal_unions_are_equal_and_hash_equal() -> None:
     assert shape.Circle(U32(3)) != shape.Circle(U32(4))
     assert shape.Circle(U32(3)) != shape.Empty
     assert len({shape.Circle(U32(3)), shape.Circle(U32(3))}) == 1
+
+
+def test_a_container_payload_union_is_unhashable_and_says_so() -> None:
+    """Documented at `_udt.py`'s `__hash__`: a payload that is itself a
+    container is unhashable, and `hash()` raises for it rather than inventing
+    an answer -- `storage_key` is the way to key on such a value, and it is
+    what `env`'s store uses."""
+    boxed = _shape_module().Shape.Boxed(Vec(U32, [U32(1)]))
+    with pytest.raises(TypeError):
+        hash(boxed)
+    # ... and the storage-key door still answers, which is the whole point.
+    assert storage_key(boxed) == ("vec", ((15, b"Boxed"), ("vec", ((3, 1),))))
+
+
+def test_two_unions_of_DIFFERENT_declared_types_are_equal_by_shape() -> None:
+    """`Vec.__eq__`'s own reasoning, one layer up: on chain both values ARE the
+    same `ScVec`, so the declared Python type cannot be what separates them."""
+
+    class Twin(ContractUnion):
+        Circle = variant(U32)
+
+    _bind_cases(Twin)
+    assert Twin.Circle(U32(3)) == _shape_module().Shape.Circle(U32(3))
+    assert storage_key(Twin.Circle(U32(3))) == storage_key(_shape_module().Shape.Circle(U32(3)))
+
+
+def test_two_members_of_DIFFERENT_int_enums_are_equal_by_discriminant() -> None:
+    """The same fact for the other kind: both are the same bare `U32`."""
+
+    class Level(ContractEnum):
+        Low = enumvalue(0)
+
+    assert Level.Low == _shape_module().Color.Red
+    assert Level.Low != _shape_module().Color.Green
 
 
 def test_an_enum_member_is_equal_to_itself_and_not_to_another_case() -> None:

@@ -10,7 +10,7 @@ decorator also catches at runtime.
 
 import dataclasses
 import pathlib
-from typing import Annotated
+from typing import Annotated, cast
 
 import pytest
 
@@ -20,9 +20,11 @@ from serpent import env as env_module
 from serpent.decorators import (
     NAME_LIMIT,
     contract,
+    contractenum,
     contracterror,
     contractevent,
     contracttype,
+    contractunion,
     errorcode,
     topic,
 )
@@ -38,7 +40,21 @@ from serpent.env import (
     TemporaryStorage,
 )
 from serpent.errors import RESERVED_CODE_MIN, ContractError
-from serpent.types import U32, U64, Address, Bool, Map, String, Symbol, Vec
+from serpent.types import (
+    U32,
+    U64,
+    Address,
+    Bool,
+    ContractEnum,
+    ContractUnion,
+    Map,
+    String,
+    Symbol,
+    Vec,
+    enumvalue,
+    variant,
+)
+from serpent.types._udt import _VariantSpec
 from tests.unit.conftest import deployed_env
 
 
@@ -938,3 +954,300 @@ def test_no_inert_noqa_directives() -> None:
     for module in (decorators_module, env_module):
         source = pathlib.Path(module.__file__ or "").read_text()
         assert "noqa" not in source
+
+
+# --------------------------------------------------------------------------
+# M1-E2: the DECLARATION layer for tagged unions and int enums
+#
+# The value layer (`tests/unit/test_udt_values.py`) binds `variant()`
+# placeholders by hand; everything below goes through the two decorators,
+# which is the only spelling a contract author ever writes. Each declaration
+# here is also part of the file-wide `mypy --strict` gate: a decorator is an
+# identity function to a checker, so `Shape.Circle(U32(1))` type-checking is
+# the descriptor surface's own doing (ruling E1).
+# --------------------------------------------------------------------------
+
+
+@contractunion
+class Shape(ContractUnion):
+    """The dossier's running example, declared the authored way."""
+
+    Empty = variant()
+    Circle = variant(U32)
+    Rect = variant(U32, U32)
+
+
+@contractenum
+class Level(ContractEnum):
+    """An int enum: explicit discriminants, always (ruling E5)."""
+
+    Low = enumvalue(0)
+    High = enumvalue(7)
+
+
+@contracttype
+class Boxed:
+    """A struct holding one of each new kind -- `_is_contract_annotation`'s
+    widening, which is additive: nothing that was legal became illegal."""
+
+    shape: Shape
+    level: Level
+
+
+def test_contractunion_records_its_cases_in_declaration_order() -> None:
+    """The metadata shape Task 3's spec entry reads: a case NAME plus its
+    payload-annotation tuple, empty for a unit variant, in declaration order
+    (B10) -- and a 2-tuple, like every other `cases` list in this module."""
+    assert _meta(Shape) == {
+        "kind": "union",
+        "cases": [("Empty", ()), ("Circle", (U32,)), ("Rect", (U32, U32))],
+    }
+
+
+def test_contractenum_records_the_same_pair_shape_an_error_enum_does() -> None:
+    """Deliberately identical to `@contracterror`'s `(name, value)` list, so
+    `sections._enum_entry`'s template and the loader's case cross-check are
+    reusable rather than re-derived."""
+    assert _meta(Level) == {"kind": "enum", "cases": [("Low", 0), ("High", 7)]}
+    error_cases = _meta(TokenError)["cases"]
+    enum_cases = _meta(Level)["cases"]
+    assert isinstance(error_cases, list) and isinstance(enum_cases, list)
+    for (name, value), (other_name, other_value) in zip(error_cases, enum_cases, strict=True):
+        assert isinstance(name, str) and isinstance(other_name, str)
+        assert isinstance(value, int) and isinstance(other_value, int)
+
+
+def test_a_declared_union_round_trips_every_arity_the_decorator_binds() -> None:
+    """The decorator's real job: swap each placeholder for the descriptor that
+    knows its case NAME (which the factory cannot see)."""
+    assert Shape.Empty.tag() == Symbol("Empty")
+    assert Shape.Circle(U32(3)).tag() == Symbol("Circle")
+    assert Shape.Circle(U32(3)).payload(U32(0), U32) == U32(3)
+    rect = Shape.Rect(U32(2), U32(5))
+    assert rect.payload(U32(0), U32) == U32(2)
+    assert rect.payload(U32(1), U32) == U32(5)
+    # A member is bound to the class it was DECLARED in, so an accessed case
+    # constructs that union and nothing else.
+    assert isinstance(Shape.Empty, Shape)
+
+
+def test_a_declared_int_enum_member_is_its_own_type() -> None:
+    assert isinstance(Level.Low, Level)
+    assert Level.Low != Level.High
+    assert repr(Level.High) == "Level.High"
+
+
+def test_a_union_payload_may_be_a_chain_type_a_struct_a_union_or_an_int_enum() -> None:
+    """The one-place widening of `_is_contract_annotation` (SS B.3): a UDT
+    reference is name-only, so admitting the three kinds costs nothing."""
+
+    @contractunion
+    class Nested(ContractUnion):
+        Plain = variant(U32)
+        Struct = variant(Settings)
+        Union = variant(Shape)
+        Enum = variant(Level)
+        Container = variant(Vec[U32])
+
+    assert [name for name, _payload in _cases(Nested)] == [
+        "Plain",
+        "Struct",
+        "Union",
+        "Enum",
+        "Container",
+    ]
+
+
+def test_a_struct_field_may_now_hold_a_union_or_an_int_enum() -> None:
+    """The same widening, seen from `@contracttype`: additive, and the reason
+    it is one function rather than a second copy of the rule."""
+    fields = _meta(Boxed)["fields"]
+    assert fields == [("shape", Shape), ("level", Level)]
+
+
+def test_a_union_payload_that_is_not_a_declared_type_bridges_to_the_field_code() -> None:
+    """The EXISTING needle (`SPT4012`), deliberately: a payload annotation and
+    a struct field annotation break the same rule, so no new code is spent."""
+    with pytest.raises(ValueError, match="is not a chain type, a `@contracttype` struct"):
+
+        @contractunion
+        class BarePython(ContractUnion):
+            Count = variant(int)
+
+    with pytest.raises(ValueError, match="is not a chain type, a `@contracttype` struct"):
+
+        @contractunion
+        class WithErrorEnum(ContractUnion):
+            Err = variant(TokenError)
+
+    with pytest.raises(ValueError, match="is not a chain type, a `@contracttype` struct"):
+
+        @contractunion
+        class WithEvent(ContractUnion):
+            Ev = variant(Bumped)
+
+
+def test_an_empty_union_or_int_enum_declares_nothing_and_is_refused() -> None:
+    """`@contracterror`'s empty-enum rule, for both new kinds: an empty
+    declaration contributes nothing to the contract spec."""
+    with pytest.raises(ValueError, match="declares at least one case"):
+
+        @contractunion
+        class NoVariants(ContractUnion):
+            """Not one case."""
+
+    with pytest.raises(ValueError, match="declares at least one case"):
+
+        @contractenum
+        class NoMembers(ContractEnum):
+            """Not one case."""
+
+
+def test_a_case_that_is_not_a_placeholder_is_refused_by_name() -> None:
+    """`_reject_bare_member`'s rule for the two new kinds. The second spelling
+    is the NAMED-FIELD variant a Rust author reaches for: `name: T = value`
+    clears the loader's body-form check (an error enum needs that form), so
+    the decorator is what refuses it."""
+    with pytest.raises(ValueError, match="case is declared as"):
+
+        @contractunion
+        class BareValue(ContractUnion):
+            Circle = 3
+
+    with pytest.raises(ValueError, match="case is declared as"):
+
+        @contractunion
+        class NamedField(ContractUnion):
+            radius: U32 = U32(0)
+
+    with pytest.raises(ValueError, match="case is declared as"):
+
+        @contractenum
+        class BareInt(ContractEnum):
+            Low = 0
+
+
+def test_an_int_enum_discriminant_outside_the_u32_range_is_refused() -> None:
+    """`errorcode`'s precedent (`decorators.py`'s range check): an int-enum
+    member IS a bare `u32` on chain, so `enumvalue(-1)` would otherwise
+    declare a spec entry no `u32` could ever hold."""
+    with pytest.raises(ValueError, match="is out of range"):
+
+        @contractenum
+        class Negative(ContractEnum):
+            Bad = enumvalue(-1)
+
+    with pytest.raises(ValueError, match="is out of range"):
+
+        @contractenum
+        class TooBig(ContractEnum):
+            Bad = enumvalue(U32.MAX + 1)
+
+    @contractenum
+    class Edges(ContractEnum):
+        Lowest = enumvalue(U32.MIN)
+        Highest = enumvalue(U32.MAX)
+
+    assert _meta(Edges)["cases"] == [("Lowest", 0), ("Highest", U32.MAX)]
+
+
+def test_a_duplicate_discriminant_is_refused_naming_the_first_member() -> None:
+    with pytest.raises(ValueError, match="is already declared by"):
+
+        @contractenum
+        class Clashing(ContractEnum):
+            First = enumvalue(1)
+            Second = enumvalue(1)
+
+
+def test_both_new_kinds_require_their_base_class() -> None:
+    """`@contractevent`'s rule (D8/D9), for the two new kinds: §C.8 verified
+    that a base-less class is not statically a `ChainValue` at any position,
+    and a decorator cannot add a base a checker can see."""
+    with pytest.raises(ValueError, match="class declares exactly one base"):
+
+        @contractunion
+        class NoBase:  # a plain class: not a ContractUnion at all
+            Empty = variant()
+
+    with pytest.raises(ValueError, match="class declares exactly one base"):
+
+        @contractenum
+        class AlsoNoBase:
+            Low = enumvalue(0)
+
+
+def test_subclassing_a_declared_union_or_int_enum_is_refused() -> None:
+    """A loud refusal at the declaration, not a silent type/runtime split: a
+    variant descriptor constructs the class it was DECLARED in, while
+    `_EnumValue.__get__` honors the class it is ACCESSED through -- so
+    `class Sub(Shape)` would type as `Sub` and build a `Shape`. Forbidding it
+    settles the asymmetry, and keeps `ContractEnum.__repr__`'s
+    `vars(type(self))`-only walk correct."""
+    with pytest.raises(ValueError, match="class declares exactly one base"):
+
+        @contractunion
+        class SubUnion(Shape):
+            Extra = variant()
+
+    with pytest.raises(ValueError, match="class declares exactly one base"):
+
+        @contractenum
+        class SubEnum(Level):
+            Extra = enumvalue(9)
+
+
+def test_neither_new_kind_is_turned_into_a_dataclass() -> None:
+    """Ruling E9, at the declaration layer: `types._ordering.Struct` matches
+    `__dataclass_fields__` and is the FALLTHROUGH arm in three separate tag
+    doors, so a dataclass union would classify silently as a `Map`."""
+    for cls in (Shape, Level):
+        assert not dataclasses.is_dataclass(cls)
+
+
+def test_redecorating_a_union_or_an_int_enum_is_a_serpent_error() -> None:
+    with pytest.raises(ValueError, match="already declared as a serpent union"):
+        contractunion(Shape)
+    with pytest.raises(ValueError, match="already declared as a serpent enum"):
+        contractenum(Level)
+
+
+def test_a_rejected_union_is_left_with_its_placeholders_untouched() -> None:
+    """`@contracterror`'s no-partial-mutation property: the whole declaration
+    is validated before a single descriptor is installed."""
+
+    class Broken(ContractUnion):
+        Good = variant(U32)
+        Bad = variant(int)
+
+    with pytest.raises(ValueError, match="is not a chain type"):
+        contractunion(Broken)
+
+    assert isinstance(vars(Broken)["Good"], _VariantSpec)
+
+
+def test_the_decorator_does_not_check_case_NAMES_at_all() -> None:
+    """B1, stated as a test: `_check_name` caps at `NAME_LIMIT` (30) and
+    bridges to `SPT5001`, which would refuse the 40-character int-enum case
+    name ruling E8 makes legal. The located compile-time refusal for a case
+    name lives in `compiler/limits.py`, per kind (32 for a variant, 60 for an
+    int-enum case) -- so the decorator must let both spellings through.
+    """
+    name = "L" * 40
+    assert len(name) > NAME_LIMIT
+
+    @contractenum
+    class LongCases(ContractEnum):
+        LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL = enumvalue(1)  # 40 characters, E8
+
+    @contractunion
+    class LongVariants(ContractUnion):
+        LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL = variant()  # 40 characters, E8
+
+    assert [case for case, _value in _cases(LongCases)] == [name]
+    assert [case for case, _payload in _cases(LongVariants)] == [name]
+
+
+def _cases(cls: type[object]) -> list[tuple[str, object]]:
+    """The `cases` list of a declared union/int enum, typed for the checker."""
+    return cast("list[tuple[str, object]]", _meta(cls)["cases"])

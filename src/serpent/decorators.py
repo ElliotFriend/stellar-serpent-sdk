@@ -1,4 +1,4 @@
-"""The four contract decorators and the `errorcode` field specifier.
+"""The six contract decorators and the `errorcode` field specifier.
 
 These are serpent's *authoring* surface: they run at class-creation time in
 CPython, validate the declaration, and record a small `_serpent_type_`
@@ -28,6 +28,15 @@ type checking with the decorator treated as an identity function:
   is why `_serpent_type_` is *never* read through `getattr` in typed code: a
   decorator-installed attribute is invisible, so it is metadata for the
   compiler, not part of the authoring surface.
+* `@contractunion` / `@contractenum` classes inherit `ContractUnion` /
+  `ContractEnum` for the same reason `@contractevent` classes inherit `Event`:
+  the base is the only part of the declaration a checker reads, and SS C.8
+  probe-verified that a base-less class is not statically a `ChainValue` at any
+  position. Their CASES are typed by the descriptors `types._udt` declares --
+  `Shape.Circle` as `(U32) -> Shape` -- so a wrong payload type, a wrong arity
+  and calling a unit variant are all static errors with no plugin; the
+  decorator's own job is to bind each case to its NAME (which the `variant()`
+  factory cannot see) and to refuse a malformed declaration at its own site.
 * `@contract` methods take `self` first, which is what makes them ordinary,
   strict-clean Python methods (the compiler ignores `self`).
 
@@ -62,14 +71,17 @@ from typing import Any, Final, NoReturn, TypeVar, cast, dataclass_transform, ove
 from serpent import val
 from serpent.env import Event
 from serpent.errors import RESERVED_CODE_MIN, ContractError
-from serpent.types import Map, Symbol, Vec
+from serpent.types import U32, ContractEnum, ContractUnion, Map, Symbol, Vec
 from serpent.types._base import _ChainValue
+from serpent.types._udt import _bind_variant, _EnumValue, _VariantSpec
 
 __all__ = [
     "contract",
+    "contractenum",
     "contracterror",
     "contractevent",
     "contracttype",
+    "contractunion",
     "errorcode",
     "topic",
 ]
@@ -230,6 +242,168 @@ def _make_error_class(owner: type[Any], name: str, code: int) -> type[ContractEr
             "__qualname__": f"{owner.__qualname__}.{name}",
             "__doc__": f"Contract error {code} ({owner.__name__}.{name}).",
         },
+    )
+
+
+def contractunion(cls: type[_T]) -> type[_T]:
+    """Declare a tagged union: one case per `NAME = variant(...)` member.
+
+    Each case becomes the bound descriptor that knows its case NAME -- which
+    the `variant()` factory cannot see, because the name is the attribute it is
+    assigned to -- so `Shape.Empty` is a value and `Shape.Circle(U32(1))`
+    builds one, both checked by `mypy --strict` with no plugin (ruling E1).
+    The metadata records `(name, payload annotations)` per case in DECLARATION
+    order, which is the order the on-chain `ScVec` carries the payload in.
+
+    The class **must** inherit `ContractUnion` and nothing else. The base is
+    what makes the class statically a chain value at every position (SS C.8
+    probe-verified that a base-less class is not: `error: incompatible type
+    "ColorNoBase"; expected "_ChainValue | Struct"`), and a decorator cannot
+    add a base a checker can see. Subclassing a DECLARED union is refused by
+    the same check, and deliberately: a variant descriptor constructs the class
+    the case was declared in, so `class Sub(Shape)` would type as `Sub` and
+    build a `Shape`.
+
+    Case NAMES are **not** checked here (plan-review B1). `_check_name` caps at
+    `NAME_LIMIT` (30) and bridges to `SPT5001`, which would refuse a
+    40-character int-enum case name ruling E8 makes legal; the located,
+    per-kind refusal lives in `compiler/limits.py` (32 for a variant, which
+    becomes a runtime `Symbol`; 60 for an int-enum case, which never does).
+    `Symbol.__init__`'s own 32-character check is the tier-1 backstop when
+    `tag()` builds the name.
+
+    Not a dataclass, deliberately (ruling E9): see `types._udt`'s module
+    docstring for the three tag doors a dataclass union would silently fall
+    through.
+    """
+    _reject_redecoration(cls)
+    _check_udt_base(cls, ContractUnion, "@contractunion")
+    specs: list[tuple[str, _VariantSpec]] = []
+    cases: list[tuple[str, tuple[object, ...]]] = []
+
+    for name, value in list(vars(cls).items()):
+        if name.startswith("_"):
+            continue
+        if not isinstance(value, _VariantSpec):
+            _reject_bare_case(cls, name, value, "@contractunion", f"{name} = variant(...)")
+        for annotation in value.payload:
+            if not _is_contract_annotation(annotation):
+                raise ValueError(
+                    f"{cls.__name__}.{name}: payload annotation {_render(annotation)} is not a "
+                    "chain type, a `@contracttype` struct, or `X | None` of one"
+                )
+        specs.append((name, value))
+        cases.append((name, tuple(value.payload)))
+
+    if not cases:
+        _reject_empty_udt(cls, "@contractunion", "Name = variant(...)", "union")
+
+    # Every case is validated before a single descriptor is installed, so a
+    # rejected class is left exactly as its body built it (`@contracterror`'s
+    # own no-partial-mutation property).
+    for name, spec in specs:
+        setattr(cls, name, _bind_variant(name, cast("type[ContractUnion]", cls), spec))
+
+    setattr(cls, _METADATA_ATTR, {"kind": "union", "cases": cases})
+    return cls
+
+
+def contractenum(cls: type[_T]) -> type[_T]:
+    """Declare an int enum: one case per `NAME = enumvalue(N)` member.
+
+    Nothing is rebound here, unlike `@contractunion`: `enumvalue(N)` already
+    carries the discriminant and a descriptor's `__get__` is handed the owner
+    class, so `Level.Low` builds a `Level` with no swap at all. What this
+    validates is the declaration -- the base, the member form, the u32 range
+    and uniqueness -- and records `(name, discriminant)` per case, the SAME
+    pair shape `@contracterror` records, so `sections._enum_entry`'s template
+    and the loader's case cross-check are reusable rather than re-derived.
+
+    **Discriminants are always explicit** (ruling E5): Rust unwraps on a
+    missing one, so an implicit numbering would be an on-chain value serpent
+    INVENTS -- and reordering the class body would then silently change stored
+    data. Each one must be a `u32`, because the value IS a bare `u32` on chain;
+    `enumvalue(-1)` would otherwise declare a spec entry no `u32` could hold.
+
+    Same base rule, same case-name rule and same non-dataclass rule as
+    `@contractunion` (see its docstring).
+    """
+    _reject_redecoration(cls)
+    _check_udt_base(cls, ContractEnum, "@contractenum")
+    cases: list[tuple[str, int]] = []
+    seen: dict[int, str] = {}
+
+    for name, value in list(vars(cls).items()):
+        if name.startswith("_"):
+            continue
+        if not isinstance(value, _EnumValue):
+            _reject_bare_case(cls, name, value, "@contractenum", f"{name} = enumvalue(N)")
+        discriminant = value._discriminant
+        if not U32.MIN <= discriminant <= U32.MAX:
+            raise ValueError(
+                f"{cls.__name__}.{name}: discriminant {discriminant} is out of range -- an "
+                f"int-enum member IS a bare u32 on chain, so {U32.MIN} <= N <= {U32.MAX}"
+            )
+        if discriminant in seen:
+            raise ValueError(
+                f"{cls.__name__}.{name}: discriminant {discriminant} is already declared by "
+                f"{cls.__name__}.{seen[discriminant]} -- two members sharing one discriminant "
+                "are the same bare u32 on chain, so the pair could never be told apart"
+            )
+        seen[discriminant] = name
+        cases.append((name, discriminant))
+
+    if not cases:
+        _reject_empty_udt(cls, "@contractenum", "NAME = enumvalue(N)", "int enum")
+
+    setattr(cls, _METADATA_ATTR, {"kind": "enum", "cases": cases})
+    return cls
+
+
+def _check_udt_base(cls: type[Any], base: type[Any], decorator: str) -> None:
+    """Refuse a union/int enum whose bases are not exactly `(base,)`.
+
+    One check for three mistakes -- no base at all, the wrong base, and
+    subclassing a DECLARED union/int enum -- because all three break the same
+    rule: the base is what a type checker reads, and the decorator that would
+    have installed anything is invisible to it. `__bases__`, not `__mro__`, is
+    what makes the subclass case fall out for free.
+    """
+    if cls.__bases__ != (base,):
+        spelled = ", ".join(b.__name__ for b in cls.__bases__ if b is not object) or "no base class"
+        raise ValueError(
+            f"{cls.__name__}: a {decorator} class declares exactly one base, "
+            f"`{base.__name__}` (`class {cls.__name__}({base.__name__}):`) -- got {spelled}. "
+            "The base is what makes the class statically a chain value at every position (a "
+            "decorator cannot add one a type checker can see), and a subclass of a declared "
+            "type would type as the subclass while constructing the declared one."
+        )
+
+
+def _reject_bare_case(
+    cls: type[Any], name: str, value: object, decorator: str, form: str
+) -> NoReturn:
+    """Reject a union/int-enum member that is not its factory's placeholder.
+
+    `_reject_bare_member`'s rule for the two M1-E2 kinds, and in its own
+    function for the same reason: the raise is not lexically inside an
+    `isinstance` guard. The `name: T = value` spelling reaches here too -- it
+    is a form the class body admits (an error enum needs it), so the decorator
+    is what refuses the named-FIELD variant a Rust author reaches for.
+    """
+    raise ValueError(
+        f"{cls.__name__}.{name}: a {decorator} case is declared as `{form}`, not "
+        f"`{name} = {value!r}`. A bare value is inferred as its Python type by static "
+        f"checkers, so `{cls.__name__}.{name}` would not be a {cls.__name__} at all."
+    )
+
+
+def _reject_empty_udt(cls: type[Any], decorator: str, form: str, what: str) -> NoReturn:
+    """Reject a union/int enum with no case: `@contracterror`'s empty-enum
+    rule, worded once for both kinds so the loader bridges one needle."""
+    raise ValueError(
+        f"{cls.__name__}: a {decorator} declares at least one case (`{form}`); an empty "
+        f"{what} contributes nothing to the contract spec"
     )
 
 
@@ -777,14 +951,27 @@ def _annotations_of(owner: Any, *, include_extras: bool = False) -> dict[str, An
         ) from exc
 
 
-def _is_contract_annotation(annotation: object) -> bool:
-    """A chain type, a `@contracttype` struct, or `X | None` of one.
+#: The declared kinds that ARE values, and can therefore sit in a struct
+#: field, a container or a variant payload. An error enum, a contract class and
+#: an event type are not values, so none of them is here -- and the M1-E2 kinds
+#: are, because a union and an int enum are ordinary contract shapes (SS B.3).
+#: One set, read by `_is_contract_annotation` alone, so the rule is stated once.
+_VALUE_KINDS: Final = frozenset({"struct", "union", "enum"})
 
-    Structs only: an error enum, a contract class or an event type is not a
-    value that can sit in a field, so each is rejected here rather than
-    producing nonsense in the contract spec. `vars(...)`, not `getattr`,
+
+def _is_contract_annotation(annotation: object) -> bool:
+    """A chain type, a declared struct/union/int enum, or `X | None` of one.
+
+    Values only: an error enum, a contract class or an event type is not a
+    value that can sit in a field or a payload, so each is rejected here rather
+    than producing nonsense in the contract spec. `vars(...)`, not `getattr`,
     closes the inheritance leak -- an undecorated subclass of a struct
     inherits `_serpent_type_` but is not itself declared.
+
+    One function for every position an annotation can appear in (a struct or
+    event field, and M1-E2's variant payload), which is why admitting the two
+    new kinds is a one-place edit: a UDT reference is name-only (SS B.3), so it
+    costs nothing anywhere it is now allowed.
     """
     origin = typing.get_origin(annotation)
     if origin is typing.Union or origin is types.UnionType:
@@ -798,7 +985,7 @@ def _is_contract_annotation(annotation: object) -> bool:
     if issubclass(annotation, _ChainValue | Vec | Map):
         return True
     metadata = vars(annotation).get(_METADATA_ATTR)
-    return isinstance(metadata, dict) and metadata.get("kind") == "struct"
+    return isinstance(metadata, dict) and metadata.get("kind") in _VALUE_KINDS
 
 
 def _render(annotation: object) -> str:

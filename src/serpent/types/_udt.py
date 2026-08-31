@@ -73,8 +73,11 @@ __all__ = ["ContractEnum", "ContractUnion", "enumvalue", "variant"]
 
 #: The widest payload a variant may carry: S4's tuple arity, deliberately the
 #: same number, so a union payload and a tuple return cannot disagree about how
-#: wide a shape may be (ruling E6). The compile-time refusal that quotes it
-#: lives in `compiler/limits.py`; this is the runtime half.
+#: wide a shape may be (ruling E6). The compile-time refusal is `SPT5006`, in
+#: the SPT5xxx limits band, and it is THIS raise re-reported located: a 13th
+#: payload is refused in the class body, before `@contractunion` can run, so
+#: the decorator never sees an over-wide payload and `compiler/limits.py` has
+#: no arity check of its own to make.
 MAX_PAYLOAD_ARITY = 12
 
 #: The owner class an access goes through. METHOD-scoped on every `__get__`
@@ -663,8 +666,11 @@ class _EnumValue(Generic[_D]):
     Nothing has to be bound: `enumvalue(n)` already carries the discriminant,
     and `__get__` is handed the owner class, so `Color.Red` builds a `Color`
     with no rebinding step at all. (`@contractenum` still validates the body --
-    the discriminant range, duplicates, the case names -- it just has nothing
-    to swap.)
+    the base, the member form, the discriminant range and duplicates -- it just
+    has nothing to swap. Case NAMES are checked in `compiler/limits.py`
+    instead, per kind: the caps differ, and a decorator raise would take the
+    whole class statement down with it, which is what would make that located
+    check unreachable.)
 
     `_D` is spelled `Any` at every declaration site (see its own comment); the
     real owner comes back through `__get__`'s method-scoped `_O`.

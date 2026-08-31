@@ -18,6 +18,7 @@ import pytest
 
 import serpent
 from serpent import decorators as decorators_module
+from serpent.compiler import compile_module
 from tests.fixtures import token_style
 
 #: Ordered by ruff's `RUF022` `__all__`-sort convention (which `ruff check
@@ -42,7 +43,9 @@ EXPECTED_ALL = [
     "Bytes32",
     "Bytes64",
     "ChainValue",
+    "ContractEnum",
     "ContractError",
+    "ContractUnion",
     "Duration",
     "Env",
     "Event",
@@ -55,11 +58,15 @@ EXPECTED_ALL = [
     "__version__",
     "bytes_n",
     "contract",
+    "contractenum",
     "contracterror",
     "contractevent",
     "contracttype",
+    "contractunion",
+    "enumvalue",
     "errorcode",
     "topic",
+    "variant",
 ]
 
 
@@ -105,6 +112,51 @@ def test_u256_i256_and_bytesn_are_not_exported() -> None:
     for absent in ("U256", "I256", "BytesN"):
         assert absent not in serpent.__all__
         assert not hasattr(serpent, absent)
+
+
+UDT_SOURCE = """
+from serpent import (
+    U32,
+    ContractEnum,
+    ContractUnion,
+    Env,
+    contractenum,
+    contractunion,
+    enumvalue,
+    variant,
+    contract,
+)
+
+
+@contractunion
+class Shape(ContractUnion):
+    Empty = variant()
+    Circle = variant(U32)
+
+
+@contractenum
+class Level(ContractEnum):
+    Low = enumvalue(0)
+
+
+@contract
+class C:
+    def go(self, env: Env) -> U32:
+        return U32(0)
+"""
+
+
+def test_the_six_m1e2_names_are_authorable_off_the_root() -> None:
+    """A contract module may import from `serpent` and NOWHERE else (SPT2005),
+    which is the whole reason all six names are exported: the two decorators,
+    the two case factories, and -- per D9, re-verified in SS C.8 -- the two
+    BASES, because a base-less class is not statically a `ChainValue` at any
+    position (`error: incompatible type "ColorNoBase"; expected
+    "_ChainValue | Struct"`). Compiled, not merely imported: `loader`'s import
+    check refuses any name outside `serpent.__all__` (SPT2005), so a module
+    that compiles at all is the proof the six names are authorable."""
+    compiled = compile_module(UDT_SOURCE, "contracts/udt.py")
+    assert [func.export_name for func in compiled.functions] == ["go"]
 
 
 def test_token_style_fixture_imports_and_declares_its_shapes() -> None:

@@ -1,6 +1,6 @@
 # serpent:reject SPT4015
 # serpent:at HERE
-# serpent:message every top-level class needs exactly one of @contract/@contracttype/@contracterror/@contractevent
+# serpent:message every top-level class needs exactly one of @contract/@contracttype/@contracterror/@contractevent/@contractunion/@contractenum
 # serpent:doc-title undecorated top-level class
 from serpent import Env, U32, contract
 

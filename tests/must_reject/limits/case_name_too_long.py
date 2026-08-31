@@ -1,6 +1,6 @@
 # serpent:reject SPT5003
 # serpent:at HERE
-# serpent:message error case name is too long (> 60)
+# serpent:message a declared case name is too long
 # serpent:doc-title over-long error-enum case name
 from serpent import Env, U32, contract, contracterror, errorcode
 

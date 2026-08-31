@@ -11,7 +11,7 @@ ever disagree; the failure message names the regeneration command.
 
 serpent compiles a restricted subset of Python to a Soroban contract.
 This document is generated, in full, from the compiler's own registry
-of diagnostic codes, its `tests/must_reject/` fixture suite (94 minimal counter-examples, one per rejected
+of diagnostic codes, its `tests/must_reject/` fixture suite (105 minimal counter-examples, one per rejected
 construct), and its recognized-surface tables -- never hand-authored,
 so it cannot say something the compiler does not actually do.
 
@@ -25,9 +25,9 @@ so it cannot say something the compiler does not actually do.
 
 ### 1.1 Declarations
 
-Every top-level class needs exactly one of @contract/@contracttype/@contracterror/@contractevent. A method's `self` must come
+Every top-level class needs exactly one of @contract/@contracttype/@contracterror/@contractevent/@contractunion/@contractenum. A method's `self` must come
 first, every parameter and the return both need a chain-type
-annotation, and `__init__` compiles to the constructor. 20
+annotation, and `__init__` compiles to the constructor. 25
 declaration-shape rules are enforced end to end; see [SPT4xxx](#spt4xxx----contract-shape-declarations) below
 for the exact list.
 
@@ -1937,7 +1937,7 @@ class Contract:
 
 **Construct:** ClassDef -- undecorated class, or a class with no recognized serpent decorator
 
-**Intent:** every top-level class needs exactly one of @contract/@contracttype/@contracterror/@contractevent
+**Intent:** every top-level class needs exactly one of @contract/@contracttype/@contracterror/@contractevent/@contractunion/@contractenum
 
 #### undecorated top-level class (`shape/class_undecorated.py`)
 
@@ -1955,8 +1955,8 @@ class Contract:
         return x
 ```
 
-- **message:** every top-level class needs exactly one of @contract/@contracttype/@contracterror/@contractevent
-- **help:** give every top-level class exactly one of @contract/@contracttype/@contracterror/@contractevent, and no base class other than `Event` on an event
+- **message:** every top-level class needs exactly one of @contract/@contracttype/@contracterror/@contractevent/@contractunion/@contractenum
+- **help:** give every top-level class exactly one of @contract/@contracttype/@contracterror/@contractevent/@contractunion/@contractenum, and no base class other than `Event` on an event, `ContractUnion` on a union or `ContractEnum` on an int enum
 - **note:** `Helper` carries no serpent decorator
 
 #### SPT4016
@@ -2059,6 +2059,191 @@ class Contract:
 - **help:** a @contract class body declares methods (`def name(self, env: Env) -> T`) and nothing else -- contract state lives in storage, not on the class
 - **note:** `AnnAssign` is not how a contract declares a member
 
+#### SPT4021
+
+**Construct:** @contractunion / @contractenum -- empty body: no case declared at all
+
+**Intent:** a union or int enum must declare at least one case
+
+#### empty @contractenum (`shape/enum_body_empty.py`)
+
+```python
+from serpent import ContractEnum, Env, U32, contract, contractenum
+
+
+@contractenum
+class Level(ContractEnum):  # HERE
+    pass
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** a union or int enum must declare at least one case
+- **help:** declare at least one case (`Name = variant(...)` in a union, `NAME = enumvalue(N)` in an int enum)
+- **note:** ValueError: Level: a @contractenum declares at least one case (`NAME = enumvalue(N)`); an empty int enum contributes nothing to the contract spec
+
+#### empty @contractunion (`shape/union_body_empty.py`)
+
+```python
+from serpent import ContractUnion, Env, U32, contract, contractunion
+
+
+@contractunion
+class Shape(ContractUnion):  # HERE
+    pass
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** a union or int enum must declare at least one case
+- **help:** declare at least one case (`Name = variant(...)` in a union, `NAME = enumvalue(N)` in an int enum)
+- **note:** ValueError: Shape: a @contractunion declares at least one case (`Name = variant(...)`); an empty union contributes nothing to the contract spec
+
+#### SPT4022
+
+**Construct:** @contractunion / @contractenum member -- not the factory's case declaration (a bare value, or the named-FIELD `name: T = value` spelling a struct variant would need)
+
+**Intent:** union cases are declared with variant(...) and int-enum cases with enumvalue(N)
+
+#### @contractunion case declared as a bare value (`shape/union_member_bare_value.py`)
+
+```python
+from serpent import ContractUnion, Env, U32, contract, contractunion, variant
+
+
+@contractunion
+class Shape(ContractUnion):
+    Empty = variant()
+    Circle = 3  # HERE
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** Shape.Circle: union cases are declared with variant(...) and int-enum cases with enumvalue(N)
+- **help:** declare a union case as `Name = variant(...)` and an int-enum case as `NAME = enumvalue(N)`
+- **note:** ValueError: Shape.Circle: a @contractunion case is declared as `Circle = variant(...)`, not `Circle = 3`. A bare value is inferred as its Python type by static checkers, so `Shape.Circle` would not be a Shape at all.
+
+#### @contractunion variant with named fields (`shape/union_named_field_variant.py`)
+
+```python
+# A union carries TUPLE variants: `variant(U32, U32)`, positional and in
+# declaration order. Rust's struct-variant shape (`Circle { radius: u32 }`) has
+# no spelling here, and the closest one -- a named field in the class body --
+# is a declaration form the body check admits (an error enum needs it), so the
+# decorator is what refuses it.
+from serpent import ContractUnion, Env, U32, contract, contractunion, variant
+
+
+@contractunion
+class Shape(ContractUnion):
+    Empty = variant()
+    radius: U32 = U32(0)  # HERE
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** Shape.radius: union cases are declared with variant(...) and int-enum cases with enumvalue(N)
+- **help:** declare a union case as `Name = variant(...)` and an int-enum case as `NAME = enumvalue(N)`
+- **note:** ValueError: Shape.radius: a @contractunion case is declared as `radius = variant(...)`, not `radius = U32(0)`. A bare value is inferred as its Python type by static checkers, so `Shape.radius` would not be a Shape at all.
+
+#### SPT4023
+
+**Construct:** @contractenum member -- discriminant outside the u32 range (ruling E5: the value IS a bare u32 on chain, so `enumvalue(-1)` is a value no u32 could hold)
+
+**Intent:** an int-enum discriminant must be a u32
+
+#### @contractenum discriminant outside the u32 range (`shape/enum_discriminant_out_of_range.py`)
+
+```python
+from serpent import ContractEnum, Env, U32, contract, contractenum, enumvalue
+
+
+@contractenum
+class Level(ContractEnum):
+    Low = enumvalue(-1)  # HERE
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** Level.Low: an int-enum discriminant must be a u32
+- **help:** pick a discriminant in [0, 4294967295] -- the value IS a bare u32 on chain
+- **note:** ValueError: Level.Low: discriminant -1 is out of range -- an int-enum member IS a bare u32 on chain, so 0 <= N <= 4294967295
+
+#### SPT4024
+
+**Construct:** @contractenum -- duplicate discriminant (two members that are the same bare u32)
+
+**Intent:** int-enum discriminants must be unique within the enum
+
+#### @contractenum duplicate discriminant (`shape/enum_discriminant_duplicate.py`)
+
+```python
+from serpent import ContractEnum, Env, U32, contract, contractenum, enumvalue
+
+
+@contractenum
+class Level(ContractEnum):
+    Low = enumvalue(1)
+    High = enumvalue(1)  # HERE
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** Level.High: int-enum discriminants must be unique within the enum
+- **help:** give every member of the int enum a distinct discriminant
+- **note:** ValueError: Level.High: discriminant 1 is already declared by Level.Low -- two members sharing one discriminant are the same bare u32 on chain, so the pair could never be told apart
+
+#### SPT4025
+
+**Construct:** @contractunion / @contractenum -- the class does not declare exactly `ContractUnion`/`ContractEnum` as its one base (SPT4014's twin, D9/SS C.8); subclassing a DECLARED union or int enum lands here too
+
+**Intent:** union classes must inherit ContractUnion and int enums ContractEnum
+
+#### @contractunion without its base class (`shape/union_not_inheriting_contractunion.py`)
+
+```python
+from serpent import Env, U32, contract, contractunion, variant
+
+
+@contractunion
+class Shape:  # HERE
+    Empty = variant()
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** union classes must inherit ContractUnion and int enums ContractEnum
+- **help:** declare the union as `class Name(ContractUnion):` and the int enum as `class Name(ContractEnum):` -- one base, and never a declared type
+- **note:** ValueError: Shape: a @contractunion class declares exactly one base, `ContractUnion` (`class Shape(ContractUnion):`) -- got no base class. The base is what makes the class statically a chain value at every position (a decorator cannot add one a type checker can see), and a subclass of a declared type would type as the subclass while constructing the declared one.
+
 ### SPT5xxx -- spec / XDR limits
 
 #### SPT5001
@@ -2099,7 +2284,7 @@ class Contract:
 
 #### SPT5002
 
-**Construct:** @contracttype/@contracterror type name -- length > 60 or non-Symbol charset (Task 9 fix round 1: a name outside [a-zA-Z0-9_] is representable as a Python identifier but not as the Rust identifier every Soroban tool renders it as)
+**Construct:** @contracttype/@contracterror/@contractunion/@contractenum type name -- length > 60 or non-Symbol charset (Task 9 fix round 1: a name outside [a-zA-Z0-9_] is representable as a Python identifier but not as the Rust identifier every Soroban tool renders it as)
 
 **Intent:** type name is too long (> 60) or uses characters outside [a-zA-Z0-9_]
 
@@ -2143,11 +2328,34 @@ class Contract:
 - **message:** type name is too long (> 60) or uses characters outside [a-zA-Z0-9_]: type `AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` is 61 bytes (max 60)
 - **help:** give the type a name of at most 60 characters
 
+#### over-long @contractunion type name (`limits/union_type_name_too_long.py`)
+
+```python
+# 61 characters. The mechanism is `limits._check_type_name`, which visits every
+# decorated type -- so the two M1-E2 kinds joined it the moment
+# `loader._DECORATOR_KINDS` named them.
+from serpent import ContractUnion, Env, U32, contract, contractunion, variant
+
+
+@contractunion
+class SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS(ContractUnion):  # HERE
+    Empty = variant()
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** type name is too long (> 60) or uses characters outside [a-zA-Z0-9_]: type `SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS` is 61 bytes (max 60)
+- **help:** give the type a name of at most 60 characters
+
 #### SPT5003
 
-**Construct:** @contracterror case name -- length > 60 or non-Symbol charset (Task 9 fix round 1, same reasoning as SPT5002)
+**Construct:** @contracterror / @contractunion / @contractenum case name -- too long for ITS kind (60 for an error-enum or int-enum case, 32 for a union variant, which becomes a runtime Symbol -- ruling E8) or non-Symbol charset (Task 9 fix round 1, same reasoning as SPT5002)
 
-**Intent:** error case name is too long (> 60) or uses characters outside [a-zA-Z0-9_]
+**Intent:** a declared case name is too long, or uses characters outside [a-zA-Z0-9_]
 
 #### over-long error-enum case name (`limits/case_name_too_long.py`)
 
@@ -2166,8 +2374,53 @@ class Contract:
         return U32(0)
 ```
 
-- **message:** error case name is too long (> 60) or uses characters outside [a-zA-Z0-9_]: error case `CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC` is 61 bytes (max 60)
+- **message:** a declared case name is too long, or uses characters outside [a-zA-Z0-9_]: error case `CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC` is 61 bytes (max 60)
 - **help:** give the error case a name of at most 60 characters
+
+#### over-long @contractenum case name (`limits/enum_case_name_too_long.py`)
+
+```python
+# 61 characters: an int-enum case name never becomes a Symbol (the value is a
+# bare u32), so its cap is the 60-character spec case-name limit, not 32.
+from serpent import ContractEnum, Env, U32, contract, contractenum, enumvalue
+
+
+@contractenum
+class Level(ContractEnum):
+    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL = enumvalue(0)  # HERE
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** a declared case name is too long, or uses characters outside [a-zA-Z0-9_]: int-enum case `LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL` is 61 bytes (max 60)
+- **help:** give the int-enum case a name of at most 60 characters
+
+#### over-long @contractunion variant name (`limits/union_case_name_too_long.py`)
+
+```python
+# Exactly 33 characters: one past `val.SCSYMBOL_LIMIT`, because a variant name
+# BECOMES a runtime Symbol (ruling E8), so a 33-character name would decode in
+# the spec and name a value that cannot exist on chain.
+from serpent import ContractUnion, Env, U32, contract, contractunion, variant
+
+
+@contractunion
+class Shape(ContractUnion):
+    VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV = variant(U32)  # HERE
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** a declared case name is too long, or uses characters outside [a-zA-Z0-9_]: union variant `VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV` is 33 bytes (max 32)
+- **help:** give the variant a name of at most 32 characters -- a variant name becomes a runtime Symbol
 
 #### SPT5004
 
@@ -2211,6 +2464,36 @@ class Contract:
 
 - **message:** an exported method may have at most 32 parameters: `act` takes 33 parameters
 - **help:** an exported method may take at most 32 parameters
+
+#### SPT5006
+
+**Construct:** variant payload -- more than 12 values (S4's tuple arity, ruling E6)
+
+**Intent:** a variant payload carries at most 12 values
+
+#### variant payload wider than 12 values (`limits/variant_payload_arity.py`)
+
+```python
+# The refusal comes from `variant()` itself, in the class body, before the
+# decorator runs -- so its message names no member and the diagnostic lands on
+# the class statement.
+from serpent import ContractUnion, Env, U32, contract, contractunion, variant
+
+
+@contractunion
+class Shape(ContractUnion):  # HERE
+    Wide = variant(U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32)
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** a variant payload carries at most 12 values
+- **help:** carry at most 12 payload values in one variant (S4's tuple arity)
+- **note:** ValueError: a variant payload carries at most 12 values (S4's tuple arity), not 13
 
 ### SPT7xxx -- flow analysis
 

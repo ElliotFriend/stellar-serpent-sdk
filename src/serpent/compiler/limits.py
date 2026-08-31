@@ -40,6 +40,22 @@ visit it at all -- adding a field-name walk would be a wholly new path that,
 by the same MJ-4 argument, could never observe a failure (untestable dead
 code, not defense in depth).
 
+## SPT5002/SPT5003 for M1-E2's two kinds (plan-review B1)
+
+The case-name cap for a `@contractunion`/`@contractenum` lands HERE, not in
+`decorators.py`, for the MJ-4/F.1.14 reason above and for one more: ruling E8
+gives the two kinds DIFFERENT caps (32 for a union variant, which becomes a
+runtime `Symbol` -- `val.SCSYMBOL_LIMIT`, S9 -- and 60 for an int-enum case,
+which never does), and `decorators._check_name` knows only the 30-character
+spec-name tier, so routing either through it would refuse a 40-character
+int-enum case name the ruling makes legal. `_CASE_RULES` is that per-kind
+table; `SPT5003`'s registry wording was widened to match, and its help text is
+now per kind too (it used to hardcode "give the error case a name of at most 60
+characters", which is wrong for a variant in both halves). `_check_type_name`
+needed no edit at all: it already visits every `decorated_types_in_order`
+entry, so the two new `loader._DECORATOR_KINDS` rows are what make the SPT5002
+widening true.
+
 ## SPT5002/SPT5003 (Task 9 fix round 1: charset added)
 
 `SPT5002` (type name) and `SPT5003` (error-case name) originally checked
@@ -68,7 +84,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Mapping, Sequence
-from typing import Final
+from typing import Final, NamedTuple
 
 from serpent.compiler import codes
 from serpent.compiler.diagnostics import Diagnostics, Loc, LocKind
@@ -83,7 +99,7 @@ from serpent.spec.sections import (
     _class_doc,
     _own_doc,
 )
-from serpent.val import SYMBOL_CHARS
+from serpent.val import SCSYMBOL_LIMIT, SYMBOL_CHARS
 
 __all__ = ["EXPORT_PARAM_LIMIT", "validate_limits"]
 
@@ -103,9 +119,43 @@ EXPORT_PARAM_LIMIT: Final = 32
 
 _NAME_HELP = f"use at most {NAME_LIMIT} characters from [a-zA-Z0-9_]"
 _TYPE_NAME_HELP = f"give the type a name of at most {TYPE_NAME_LIMIT} characters"
-_CASE_NAME_HELP = f"give the error case a name of at most {CASE_NAME_LIMIT} characters"
 _DOC_HELP = f"shorten the docstring to at most {DOC_LIMIT} encoded bytes"
 _PARAM_COUNT_HELP = f"an exported method may take at most {EXPORT_PARAM_LIMIT} parameters"
+
+
+class _CaseRule(NamedTuple):
+    """How SPT5003 reads one case-bearing kind: its label, its cap, its help.
+
+    Three rows rather than one because the CAP genuinely differs (ruling E8): a
+    union variant name becomes a runtime `Symbol`, an error-enum or int-enum
+    case name never does.
+    """
+
+    what: str
+    limit: int
+    help_text: str
+
+
+#: `decl.kind -> _CaseRule`, and simultaneously the gate: a kind absent here
+#: declares no cases at all (a struct, an event, the contract class).
+_CASE_RULES: Final[Mapping[str, _CaseRule]] = {
+    "error_enum": _CaseRule(
+        "error case",
+        CASE_NAME_LIMIT,
+        f"give the error case a name of at most {CASE_NAME_LIMIT} characters",
+    ),
+    "union": _CaseRule(
+        "union variant",
+        SCSYMBOL_LIMIT,
+        f"give the variant a name of at most {SCSYMBOL_LIMIT} characters -- a variant name "
+        "becomes a runtime Symbol",
+    ),
+    "enum": _CaseRule(
+        "int-enum case",
+        CASE_NAME_LIMIT,
+        f"give the int-enum case a name of at most {CASE_NAME_LIMIT} characters",
+    ),
+}
 
 
 # --- public entry point ------------------------------------------------------
@@ -124,7 +174,7 @@ def validate_limits(loaded: LoadedModule, sink: Diagnostics) -> None:
     for decl in loaded.decorated_types_in_order:
         _check_type_name(decl, loaded, sink)
         _check_doc(_class_doc(decl.cls), Loc.from_node(loaded.path, decl.node), decl.name, sink)
-        if decl.kind == "error_enum":
+        if decl.kind in _CASE_RULES:
             _check_cases(decl, loaded, sink)
 
 
@@ -187,7 +237,7 @@ def _drop_env(params: Sequence[tuple[str, object]]) -> list[tuple[str, object]]:
     return list(params)
 
 
-# --- struct / error-enum type names, docs, and error cases --------------------
+# --- declared type names, docs, and case names --------------------------------
 
 
 def _check_type_name(decl: DecoratedDecl, loaded: LoadedModule, sink: Diagnostics) -> None:
@@ -203,16 +253,25 @@ def _check_type_name(decl: DecoratedDecl, loaded: LoadedModule, sink: Diagnostic
 
 
 def _check_cases(decl: DecoratedDecl, loaded: LoadedModule, sink: Diagnostics) -> None:
-    cases: Sequence[tuple[str, int]] = decl.metadata["cases"]
-    for name, _code in cases:
+    """Every case name of a case-bearing kind, against ITS cap (plan-review B1).
+
+    The second element of a case is deliberately unused and deliberately
+    `object`: an error enum and an int enum carry a discriminant there, a union
+    carries its payload-annotation tuple, and widening the annotation is honest
+    where a `cast` would lie. What all three share is the 2-tuple SHAPE, which
+    is why one loop serves them.
+    """
+    rule = _CASE_RULES[decl.kind]
+    cases: Sequence[tuple[str, object]] = decl.metadata["cases"]
+    for name, _value in cases:
         _check_symbol_name(
             name,
             _member_loc(loaded.path, decl.node, name),
-            f"error case `{name}`",
+            f"{rule.what} `{name}`",
             sink,
             code="SPT5003",
-            limit=CASE_NAME_LIMIT,
-            help_text=_CASE_NAME_HELP,
+            limit=rule.limit,
+            help_text=rule.help_text,
         )
 
 

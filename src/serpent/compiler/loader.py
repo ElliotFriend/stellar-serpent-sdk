@@ -63,8 +63,13 @@ contains its code's registry intent; the uses worth naming are:
   decorated-class-body member-shape rule (SS C.3's "there are no class
   attributes"). Both had been reusing a code whose wording did not fit.
 * `SPT4015` is now exactly the *top-level class decorator/base* shape: an
-  undecorated or multiply-decorated class, or a base class other than `Event`
-  on an event (SS B.1's `ClassDef` row, D8).
+  undecorated or multiply-decorated class, or an extra base class beyond the
+  one its kind requires -- `Event` on an event, `ContractUnion` on a union,
+  `ContractEnum` on an int enum (SS B.1's `ClassDef` row, D8).
+* `SPT4021`-`SPT4025` and `SPT5006` were appended for M1-E2's two declaration
+  kinds; each bridges ONE rule shared by both of them (an empty body, a member
+  that is not a case, a discriminant out of the u32 range, a duplicate
+  discriminant, a wrong base, a payload wider than S4's tuple arity).
 * `SPT2004` ("name shadows an existing declaration") covers both a
   module-level redeclaration and a duplicate member inside one class body.
 * `SPT1037` -- MJ-11's explicit exhaustive-dispatch catch-all -- is the
@@ -141,7 +146,7 @@ class DecoratedDecl:
 
     `cls`/`metadata` are the executed (import) view; `node` is the AST view.
     `kind` is the `_serpent_type_["kind"]` string -- `"contract"`,
-    `"struct"`, `"error_enum"` or `"event"`.
+    `"struct"`, `"error_enum"`, `"event"`, `"union"` or `"enum"`.
     """
 
     name: str
@@ -195,8 +200,9 @@ class LoadedModule:
     contract_cls: type[Any] | None
     contract_node: ast.ClassDef | None
     contract_decl: DecoratedDecl | None
-    #: STRUCTS + ERROR ENUMS in declaration order (B10). Events are tracked
-    #: separately per MJ-9 -- `spec.sections` refuses an event class.
+    #: Every decorated TYPE -- structs, error enums, and M1-E2's unions and
+    #: int enums -- in declaration order (B10). Events are tracked separately
+    #: per MJ-9 -- `spec.sections` refuses an event class.
     decorated_types_in_order: tuple[DecoratedDecl, ...]
     events: tuple[DecoratedDecl, ...]
     module_consts: tuple[ModuleConst, ...]
@@ -255,11 +261,27 @@ _HELP: dict[str, str] = {
     "SPT4014": "declare the event as `class Name(Event):`",
     "SPT4015": (
         "give every top-level class exactly one of @contract/@contracttype/"
-        "@contracterror/@contractevent, and no base class other than `Event` on an "
-        "event"
+        "@contracterror/@contractevent/@contractunion/@contractenum, and no base class "
+        "other than `Event` on an event, `ContractUnion` on a union or `ContractEnum` on "
+        "an int enum"
     ),
     "SPT4019": "declare exactly one @contract class in the module",
+    "SPT4021": (
+        "declare at least one case (`Name = variant(...)` in a union, "
+        "`NAME = enumvalue(N)` in an int enum)"
+    ),
+    "SPT4022": (
+        "declare a union case as `Name = variant(...)` and an int-enum case as "
+        "`NAME = enumvalue(N)`"
+    ),
+    "SPT4023": "pick a discriminant in [0, 4294967295] -- the value IS a bare u32 on chain",
+    "SPT4024": "give every member of the int enum a distinct discriminant",
+    "SPT4025": (
+        "declare the union as `class Name(ContractUnion):` and the int enum as "
+        "`class Name(ContractEnum):` -- one base, and never a declared type"
+    ),
     "SPT5001": "use at most 30 characters from [a-zA-Z0-9_]",
+    "SPT5006": "carry at most 12 payload values in one variant (S4's tuple arity)",
 }
 
 
@@ -270,6 +292,8 @@ _DECORATOR_KINDS: dict[str, str] = {
     "contracttype": "struct",
     "contracterror": "error_enum",
     "contractevent": "event",
+    "contractunion": "union",
+    "contractenum": "enum",
 }
 
 _FUTURE_ANNOTATIONS_FLAG = _future_module.annotations.compiler_flag
@@ -322,6 +346,18 @@ _BRIDGE_RULES: tuple[_BridgeRule, ...] = (
     _BridgeRule(_VALUE_ERROR, "is not a chain type, a `@contracttype` struct", "SPT4012"),
     _BridgeRule(_VALUE_ERROR, "already declared as a serpent", "SPT4013"),
     _BridgeRule(_VALUE_ERROR, "@contractevent classes must inherit", "SPT4014"),
+    # M1-E2's two declaration kinds. Each needle is shared by BOTH of them --
+    # the decorators word one rule one way -- so there is one row per RULE, not
+    # per kind; the arity row's needle is `types._udt.variant`'s own, because
+    # the factory refuses a 13th payload in the class body before the decorator
+    # ever runs (the message therefore names no member, and the diagnostic
+    # lands on the class).
+    _BridgeRule(_VALUE_ERROR, "case is declared as", "SPT4022"),
+    _BridgeRule(_VALUE_ERROR, "declares at least one case", "SPT4021"),
+    _BridgeRule(_VALUE_ERROR, "class declares exactly one base", "SPT4025"),
+    _BridgeRule(_VALUE_ERROR, "is out of range -- an int-enum member", "SPT4023"),
+    _BridgeRule(_VALUE_ERROR, "is already declared by", "SPT4024"),
+    _BridgeRule(_VALUE_ERROR, "a variant payload carries at most", "SPT5006"),
     _BridgeRule(_VALUE_ERROR, "contract methods are plain methods taking", "SPT4007"),
     _BridgeRule(_VALUE_ERROR, "contract methods take `self` as their first", "SPT4001"),
     _BridgeRule(_VALUE_ERROR, "is not allowed -- a contract export has a fixed arity", "SPT4002"),
@@ -729,14 +765,15 @@ def _check_class_def(stmt: ast.ClassDef, path: str, plan: _ShapePlan, sink: Diag
         )
         return
     kind = kinds[0]
-    # SS B.1's ClassDef row: no base classes, except `Event` on an event
-    # (D8) -- which `@contractevent` itself enforces, so a single wrong base
-    # is left to it (and its more precise SPT4014). Only an EXTRA base, and
-    # any base at all on a non-event, is refused here. This is also what
-    # keeps the F.1.14 cross-check honest: `typing.get_type_hints` reports
-    # INHERITED annotations, so a struct with a base could otherwise declare
-    # fields the AST never shows.
-    allowed_bases = 1 if kind == "event" else 0
+    # SS B.1's ClassDef row: no base classes, except the ONE required base on
+    # an event (`Event`, D8), a union (`ContractUnion`) or an int enum
+    # (`ContractEnum`) -- which the decorator itself enforces, so a single
+    # wrong base is left to it (and its more precise SPT4014/SPT4025). Only an
+    # EXTRA base, and any base at all on a kind that takes none, is refused
+    # here. This is also what keeps the F.1.14 cross-check honest:
+    # `typing.get_type_hints` reports INHERITED annotations, so a struct with a
+    # base could otherwise declare fields the AST never shows.
+    allowed_bases = 1 if kind in ("event", "union", "enum") else 0
     if len(stmt.bases) > allowed_bases or stmt.keywords:
         _reject_statement(
             stmt,
@@ -747,8 +784,9 @@ def _check_class_def(stmt: ast.ClassDef, path: str, plan: _ShapePlan, sink: Diag
             (
                 (
                     f"`{stmt.name}` declares a base class or class keyword; a "
-                    "serpent-decorated class has no bases (an event inherits `Event` "
-                    "and nothing else)"
+                    "serpent-decorated class has no bases (an event inherits `Event`, a "
+                    "union `ContractUnion` and an int enum `ContractEnum` -- and nothing "
+                    "else)"
                 ),
             ),
             {stmt.name},
@@ -769,6 +807,13 @@ _ALLOWED_MEMBER_FORMS: dict[str, frozenset[str]] = {
     "struct": frozenset({"field", "annotated_value"}),
     "event": frozenset({"field", "annotated_value"}),
     "error_enum": frozenset({"assign", "annotated_value"}),
+    # The two M1-E2 kinds declare cases exactly as an error enum declares
+    # members (SS C.4), so this table needs no new concept: `assign` is the
+    # canonical spelling and `annotated_value` is admitted for the same reason
+    # it is admitted there -- it is a declaration form, and the DECORATOR
+    # decides whether the value is really a case (SPT4022).
+    "union": frozenset({"assign", "annotated_value"}),
+    "enum": frozenset({"assign", "annotated_value"}),
 }
 
 _BODY_HELP: dict[str, str] = {
@@ -779,6 +824,8 @@ _BODY_HELP: dict[str, str] = {
     "struct": "a @contracttype class body declares fields as `name: T`",
     "event": "a @contractevent class body declares fields as `name: T`",
     "error_enum": "a @contracterror class body declares members as `NAME = errorcode(N)`",
+    "union": "a @contractunion class body declares variants as `Name = variant(...)`",
+    "enum": "a @contractenum class body declares members as `NAME = enumvalue(N)`",
 }
 
 
@@ -1211,6 +1258,8 @@ def _cross_check_inventory(decls: Iterable[DecoratedDecl]) -> None:
             _cross_check_contract(decl)
         elif decl.kind == "error_enum":
             _cross_check_error_enum(decl)
+        elif decl.kind in ("union", "enum"):
+            _cross_check_udt_cases(decl)
         else:
             _cross_check_fields(decl)
 
@@ -1264,22 +1313,9 @@ def _cross_check_fields(decl: DecoratedDecl) -> None:
 
 
 def _cross_check_error_enum(decl: DecoratedDecl) -> None:
-    ast_cases: list[tuple[str, int | None]] = []
-    for member in decl.node.body:
-        if isinstance(member, ast.Assign) and _is_single_name_assign(member):
-            name = _assign_target(member)
-        elif (
-            isinstance(member, ast.AnnAssign)
-            and isinstance(member.target, ast.Name)
-            and member.value is not None
-        ):
-            name = member.target.id
-        else:
-            continue
-        if name.startswith("_"):
-            continue
-        ast_cases.append((name, _int_literal_arg(member.value)))
-
+    ast_cases: list[tuple[str, int | None]] = [
+        (name, _int_literal_arg(member.value)) for name, member in _case_members(decl.node)
+    ]
     metadata_cases: list[tuple[str, int]] = list(decl.metadata["cases"])
     if [name for name, _code in metadata_cases] != [name for name, _code in ast_cases]:
         _bug(
@@ -1293,6 +1329,47 @@ def _cross_check_error_enum(decl: DecoratedDecl) -> None:
         # `errorcode(SOME_CONST)`); the executed view is authoritative there.
         if ast_code is not None and ast_code != code:
             _bug(decl, f"the code of case {name!r}", code, ast_code)
+
+
+def _cross_check_udt_cases(decl: DecoratedDecl) -> None:
+    """The union/int-enum half of F.1.14: the metadata case NAMES, in order,
+    are exactly the AST's own case-declaring members.
+
+    Modelled on `_cross_check_error_enum` and deliberately names-only: a
+    variant's second element is its payload ANNOTATION tuple (resolved type
+    objects, which the AST carries as expressions) and an int-enum member's is
+    a discriminant that may be a module constant, so only the executed view can
+    speak to either. The case NAMES are what a `contractspecv0` UDT entry is
+    built from, and a skew there would describe code the compiler did not
+    compile.
+    """
+    ast_cases = [name for name, _member in _case_members(decl.node)]
+    metadata_cases = [name for name, _payload in decl.metadata["cases"]]
+    if metadata_cases != ast_cases:
+        _bug(decl, "the case inventory", metadata_cases, ast_cases)
+
+
+def _case_members(node: ast.ClassDef) -> list[tuple[str, ast.Assign | ast.AnnAssign]]:
+    """The public `NAME = value` / `NAME: T = value` members of a class body,
+    in declaration order -- the AST view of a case list, shared by all three
+    case-bearing kinds (error enum, union, int enum) so the "what the AST calls
+    a case" rule is stated once.
+    """
+    members: list[tuple[str, ast.Assign | ast.AnnAssign]] = []
+    for member in node.body:
+        if isinstance(member, ast.Assign) and _is_single_name_assign(member):
+            name = _assign_target(member)
+        elif (
+            isinstance(member, ast.AnnAssign)
+            and isinstance(member.target, ast.Name)
+            and member.value is not None
+        ):
+            name = member.target.id
+        else:
+            continue
+        if not name.startswith("_"):
+            members.append((name, member))
+    return members
 
 
 def _bug(decl: DecoratedDecl, what: str, metadata_view: object, ast_view: object) -> NoReturn:

@@ -718,7 +718,7 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "SPT4xxx",
         "ClassDef -- undecorated class, or a class with no recognized serpent decorator",
         "every top-level class needs exactly one of @contract/@contracttype/"
-        "@contracterror/@contractevent",
+        "@contracterror/@contractevent/@contractunion/@contractenum",
         "Task 3",
     ),
     CodeEntry(
@@ -775,6 +775,53 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "this member is not valid in this kind of serpent-decorated class body",
         "Task 3",
     ),
+    # Appended by M1-E2 (tagged unions and int enums) under the sub-plan's
+    # CONTROLLER-SANCTIONED enumeration and the append-only rule (D9). One row
+    # per declaration RULE, shared by both new kinds: the two decorators word
+    # each rule once, so a per-kind pair of codes would be two names for one
+    # fact. Every one of them is raised by `decorators.py` at the declaration
+    # site and re-reported located by the loader's exec-time bridge, exactly as
+    # SPT4008-SPT4014 are for `@contracterror`/`@contractevent`.
+    CodeEntry(
+        "SPT4021",
+        "SPT4xxx",
+        "@contractunion / @contractenum -- empty body: no case declared at all",
+        "a union or int enum must declare at least one case",
+        "M1-E2 Task 2",
+    ),
+    CodeEntry(
+        "SPT4022",
+        "SPT4xxx",
+        "@contractunion / @contractenum member -- not the factory's case declaration "
+        "(a bare value, or the named-FIELD `name: T = value` spelling a struct variant "
+        "would need)",
+        "union cases are declared with variant(...) and int-enum cases with enumvalue(N)",
+        "M1-E2 Task 2",
+    ),
+    CodeEntry(
+        "SPT4023",
+        "SPT4xxx",
+        "@contractenum member -- discriminant outside the u32 range (ruling E5: the value "
+        "IS a bare u32 on chain, so `enumvalue(-1)` is a value no u32 could hold)",
+        "an int-enum discriminant must be a u32",
+        "M1-E2 Task 2",
+    ),
+    CodeEntry(
+        "SPT4024",
+        "SPT4xxx",
+        "@contractenum -- duplicate discriminant (two members that are the same bare u32)",
+        "int-enum discriminants must be unique within the enum",
+        "M1-E2 Task 2",
+    ),
+    CodeEntry(
+        "SPT4025",
+        "SPT4xxx",
+        "@contractunion / @contractenum -- the class does not declare exactly "
+        "`ContractUnion`/`ContractEnum` as its one base (SPT4014's twin, D9/SS C.8); "
+        "subclassing a DECLARED union or int enum lands here too",
+        "union classes must inherit ContractUnion and int enums ContractEnum",
+        "M1-E2 Task 2",
+    ),
 )
 
 # --- SPT5xxx: spec/XDR limits (dossier D.1; SS B.3) -------------------------
@@ -788,21 +835,36 @@ _SPT5XXX: tuple[CodeEntry, ...] = (
         "name is too long (> 30) or uses characters outside [a-zA-Z0-9_]",
         "Task 9",
     ),
+    # Widened in M1-E2 (controller ruling, plan-review B1). `limits.py` runs
+    # SPT5002 over every `decorated_types_in_order` entry, so the two new
+    # declaration kinds joined it for free the moment `loader._DECORATOR_KINDS`
+    # named them: the construct column is re-attributed here to say so, and the
+    # message intent needs no edit because the cap is the same 60 for every
+    # declared type.
     CodeEntry(
         "SPT5002",
         "SPT5xxx",
-        "@contracttype/@contracterror type name -- length > 60 or non-Symbol charset (Task 9 "
-        "fix round 1: a name outside [a-zA-Z0-9_] is representable as a Python identifier but "
-        "not as the Rust identifier every Soroban tool renders it as)",
+        "@contracttype/@contracterror/@contractunion/@contractenum type name -- length > 60 "
+        "or non-Symbol charset (Task 9 fix round 1: a name outside [a-zA-Z0-9_] is "
+        "representable as a Python identifier but not as the Rust identifier every Soroban "
+        "tool renders it as)",
         "type name is too long (> 60) or uses characters outside [a-zA-Z0-9_]",
         "Task 9",
     ),
+    # Widened in M1-E2 too, and here the message intent HAD to change: ruling
+    # E8 gives the three case-bearing kinds two different caps (32 for a union
+    # variant, which becomes a runtime Symbol; 60 for an error-enum or
+    # int-enum case, which never does), so the wording can no longer name one
+    # number. `limits._CASE_RULES` is the per-kind table, and the message
+    # itself still reports the cap that applied.
     CodeEntry(
         "SPT5003",
         "SPT5xxx",
-        "@contracterror case name -- length > 60 or non-Symbol charset (Task 9 fix round 1, "
-        "same reasoning as SPT5002)",
-        "error case name is too long (> 60) or uses characters outside [a-zA-Z0-9_]",
+        "@contracterror / @contractunion / @contractenum case name -- too long for ITS kind "
+        "(60 for an error-enum or int-enum case, 32 for a union variant, which becomes a "
+        "runtime Symbol -- ruling E8) or non-Symbol charset (Task 9 fix round 1, same "
+        "reasoning as SPT5002)",
+        "a declared case name is too long, or uses characters outside [a-zA-Z0-9_]",
         "Task 9",
     ),
     CodeEntry(
@@ -818,6 +880,18 @@ _SPT5XXX: tuple[CodeEntry, ...] = (
         "exported method -- more than 32 parameters (S23)",
         "an exported method may have at most 32 parameters",
         "Task 9",
+    ),
+    # M1-E2, same sanctioned enumeration as SPT4021-SPT4025. Banded SPT5xxx
+    # rather than SPT4xxx because it is an ARITY cap on a declared shape, the
+    # same family as SPT5005's export-parameter cap: S4's tuple arity, which
+    # ruling E6 makes serpent's ONE arity story so a union payload and a tuple
+    # return cannot disagree about how wide a shape may be.
+    CodeEntry(
+        "SPT5006",
+        "SPT5xxx",
+        "variant payload -- more than 12 values (S4's tuple arity, ruling E6)",
+        "a variant payload carries at most 12 values",
+        "M1-E2 Task 2",
     ),
 )
 

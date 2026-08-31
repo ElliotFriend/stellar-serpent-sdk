@@ -30,6 +30,7 @@ from serpent.compiler.loader import load_module
 from serpent.decorators import NAME_LIMIT
 from serpent.spec import build_spec_entries
 from serpent.spec.sections import CASE_NAME_LIMIT, DOC_LIMIT, TYPE_NAME_LIMIT
+from serpent.val import SCSYMBOL_LIMIT
 
 PATH = "contracts/limits.py"
 
@@ -253,6 +254,135 @@ def test_a_non_ascii_case_name_is_rejected_even_when_length_legal() -> None:
     assert len(name.encode("utf-8")) == CASE_NAME_LIMIT
     diag = _reject(_case_name_source(name))
     _assert_reject(diag, "SPT5003", "outside [a-zA-Z0-9_]")
+
+
+# --- SPT5002/SPT5003 for the two M1-E2 kinds (plan-review B1) ------------------
+#
+# The case-name cap for a union/int enum lives HERE, not in `decorators.py`:
+# `decorators._check_name` caps at `NAME_LIMIT` (30) and bridges to SPT5001,
+# which would refuse a 40-character int-enum case name ruling E8 makes legal --
+# an accepts-shrink against the ruling. And the check has to be here for the
+# same MJ-4/F.1.14 reason this module's own docstring gives for every other
+# name it re-checks: if the DECORATOR raised, the whole class statement would
+# fail to exec, the class would carry no `_serpent_type_`, and it would be
+# ABSENT from `decorated_types_in_order` -- making the SPT5003 path below
+# permanently dead for the two new kinds.
+
+
+def _union_source(variant_name: str, type_name: str = "Shape") -> str:
+    return f"""
+from serpent import Env, U32, ContractUnion, contract, contractunion, variant
+
+
+@contractunion
+class {type_name}(ContractUnion):
+    {variant_name} = variant(U32)
+
+
+@contract
+class C:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+"""
+
+
+def _int_enum_source(case_name: str) -> str:
+    return f"""
+from serpent import Env, U32, ContractEnum, contract, contractenum, enumvalue
+
+
+@contractenum
+class Level(ContractEnum):
+    {case_name} = enumvalue(0)
+
+
+@contract
+class C:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+"""
+
+
+def test_a_union_variant_name_at_the_symbol_cap_is_accepted() -> None:
+    _accept(_union_source("V" * SCSYMBOL_LIMIT))
+
+
+def test_a_union_variant_name_over_32_is_a_located_SPT5003() -> None:
+    """Ruling E8: a variant name BECOMES a runtime Symbol, and S9 makes
+    `SCSYMBOL_LIMIT` (`val.py` -- 32) a hard host limit, so a 33-character
+    name would yield a spec entry that decodes and a value that cannot exist.
+    Rust caps it identically."""
+    name = "V" * (SCSYMBOL_LIMIT + 1)
+    diag = _reject(_union_source(name))
+    _assert_reject(diag, "SPT5003", name)
+    assert str(SCSYMBOL_LIMIT + 1) in diag.message
+    assert f"max {SCSYMBOL_LIMIT}" in diag.message
+
+
+def test_a_non_ascii_union_variant_name_is_rejected_even_when_length_legal() -> None:
+    """The charset half, at the 32-byte tier: `val.SYMBOL_CHARS` is the same
+    authority at every tier -- only the cap and the label differ."""
+    name = "é" + "V" * (SCSYMBOL_LIMIT - 2)
+    assert len(name.encode("utf-8")) == SCSYMBOL_LIMIT
+    diag = _reject(_union_source(name))
+    _assert_reject(diag, "SPT5003", "outside [a-zA-Z0-9_]")
+
+
+def test_an_int_enum_case_name_may_run_to_60() -> None:
+    """The other half of E8, and the accepts-shrink the decorator's own
+    `NAME_LIMIT` would have caused: an int-enum case name NEVER becomes a
+    Symbol (the value is a bare `u32`), so the cap is
+    `sections.CASE_NAME_LIMIT` (60) -- not 32, and certainly not 30."""
+    _accept(_int_enum_source("L" * 40))
+    _accept(_int_enum_source("L" * CASE_NAME_LIMIT))
+    diag = _reject(_int_enum_source("L" * (CASE_NAME_LIMIT + 1)))
+    _assert_reject(diag, "SPT5003", "L" * (CASE_NAME_LIMIT + 1))
+    assert f"max {CASE_NAME_LIMIT}" in diag.message
+
+
+def test_a_union_type_name_over_60_is_a_LOCATED_SPT5002() -> None:
+    """B1 condition (ii). The mechanism is `limits._check_type_name`, which
+    covers the two new kinds for free once `_DECORATOR_KINDS` has them -- NOT
+    `sections._check_type_name`, which raises an unlocated `SpecNameError`."""
+    name = "S" * (TYPE_NAME_LIMIT + 1)
+    diag = _reject(_union_source("Empty", type_name=name))
+    _assert_reject(diag, "SPT5002", name)
+
+
+def test_an_int_enum_type_name_over_60_is_a_located_SPT5002() -> None:
+    name = "L" * (TYPE_NAME_LIMIT + 1)
+    source = f"""
+from serpent import Env, U32, ContractEnum, contract, contractenum, enumvalue
+
+
+@contractenum
+class {name}(ContractEnum):
+    Low = enumvalue(0)
+
+
+@contract
+class C:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+"""
+    diag = _reject(source)
+    _assert_reject(diag, "SPT5002", name)
+
+
+def test_the_per_kind_help_names_the_cap_that_actually_applies() -> None:
+    """`_CASE_NAME_HELP` used to hardcode "give the error case a name of at
+    most 60 characters", which is wrong for a variant in both halves: the
+    label AND the number."""
+    union = _reject(_union_source("V" * (SCSYMBOL_LIMIT + 1)))
+    assert union.help is not None
+    assert str(SCSYMBOL_LIMIT) in union.help
+    assert "variant" in union.help
+    int_enum = _reject(_int_enum_source("L" * (CASE_NAME_LIMIT + 1)))
+    assert int_enum.help is not None
+    assert str(CASE_NAME_LIMIT) in int_enum.help
+    error = _reject(_case_name_source("C" * (CASE_NAME_LIMIT + 1)))
+    assert error.help is not None
+    assert "error case" in error.help
 
 
 # --- SPT5004: docstrings, counted in encoded bytes (B12) -----------------------

@@ -48,10 +48,10 @@ _ALLOWLIST: frozenset[tuple[str, int]] = frozenset(
     {
         # NO_FIXTURE_REASONS["SPT1032"]: the append-only registry's (D9) own
         # record of WHEN and WHY the code was retired -- not a promise.
-        ("src/serpent/compiler/codes.py", 973),
+        ("src/serpent/compiler/codes.py", 1047),
         # "the runtime half used to pin that the widened signatures reached
         # the sub-plan E stub" -- past tense, about a test's own history.
-        ("tests/unit/test_decorators.py", 764),
+        ("tests/unit/test_decorators.py", 780),
         # "Rewritten (never deleted) from the assertion that both bodies
         # raised NotImplementedError("sub-plan E")." -- past tense.
         ("tests/unit/test_address.py", 139),

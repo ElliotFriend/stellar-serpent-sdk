@@ -24,6 +24,17 @@ event convention's spelling -- `frm: Annotated[Address, topic]` -- would be
 unauthorable without it. It is the same `typing.Annotated` a type checker
 already understands; `topic` beside it is serpent's own marker object.
 
+**The six M1-E2 names are all exported, for one reason each.** A contract
+module may import from `serpent` and nowhere else (the compiler's SPT2005), so
+every spelling a union or int-enum declaration needs has to be reachable here:
+`contractunion`/`contractenum` because the declaration is a decorator;
+`variant`/`enumvalue` because each case is a call to a factory; and
+`ContractUnion`/`ContractEnum` because the BASE is load-bearing, not
+decoration. SS C.8 probe-verified the last point -- a base-less class is not
+statically a `ChainValue` at any position (`error: incompatible type
+"ColorNoBase"; expected "_ChainValue | Struct"`), which is ruling D9's own
+argument for `Event` recurring verbatim.
+
 **Not exported (by design):**
 * `U256`/`I256` -- deferred to M2 (amended spec).
 * `BytesN` -- never the name; the fixed-length family is `Bytes32`, `Bytes64`,
@@ -34,9 +45,11 @@ from typing import Annotated
 
 from serpent.decorators import (
     contract,
+    contractenum,
     contracterror,
     contractevent,
     contracttype,
+    contractunion,
     errorcode,
     topic,
 )
@@ -60,6 +73,8 @@ from serpent.types import (
     Bytes,
     Bytes32,
     Bytes64,
+    ContractEnum,
+    ContractUnion,
     Duration,
     Map,
     String,
@@ -67,6 +82,8 @@ from serpent.types import (
     Timepoint,
     Vec,
     bytes_n,
+    enumvalue,
+    variant,
 )
 
 __version__ = "0.0.1"
@@ -88,7 +105,9 @@ __all__ = [
     "Bytes32",
     "Bytes64",
     "ChainValue",
+    "ContractEnum",
     "ContractError",
+    "ContractUnion",
     "Duration",
     "Env",
     "Event",
@@ -101,9 +120,13 @@ __all__ = [
     "__version__",
     "bytes_n",
     "contract",
+    "contractenum",
     "contracterror",
     "contractevent",
     "contracttype",
+    "contractunion",
+    "enumvalue",
     "errorcode",
     "topic",
+    "variant",
 ]

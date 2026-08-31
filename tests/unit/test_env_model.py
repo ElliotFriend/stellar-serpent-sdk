@@ -501,7 +501,12 @@ def test_a_union_default_passes_through_instead_of_being_re_adopted() -> None:
     bucket = deployed_env().storage().persistent()
     fallback = Shape.Circle(U32(9))
     assert bucket.get(Symbol("absent"), Shape, default=fallback) is fallback
-    assert bucket.get(Symbol("absent"), Color, default=Color.Red) == Color.Red
+    # The enum half in the `is` form, which is the stronger pin: an accessed
+    # member is a FRESH instance every time (`_EnumValue.__get__` builds one),
+    # so the identity being preserved is the pass-through itself -- and
+    # `ContractEnum.__copy__` returning `self` is what makes `is` hold at all.
+    enum_fallback = Color.Red
+    assert bucket.get(Symbol("absent"), Color, default=enum_fallback) is enum_fallback
 
 
 def test_the_tag_families_agree_with_the_emitters_abi_check_tables() -> None:

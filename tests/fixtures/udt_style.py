@@ -24,27 +24,37 @@ checked in a subprocess, because a tracked file cannot be both clean and wrong
 * an int enum as a stored value read back under its own type, which is what
   makes the `get` tag check meaningful for it.
 
-**Two things about this file's current state, deliberately visible.** The two
-new names are imported from `serpent.types` rather than from the `serpent`
-root, and the union/enum classes carry no decorator: `@contractunion`,
-`@contractenum` and the six root exports are M1-E2 Task 2's, and frontend
-support for compiling these forms is Task 4's. Until then this module is the
-typing fixture it is above, plus a member of the fuzz mangling corpus
-(`tests/unit/test_frontend_fuzz.py`'s exact `fixtures/` inventory, which is why
-adding it there is part of the same commit). Its declaration spellings do not
-change when those tasks land -- only the import line and the two decorators.
+**One thing about this file's current state, deliberately visible.** Every
+name now comes from the `serpent` root and both classes carry their decorator
+(M1-E2 Task 2 landed the declaration layer), but the module does not COMPILE
+yet: teaching the frontend to resolve `Shape`/`Level` in an annotation, and to
+lower `tag()`/`payload()`/case construction, is Task 4's. Until then this
+module is the typing fixture it is above, plus a member of the fuzz mangling
+corpus (`tests/unit/test_frontend_fuzz.py`'s exact `fixtures/` inventory). Its
+declaration spellings do not change when Task 4 lands.
 
 Not collected by pytest (no `test_*` functions) and not imported at runtime by
 anything; the gate that covers it is the config-driven `mypy --strict` run.
 """
 
-from serpent import U32, Env, Symbol, contract
-from serpent.types import ContractEnum, ContractUnion, enumvalue, variant
+from serpent import (
+    U32,
+    ContractEnum,
+    ContractUnion,
+    Env,
+    Symbol,
+    contract,
+    contractenum,
+    contractunion,
+    enumvalue,
+    variant,
+)
 
 SHAPE = Symbol("shape")
 LEVEL = Symbol("level")
 
 
+@contractunion
 class Shape(ContractUnion):
     """A tagged union: one unit case and two tuple cases."""
 
@@ -53,6 +63,7 @@ class Shape(ContractUnion):
     Rect = variant(U32, U32)
 
 
+@contractenum
 class Level(ContractEnum):
     """An int enum: each member IS the bare `u32` it names."""
 

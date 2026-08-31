@@ -47,8 +47,9 @@ PATH = "contract.py"
 #: declare the interesting part. Unused imports are harmless at runtime.
 _IMPORTS = (
     "from serpent import ("
-    "Address, Bool, Bytes, ContractError, Env, Event, String, Symbol, U32, U64, "
-    "contract, contracterror, contractevent, contracttype, errorcode"
+    "Address, Bool, Bytes, ContractEnum, ContractError, ContractUnion, Env, Event, "
+    "String, Symbol, U32, U64, contract, contractenum, contracterror, contractevent, "
+    "contracttype, contractunion, enumvalue, errorcode, variant"
     ")"
 )
 
@@ -630,6 +631,24 @@ CLASS_BODY_REJECTS = {
     ),
     "unvalued_annotation_in_an_error_enum": "@contracterror\nclass E:\n    A: U32  # HERE",
     "plain_assign_in_a_struct": "@contracttype\nclass S:\n    a = U32(1)  # HERE",
+    # The two M1-E2 kinds declare cases the way an error enum declares
+    # members (`assign`/`annotated_value`, SS C.4), so `_check_class_body`
+    # needs no new concept -- and a method or a bare `x: T` in either body is
+    # refused by the same rule that refuses it in an error enum.
+    "method_in_a_union": (
+        "@contractunion\nclass U(ContractUnion):\n    A = variant()\n\n"
+        "    def go(self) -> None:  # HERE\n        return None"
+    ),
+    "unvalued_annotation_in_a_union": (
+        "@contractunion\nclass U(ContractUnion):\n    A: U32  # HERE"
+    ),
+    "method_in_an_int_enum": (
+        "@contractenum\nclass L(ContractEnum):\n    Low = enumvalue(0)\n\n"
+        "    def go(self) -> None:  # HERE\n        return None"
+    ),
+    "unvalued_annotation_in_an_int_enum": (
+        "@contractenum\nclass L(ContractEnum):\n    Low: U32  # HERE"
+    ),
 }
 
 
@@ -652,6 +671,13 @@ DUPLICATE_MEMBERS = {
     "duplicate_method": (
         "@contract\nclass D:\n    def go(self, env: Env) -> None:\n        return None\n\n"
         "    def go(self, env: Env) -> None:  # HERE\n        return None"
+    ),
+    "duplicate_variant": (
+        "@contractunion\nclass U(ContractUnion):\n    A = variant()\n    A = variant(U32)  # HERE"
+    ),
+    "duplicate_int_enum_case": (
+        "@contractenum\nclass L(ContractEnum):\n    Low = enumvalue(0)\n"
+        "    Low = enumvalue(1)  # HERE"
     ),
 }
 
@@ -724,6 +750,60 @@ class D:
 
 def test_an_event_inheriting_only_event_is_accepted() -> None:
     assert diags(source("@contractevent\nclass T(Event):\n    x: U32")) == ()
+
+
+def test_a_union_and_an_int_enum_admit_exactly_one_base_each() -> None:
+    """D8's rule, one kind wider: `allowed_bases` is 1 for an event, a union
+    and an int enum -- and the base's IDENTITY is the decorator's own check
+    (SPT4025), so a single wrong base is left to it, exactly as a single wrong
+    base on an event is left to SPT4014."""
+    assert diags(source("@contractunion\nclass U(ContractUnion):\n    A = variant()")) == ()
+    assert diags(source("@contractenum\nclass L(ContractEnum):\n    Low = enumvalue(0)")) == ()
+    expect_at_here(
+        source("@contractunion\nclass U(ContractUnion, ContractError):  # HERE\n    A = variant()"),
+        "SPT4015",
+    )
+    expect_at_here(
+        source(
+            "@contractenum\nclass L(ContractEnum, ContractError):  # HERE\n    Low = enumvalue(0)"
+        ),
+        "SPT4015",
+    )
+
+
+UDT_SHAPED = """
+@contractunion
+class Shape(ContractUnion):
+    Empty = variant()
+    Circle = variant(U32)
+
+
+@contractenum
+class Level(ContractEnum):
+    Low = enumvalue(0)
+    High = enumvalue(1)
+"""
+
+
+def test_a_union_and_an_int_enum_are_decorated_types_in_declaration_order() -> None:
+    """The two `_DECORATOR_KINDS` rows, seen from the inventory: both new kinds
+    are decorated TYPES (they carry a `contractspecv0` UDT entry), so they sit
+    beside structs and error enums rather than in the event inventory."""
+    loaded = load(source(UDT_SHAPED))
+    assert loaded.diagnostics.diagnostics == ()
+    assert [(d.name, d.kind) for d in loaded.decorated_types_in_order] == [
+        ("Shape", "union"),
+        ("Level", "enum"),
+    ]
+    assert loaded.events == ()
+
+
+def test_a_union_case_may_carry_an_annotation_like_an_error_member() -> None:
+    """`annotated_value` is admitted for both new kinds, for the reason it is
+    admitted for an error enum: it is a declaration form, and the DECORATOR is
+    what decides whether the value is a case (SPT4022)."""
+    src = source("@contractunion\nclass U(ContractUnion):\n    A: object = variant()")
+    assert diags(src) == ()
 
 
 # ---------------------------------------------------------------------------
@@ -927,6 +1007,117 @@ class S:
 class C2:
     def go(self, env: Env, amount: Missing) -> U32:  # HERE
         return U32(0)
+""",
+    ),
+    # --- M1-E2: the union / int-enum declaration checks ---------------------
+    (
+        "empty_union",
+        "SPT4021",
+        """
+@contractunion
+class U(ContractUnion):  # HERE
+    pass
+""",
+    ),
+    (
+        "empty_int_enum",
+        "SPT4021",
+        """
+@contractenum
+class L(ContractEnum):  # HERE
+    pass
+""",
+    ),
+    (
+        "union_case_bare_value",
+        "SPT4022",
+        """
+@contractunion
+class U(ContractUnion):
+    Circle = 3  # HERE
+""",
+    ),
+    (
+        "int_enum_case_bare_value",
+        "SPT4022",
+        """
+@contractenum
+class L(ContractEnum):
+    Low = 0  # HERE
+""",
+    ),
+    (
+        "int_enum_discriminant_out_of_range",
+        "SPT4023",
+        """
+@contractenum
+class L(ContractEnum):
+    Bad = enumvalue(-1)  # HERE
+""",
+    ),
+    (
+        "int_enum_duplicate_discriminant",
+        "SPT4024",
+        """
+@contractenum
+class L(ContractEnum):
+    Low = enumvalue(1)
+    Also = enumvalue(1)  # HERE
+""",
+    ),
+    (
+        "union_without_its_base",
+        "SPT4025",
+        """
+@contractunion
+class U:  # HERE
+    Empty = variant()
+""",
+    ),
+    (
+        "int_enum_without_its_base",
+        "SPT4025",
+        """
+@contractenum
+class L:  # HERE
+    Low = enumvalue(0)
+""",
+    ),
+    (
+        "union_subclassing_a_declared_union",
+        "SPT4025",
+        """
+@contractunion
+class Base(ContractUnion):
+    Empty = variant()
+
+
+@contractunion
+class Sub(Base):  # HERE
+    Extra = variant()
+""",
+    ),
+    (
+        # The refusal comes from `variant()` itself, which never reaches the
+        # decorator: the class body raises before the decorator runs, so the
+        # message names no member and the diagnostic lands on the class.
+        "variant_payload_arity",
+        "SPT5006",
+        """
+@contractunion
+class U(ContractUnion):  # HERE
+    Big = variant(
+        U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32
+    )
+""",
+    ),
+    (
+        "union_payload_not_a_declared_type",
+        "SPT4012",
+        """
+@contractunion
+class U(ContractUnion):
+    Count = variant(int)  # HERE
 """,
     ),
 ]
@@ -1210,6 +1401,41 @@ def test_cross_check_raises_a_compiler_bug_on_skew(name: str, mutate: Any) -> No
     with pytest.raises(CompilerBugError) as exc_info:
         _cross_check_inventory([_mutated(decl, mutate(decl.metadata))])
     assert "compiler bug" in str(exc_info.value)
+
+
+UDT_CROSS_CHECK_MUTATIONS = {
+    "variant_renamed": (
+        "Shape",
+        lambda meta: {**meta, "cases": [("Renamed", payload) for (_n, payload) in meta["cases"]]},
+    ),
+    "variant_dropped": ("Shape", lambda meta: {**meta, "cases": meta["cases"][:-1]}),
+    "int_enum_case_renamed": (
+        "Level",
+        lambda meta: {**meta, "cases": [("Renamed", value) for (_n, value) in meta["cases"]]},
+    ),
+    "int_enum_case_dropped": ("Level", lambda meta: {**meta, "cases": meta["cases"][:-1]}),
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "mutate"),
+    UDT_CROSS_CHECK_MUTATIONS.values(),
+    ids=UDT_CROSS_CHECK_MUTATIONS.keys(),
+)
+def test_the_udt_case_cross_check_raises_a_compiler_bug_on_skew(name: str, mutate: Any) -> None:
+    """F.1.14 for the two new kinds: a case list the AST does not back would
+    emit a `contractspecv0` UDT entry describing code the compiler did not
+    compile."""
+    loaded = load(source(UDT_SHAPED))
+    decl = _decl(loaded, name)
+    with pytest.raises(CompilerBugError) as exc_info:
+        _cross_check_inventory([_mutated(decl, mutate(decl.metadata))])
+    assert "compiler bug" in str(exc_info.value)
+
+
+def test_the_udt_case_cross_check_passes_on_a_consistent_module() -> None:
+    loaded = load(source(UDT_SHAPED))
+    _cross_check_inventory(list(loaded.decorated_types_in_order))
 
 
 def test_compiler_bug_error_is_assertion_grade() -> None:

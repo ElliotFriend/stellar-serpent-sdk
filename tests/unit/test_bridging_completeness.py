@@ -36,7 +36,8 @@ PATH = "contract.py"
 
 _IMPORTS = (
     "from serpent import ("
-    "Env, U32, contract, contracterror, contractevent, contracttype, errorcode"
+    "ContractEnum, ContractUnion, Env, U32, contract, contractenum, contracterror, "
+    "contractevent, contracttype, contractunion, enumvalue, errorcode, variant"
     ")"
 )
 
@@ -282,6 +283,55 @@ _ROWS: tuple[tuple[str, str, str, str], ...] = (
         "SPT2004",
         "",
         "@contracttype\nclass S:\n    a: U32\n    a: U32  # HERE",
+    ),
+    # --- M1-E2 Task 2: the union / int-enum declaration checks ---------------
+    # One row per new needle (P8: the meta-test below pins the row set against
+    # `_BRIDGE_RULES` itself). Each needle is shared by BOTH new kinds -- the
+    # two decorators word one rule one way -- so the enum spelling of each is
+    # covered by `tests/unit/test_loader.py`'s bridging matrix rather than by a
+    # second row here.
+    (
+        "union_empty_body",
+        "SPT4021",
+        "declares at least one case",
+        "@contractunion\nclass U(ContractUnion):  # HERE\n    pass",
+    ),
+    (
+        "union_case_bare_value",
+        "SPT4022",
+        "case is declared as",
+        "@contractunion\nclass U(ContractUnion):\n    Circle = 3  # HERE",
+    ),
+    (
+        "int_enum_discriminant_out_of_range",
+        "SPT4023",
+        "is out of range -- an int-enum member",
+        "@contractenum\nclass L(ContractEnum):\n    Bad = enumvalue(-1)  # HERE",
+    ),
+    (
+        "int_enum_duplicate_discriminant",
+        "SPT4024",
+        "is already declared by",
+        (
+            "@contractenum\nclass L(ContractEnum):\n    Low = enumvalue(1)\n"
+            "    Also = enumvalue(1)  # HERE"
+        ),
+    ),
+    (
+        "union_without_its_base",
+        "SPT4025",
+        "class declares exactly one base",
+        "@contractunion\nclass U:  # HERE\n    Empty = variant()",
+    ),
+    (
+        "variant_payload_arity",
+        "SPT5006",
+        "a variant payload carries at most",
+        (
+            "@contractunion\nclass U(ContractUnion):  # HERE\n    Big = variant("
+            + "U32, " * 12
+            + "U32)"
+        ),
     ),
 )
 

@@ -264,8 +264,11 @@ _EXPECTED_CODES = frozenset(
         *(f"SPT1{n:03d}" for n in range(1, 40)),
         *(f"SPT2{n:03d}" for n in range(1, 7)),
         *(f"SPT3{n:03d}" for n in range(1, 21)),
-        *(f"SPT4{n:03d}" for n in range(1, 21)),
-        *(f"SPT5{n:03d}" for n in range(1, 6)),
+        # M1-E2 Task 2's five declaration rows for @contractunion/@contractenum
+        # take SPT4xxx to 25, and SPT5006 (a variant payload wider than S4's
+        # tuple arity) takes SPT5xxx to 6.
+        *(f"SPT4{n:03d}" for n in range(1, 26)),
+        *(f"SPT5{n:03d}" for n in range(1, 7)),
         "SPT6001",
         *(f"SPT7{n:03d}" for n in range(1, 6)),
         # M1-D Task 10's CONTROLLER-SANCTIONED emitter band (plan-review B3):
@@ -305,7 +308,15 @@ def test_registry_is_complete_not_a_sample() -> None:
     # `scratch`, matching `emitter.frame.BUILD_LIMITS`) plus SPT8004 for a
     # construct the frontend accepts and this emitter version cannot lower
     # yet. Append-only (D15): nothing before SPT8001 moved.
-    assert len(codes.REGISTRY) == 100
+    #
+    # M1-E2 Task 2 appended six more, again exactly the sub-plan's
+    # CONTROLLER-SANCTIONED enumeration: SPT4021-SPT4025 for the
+    # @contractunion/@contractenum declaration rules (empty body, a member that
+    # is not a case, a discriminant outside the u32 range, a duplicate
+    # discriminant, a missing/wrong base) and SPT5006 for a variant payload
+    # wider than S4's tuple arity. SPT5002/SPT5003's wording widened in the
+    # same commit -- a sanctioned re-attribution, no renumber.
+    assert len(codes.REGISTRY) == 106
 
 
 def test_registry_code_set_matches_the_frozen_snapshot() -> None:
