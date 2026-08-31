@@ -516,7 +516,15 @@ def _bind_variant(case: str, owner: type[ContractUnion], spec: _VariantSpec) -> 
     The case NAME is the attribute name, which only the declaration layer can
     see, and the arity is the placeholder's -- so this is the whole of the
     swap `@contractunion` performs.
+
+    The arity is re-checked because `_VARIANT_CLASSES` is indexed by it: a
+    hand-built `_VariantSpec` wider than the cap is not authorable in a
+    contract (`variant()` refuses it first), but it IS reachable on this
+    library surface, and an `IndexError` into a private tuple names nothing an
+    author or a caller could act on.
     """
+    if len(spec.payload) > MAX_PAYLOAD_ARITY:
+        _reject_wide_payload(len(spec.payload))
     return _VARIANT_CLASSES[len(spec.payload)](case, owner)
 
 
@@ -649,14 +657,24 @@ def variant(*payload: type[Any]) -> Any:
     annotations from.
     """
     if len(payload) > MAX_PAYLOAD_ARITY:
-        raise ValueError(
-            f"a variant payload carries at most {MAX_PAYLOAD_ARITY} values "
-            f"(S4's tuple arity), not {len(payload)}"
-        )
+        _reject_wide_payload(len(payload))
     for entry in payload:
         if not _is_payload_type(entry):
             raise TypeError(f"variant() takes payload types, not the value {entry!r}")
     return _VariantSpec(payload)
+
+
+def _reject_wide_payload(arity: int) -> NoReturn:
+    """The arity refusal, worded once for both places that can see an over-wide
+    payload: `variant()`, where an author reaches it, and `_bind_variant`,
+    where a hand-built spec would otherwise index off the end of
+    `_VARIANT_CLASSES`. One message, so `compiler/loader.py` bridges one needle
+    (SPT5006) whichever door raised it.
+    """
+    raise ValueError(
+        f"a variant payload carries at most {MAX_PAYLOAD_ARITY} values "
+        f"(S4's tuple arity), not {arity}"
+    )
 
 
 class _EnumValue(Generic[_D]):

@@ -25,6 +25,9 @@ and out of scope here.
 
 from __future__ import annotations
 
+import ast
+import importlib
+import pathlib
 import re
 
 import pytest
@@ -333,6 +336,21 @@ _ROWS: tuple[tuple[str, str, str, str], ...] = (
             + "U32)"
         ),
     ),
+    # --- fix round 1: the two case factories' own TypeErrors -----------------
+    # Both are raised from the CLASS BODY, so each carries the `errorcode`
+    # baseline's AST refinement and lands on the member, not the class.
+    (
+        "int_enum_discriminant_not_an_int",
+        "SPT4023",
+        "enumvalue() takes an int discriminant",
+        '@contractenum\nclass L(ContractEnum):\n    Low = enumvalue("x")  # HERE',
+    ),
+    (
+        "variant_payload_is_a_value",
+        "SPT4022",
+        "variant() takes payload types",
+        "@contractunion\nclass U(ContractUnion):\n    Circle = variant(U32(3))  # HERE",
+    ),
 )
 
 
@@ -387,6 +405,83 @@ def test_every_bridge_rule_needle_has_a_row() -> None:
     assert not missing, f"bridge rule needle(s) with no completeness row: {missing}"
     stale = _UNREACHABLE_NEEDLES - rule_needles
     assert not stale, f"_UNREACHABLE_NEEDLES cite needle(s) no longer in _BRIDGE_RULES: {stale}"
+
+
+#: The declaration-layer functions whose every `raise` must carry a
+#: `_BRIDGE_RULES` needle -- M1-E2's two decorators, their refusal helpers, and
+#: the two case factories a class body calls. `(module, function names)`.
+#:
+#: Scoped to this surface on purpose, and NOT to `decorators.py` wholesale: the
+#: M1-E Task 5 event-convention raises (`data_format must be one of ...`, the
+#: prefix-topic and topic-marker refusals) carry no needle either and fall to
+#: MJ-11's catch-all today -- a pre-existing gap this round did not create and
+#: is not chartered to fix (see the fix report; the controller has it).
+_BRIDGED_RAISE_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "serpent.decorators",
+        (
+            "contractunion",
+            "contractenum",
+            "_check_udt_base",
+            "_reject_bare_case",
+            "_reject_empty_udt",
+        ),
+    ),
+    ("serpent.types._udt", ("variant", "enumvalue", "_bind_variant", "_reject_wide_payload")),
+)
+
+
+def _raise_message_chunks(node: ast.AST) -> list[str]:
+    """Every literal string fragment of every `raise` inside `node`.
+
+    A declaration-site message is an f-string, so a needle can only ever live
+    inside ONE literal fragment -- which is exactly what a bridge rule matches
+    on, and therefore what this compares.
+    """
+    chunks: list[str] = []
+    for raised in (n for n in ast.walk(node) if isinstance(n, ast.Raise)):
+        for literal in ast.walk(raised):
+            if isinstance(literal, ast.Constant) and isinstance(literal.value, str):
+                chunks.append(literal.value)
+    return chunks
+
+
+def test_every_declaration_layer_raise_carries_a_bridge_needle() -> None:
+    """The MISSING direction of the gate above (fix round 1's finding).
+
+    `test_every_bridge_rule_needle_has_a_row` proves every RULE is exercised;
+    nothing proved the converse -- a declaration-site `raise` with no rule at
+    all was invisible, and fell silently to `SPT1037` ("not supported by the
+    serpent subset"), which is false for a construct that IS supported and
+    merely malformed. Two such raises shipped in M1-E2 Task 2
+    (`enumvalue(<not an int>)` and `variant(<a value>)`); this walks the AST of
+    the declaration surface and fails on any raise whose message no
+    `_BRIDGE_RULES` needle matches.
+    """
+    needles = [rule.needle for rule in loader._BRIDGE_RULES if rule.needle]
+    unbridged: list[tuple[str, str, int]] = []
+    for module_name, function_names in _BRIDGED_RAISE_SOURCES:
+        module = importlib.import_module(module_name)
+        tree = ast.parse(pathlib.Path(module.__file__ or "").read_text(encoding="utf-8"))
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name in function_names
+        ]
+        found = {node.name for node in functions}
+        assert found == set(function_names), (
+            f"{module_name}: this gate names function(s) that no longer exist: "
+            f"{sorted(set(function_names) - found)}"
+        )
+        for function in functions:
+            for raised in (n for n in ast.walk(function) if isinstance(n, ast.Raise)):
+                chunks = _raise_message_chunks(raised)
+                if not any(needle in chunk for chunk in chunks for needle in needles):
+                    unbridged.append((module_name, function.name, raised.lineno))
+    assert not unbridged, (
+        "declaration-site raise(s) with no `loader._BRIDGE_RULES` needle -- each would "
+        f"fall to MJ-11's catch-all (SPT1037) instead of its own code: {unbridged}"
+    )
 
 
 def test_every_bridge_rule_code_has_a_row() -> None:

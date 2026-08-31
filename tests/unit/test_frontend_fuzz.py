@@ -1031,7 +1031,7 @@ def mangled_sources(draw: st.DrawFn) -> str:
 @given(mangled_sources())
 @CI_FUZZ
 def test_mangled_fixtures_never_escape_the_diagnostic_family(source: str) -> None:
-    """F.2.5, generator (b): the 95 `must_reject/` fixtures plus
+    """F.2.5, generator (b): the 105 `must_reject/` fixtures plus
     `tests/fixtures/*.py` and `examples/*.py`, systematically damaged."""
     check_robust(source)
 
@@ -1040,7 +1040,9 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     """A meta-check on generator (b): the corpus is the real inventory, so a
     fixture added later is fuzzed automatically instead of being silently
     skipped (the count is asserted as a floor: Task 11b's 95, less the SPT1032
-    fixture M1-E deleted when `Event.publish(env)` became supported).
+    fixture M1-E deleted when `Event.publish(env)` became supported, plus the
+    eleven M1-E2 Task 2 added for the union/int-enum declaration codes -- 105
+    today).
 
     The `fixtures/` and `examples/` lists are asserted EXACTLY rather than as a
     floor, so adding a contract is a deliberate act: Task 13 promoted the two

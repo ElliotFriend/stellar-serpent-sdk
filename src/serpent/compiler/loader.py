@@ -305,7 +305,14 @@ _MODULE_COUNTER = itertools.count()
 
 # --- the exec-time bridge table (dossier SS B.3) ---------------------------
 
+#: The refinement tags. Each names a CLASS-BODY factory call whose own
+#: exception message identifies no member -- `errorcode(N)`, `enumvalue(N)` and
+#: `variant(...)` are all called while the class body executes, before any
+#: decorator runs -- so the offending member has to be found structurally
+#: instead (`_find_refused_factory_member`).
 _REFINE_ERRORCODE = "errorcode_call"
+_REFINE_ENUMVALUE = "enumvalue_call"
+_REFINE_VARIANT = "variant_call"
 
 #: The exception types MJ-4 names: `decorators.py` raises `ValueError` for
 #: every declaration-shape check, `TypeError` for `errorcode(<not an int>)`,
@@ -339,6 +346,15 @@ _BRIDGE_RULES: tuple[_BridgeRule, ...] = (
     # errorcode(N) with a non-int N raises a TypeError from the *class body*,
     # so its message names no member at all -- hence the AST refinement.
     _BridgeRule((TypeError,), "errorcode() takes an int code", "SPT4008", _REFINE_ERRORCODE),
+    # The same shape for M1-E2's two case factories, which also raise from the
+    # CLASS BODY and therefore name no member either. `enumvalue(<not an int>)`
+    # is a discriminant that is not a u32 (SPT4023's own intent), and
+    # `variant(<a value>)` is not a case declaration at all (SPT4022, exactly
+    # as a non-int `errorcode` argument is SPT4008 rather than a type code).
+    _BridgeRule(
+        (TypeError,), "enumvalue() takes an int discriminant", "SPT4023", _REFINE_ENUMVALUE
+    ),
+    _BridgeRule((TypeError,), "variant() takes payload types", "SPT4022", _REFINE_VARIANT),
     _BridgeRule(_VALUE_ERROR, "@contracterror members must be declared", "SPT4008"),
     _BridgeRule(_VALUE_ERROR, "is out of range -- contract codes are", "SPT4009"),
     _BridgeRule(_VALUE_ERROR, "is already used by", "SPT4010"),
@@ -1052,9 +1068,11 @@ def _classify(stmt: ast.stmt, exc: BaseException, path: str) -> tuple[str, Loc, 
     Location narrowing, in order: the `Cls.member:` prefix decorators.py puts
     on every declaration-site message; the unresolvable-name refinement (the
     only message shape that names something other than the offending member);
-    the `errorcode(<non-int>)` AST refinement (its `TypeError` names nothing);
-    a unique class-body member name mentioned anywhere in the message. If none
-    apply, the failing statement's own `Loc` stands -- never `WHOLE_FILE`.
+    the class-body factory refinements (`errorcode`/`enumvalue`/`variant`
+    refuse a bad argument from the class body, so their `TypeError`s name
+    nothing); a unique class-body member name mentioned anywhere in the
+    message. If none apply, the failing statement's own `Loc` stands -- never
+    `WHOLE_FILE`.
     """
     rule = _match_rule(exc)
     code = rule.code if rule is not None else _FALLBACK_CODE
@@ -1081,8 +1099,8 @@ def _classify(stmt: ast.stmt, exc: BaseException, path: str) -> tuple[str, Loc, 
         if target is None:
             target = found
 
-    if target is None and refine == _REFINE_ERRORCODE:
-        target = _find_non_int_errorcode(stmt)
+    if target is None and refine:
+        target = _find_refused_factory_member(stmt, refine)
 
     if target is None and members:
         mentioned = [
@@ -1171,30 +1189,54 @@ def _references(node: ast.AST, name: str) -> bool:
     return any(isinstance(child, ast.Name) and child.id == name for child in ast.walk(node))
 
 
-def _find_non_int_errorcode(stmt: ast.ClassDef | ast.stmt) -> ast.stmt | None:
-    """The single `NAME = errorcode(<not an int literal>)` member, if unique.
+def _find_refused_factory_member(stmt: ast.ClassDef | ast.stmt, refine: str) -> ast.stmt | None:
+    """The single class-body member whose factory call `refine` describes.
 
-    `errorcode()`'s `TypeError` comes from the class body and names nothing,
-    so the offending member is found structurally instead.
+    A factory called in the class body (`errorcode`, `enumvalue`, `variant`)
+    raises before any decorator runs, so its `TypeError` names nothing at all
+    -- the offending member is found structurally instead. Only a UNIQUE
+    candidate narrows the location: with two, the statement's own `Loc` is the
+    honest answer (P2, never a guess).
     """
     if not isinstance(stmt, ast.ClassDef):
         return None
     offenders = [
         member
         for member in stmt.body
-        if isinstance(member, ast.Assign | ast.AnnAssign)
-        and _is_errorcode_call(member.value)
-        and _int_literal_arg(member.value) is None
+        if isinstance(member, ast.Assign | ast.AnnAssign) and _is_refused_call(member.value, refine)
     ]
     return offenders[0] if len(offenders) == 1 else None
 
 
-def _is_errorcode_call(value: ast.expr | None) -> bool:
+def _is_refused_call(value: ast.expr | None, refine: str) -> bool:
+    """Whether `value` is the factory call, with the argument shape, that the
+    factory named by `refine` refuses."""
+    if refine == _REFINE_ERRORCODE:
+        return _is_factory_call(value, "errorcode") and _int_literal_arg(value) is None
+    if refine == _REFINE_ENUMVALUE:
+        return _is_factory_call(value, "enumvalue") and _int_literal_arg(value) is None
+    if refine == _REFINE_VARIANT:
+        return _is_factory_call(value, "variant") and _has_non_type_argument(value)
+    return False
+
+
+def _is_factory_call(value: ast.expr | None, name: str) -> bool:
     return (
-        isinstance(value, ast.Call)
-        and isinstance(value.func, ast.Name)
-        and value.func.id == "errorcode"
+        isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == name
     )
+
+
+def _has_non_type_argument(value: ast.expr | None) -> bool:
+    """Whether a `variant(...)` call passes something that cannot be a payload
+    TYPE: a call (`variant(U32(3))`) or a literal (`variant(3)`).
+
+    A `Name`, an attribute or a subscript (`Vec[U32]`) may all be types, so
+    none of them is evidence of anything -- this is a LOCATION heuristic over a
+    statement that already raised, never a check of its own.
+    """
+    if not isinstance(value, ast.Call):
+        return False
+    return any(isinstance(arg, ast.Call | ast.Constant) for arg in value.args)
 
 
 def _int_literal_arg(value: ast.expr | None) -> int | None:

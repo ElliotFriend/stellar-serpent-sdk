@@ -353,6 +353,17 @@ def test_variant_refuses_a_payload_arity_over_the_cap() -> None:
         untyped(*([U32] * (MAX_PAYLOAD_ARITY + 1)))
 
 
+def test_binding_an_over_wide_spec_says_so_instead_of_indexing_off_the_end() -> None:
+    """`_VARIANT_CLASSES` is indexed by arity, so a hand-built `_VariantSpec`
+    wider than the cap used to die on an opaque `IndexError` into a private
+    tuple. Not authorable in a contract -- `variant()` refuses it first -- but
+    reachable on this library surface, and one message serves both doors (so
+    the loader bridges one needle, SPT5006, whichever raised)."""
+    wide = _VariantSpec(tuple([U32] * (MAX_PAYLOAD_ARITY + 1)))
+    with pytest.raises(ValueError, match="a variant payload carries at most 12"):
+        _bind_variant("Big", Shape, wide)
+
+
 def test_a_payload_must_be_a_chain_value_or_a_struct() -> None:
     """The invariant `Vec`/`Map` enforce on the way in (`require_map_value`):
     the descriptor already refuses a raw `3` statically, and at runtime an

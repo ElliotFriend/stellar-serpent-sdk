@@ -1120,6 +1120,28 @@ class U(ContractUnion):
     Count = variant(int)  # HERE
 """,
     ),
+    # --- fix round 1: the two factory calls that raise from the CLASS BODY ---
+    # `errorcode`'s row above is the baseline shape: the TypeError names no
+    # member, so the AST refinement is what puts the diagnostic on the offender
+    # rather than on the class.
+    (
+        "int_enum_discriminant_not_an_int",
+        "SPT4023",
+        """
+@contractenum
+class L(ContractEnum):
+    Low = enumvalue("x")  # HERE
+""",
+    ),
+    (
+        "variant_payload_is_a_value_not_a_type",
+        "SPT4022",
+        """
+@contractunion
+class U(ContractUnion):
+    Circle = variant(U32(3))  # HERE
+""",
+    ),
 ]
 
 
@@ -1146,6 +1168,30 @@ def test_bridging_matrix_messages_carry_the_registry_wording(code: str, body: st
     intent = next(entry.message_intent for entry in codes.REGISTRY if entry.code == code)
     diagnostic = expect_at_here(source(body), code)
     assert intent in diagnostic.message
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        (
+            "@contractenum\nclass L(ContractEnum):  # HERE\n"
+            '    Low = enumvalue("x")\n    High = enumvalue("y")'
+        ),
+        (
+            "@contractunion\nclass U(ContractUnion):  # HERE\n"
+            "    Circle = variant(U32(3))\n    Square = variant(U32(4))"
+        ),
+    ],
+    ids=["two_bad_discriminants", "two_bad_payloads"],
+)
+def test_an_ambiguous_factory_refinement_falls_back_to_the_class(body: str) -> None:
+    """`errorcode`'s own rule: the refinement narrows only when the candidate
+    is UNIQUE. With two, the statement's own `Loc` is the honest answer -- a
+    real span, never a guess between them (P2)."""
+    src = source(body)
+    found = [d for d in diags(src) if d.code in ("SPT4022", "SPT4023")]
+    assert len(found) == 1, f"got {diags(src)!r}"
+    assert found[0].loc.line == _here_line(src)
 
 
 def test_a_pep563_module_bridges_the_same_way() -> None:
