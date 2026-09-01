@@ -264,8 +264,9 @@ _EXPECTED_CODES = frozenset(
         *(f"SPT1{n:03d}" for n in range(1, 40)),
         *(f"SPT2{n:03d}" for n in range(1, 7)),
         # M1-E2 Task 4's SPT3021 (a payload() read no variant of the union
-        # could satisfy) takes SPT3xxx to 21.
-        *(f"SPT3{n:03d}" for n in range(1, 22)),
+        # could satisfy) and SPT3022 (a tag() comparison against a Symbol
+        # naming no variant) take SPT3xxx to 22.
+        *(f"SPT3{n:03d}" for n in range(1, 23)),
         # M1-E2 Task 2's five declaration rows for @contractunion/@contractenum
         # take SPT4xxx to 25, and SPT5006 (a variant payload wider than S4's
         # tuple arity) takes SPT5xxx to 6.
@@ -323,10 +324,14 @@ def test_registry_is_complete_not_a_sample() -> None:
     # enumeration: SPT3021, a `payload()` read no variant of the union could
     # satisfy (an index at or above the widest variant's payload, or a `ty` no
     # variant declares at that index -- both decidable at compile time from the
-    # declaration alone, ruling E2). Every other union/int-enum reject reuses a
-    # row that already existed: an arity mistake is SPT3020, a per-slot type
-    # disagreement SPT3018, for-in over a union SPT1019.
-    assert len(codes.REGISTRY) == 107
+    # declaration alone, ruling E2). Its third commit appended SPT3022, the
+    # mistake F.1.7 calls the highest-value new diagnostic in the surface: a
+    # `tag()` comparison against a Symbol literal naming no variant, which is
+    # well-typed Symbol equality and a permanently dead branch. Every other
+    # union/int-enum reject reuses a row that already existed: an arity mistake
+    # is SPT3020, a per-slot type disagreement SPT3018, for-in over a union
+    # SPT1019.
+    assert len(codes.REGISTRY) == 108
 
 
 def test_registry_code_set_matches_the_frozen_snapshot() -> None:

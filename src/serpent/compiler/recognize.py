@@ -211,6 +211,7 @@ __all__ = [
     "BindingSource",
     "HostCallSpec",
     "SurfaceKind",
+    "check_union_tag_comparison",
     "classify_binding",
     "collect_never_owned",
     "duplicate_static_key",
@@ -2543,6 +2544,73 @@ def _recognize_union_read(
         fn_name=get_fn,
         args=(recv, Const(loc=loc, ty=Ty.U32, py_value=slot + 1)),
     )
+
+
+def _tag_read_union(node: IRExpr) -> str | None:
+    """The union NAME when `node` is the `tag()` read this module builds, else
+    `None`.
+
+    Three facts have to line up, and the RECEIVER's `Ty` is the load-bearing
+    one: `items.get(U32(0))` on a `Vec[Symbol]` lowers to the very same
+    `vec_get` at the very same index, and it is not a tag read. A union is not a
+    container (`_CONTAINER_TAGS` excludes it), so a `vec_get` whose receiver is
+    `Ty.Union` can only have come from `_recognize_union_read`.
+    """
+    (get_fn,) = RECOGNIZED["vec.get"].host_fns
+    if not isinstance(node, HostCall) or node.fn_name != get_fn or len(node.args) != 2:
+        return None
+    recv, index = node.args
+    if recv.ty.tag is not TyTag.UNION or recv.ty.name is None:
+        return None
+    if not (isinstance(index, Const) and index.ty == Ty.U32 and index.py_value == 0):
+        return None
+    return recv.ty.name
+
+
+def check_union_tag_comparison(lhs: IRExpr, rhs: IRExpr, ctx: FuncCtx, loc: Loc) -> bool:
+    """Report `SPT3022` for `s.tag() == Symbol("Cirlce")`; return whether it
+    was reported (F.1.7).
+
+    `Symbol` equality compiles (SS C.6), so WITHOUT this a typo'd case name is a
+    permanently dead branch: the contract compiles, deploys and quietly takes
+    the fallthrough forever. The variant-name set is statically known at the
+    comparison and nothing else in the toolchain can see the mistake, which is
+    why F.1.7 calls it the single highest-value new diagnostic in the surface.
+
+    Called from `expr.py`'s `_check_compare` (equality/inequality only) because
+    that is where every `ast.Compare` in the language is checked; the RULE lives
+    here, with `_union_cases` and the rest of the union surface, so there is one
+    place that knows what a variant name is.
+
+    Deliberately narrow in both directions -- either operand order, and ONLY
+    when one side really is `_tag_read_union`'s shape and the other a `Symbol`
+    LITERAL. A `Symbol` compared against a parameter, another tag read, or a
+    `Vec[Symbol]` element is not this rule's business: a `Symbol` that happens
+    not to name a variant is an ordinary value.
+    """
+    for tag_side, name_side in ((lhs, rhs), (rhs, lhs)):
+        name = _tag_read_union(tag_side)
+        if name is None:
+            continue
+        if not isinstance(name_side, Const) or name_side.ty != Ty.Symbol:
+            continue
+        if not isinstance(name_side.py_value, str):
+            continue
+        cases = _union_cases(ctx, name)
+        if cases is None:  # pragma: no cover - F.1.14: resolve_annotation refuses it first
+            continue
+        declared = [case for case, _payload in cases]
+        if name_side.py_value in declared:
+            return False
+        _error(
+            ctx,
+            "SPT3022",
+            loc,
+            f"`{name}` has no variant named `{name_side.py_value}`",
+            help=f"the declared variants are: {', '.join(declared)}",
+        )
+        return True
+    return False
 
 
 def _payload_slot_types(

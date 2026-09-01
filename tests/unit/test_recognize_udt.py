@@ -187,7 +187,7 @@ class Color(ContractEnum):
 
 @contract
 class Go:
-    def go(self, env: Env, s: Shape, c: Color, amt: U32) -> {ret}:
+    def go(self, env: Env, s: Shape, c: Color, amt: U32, sym: Symbol) -> {ret}:
         {body}
 """
 
@@ -211,6 +211,20 @@ def _expect_module_reject(body: str, code: str, ret: str = "U32") -> CompileErro
 
 def _message_for(exc: CompileError, code: str) -> str:
     return next(d.message for d in exc.diagnostics if d.code == code)
+
+
+def _diag_for(exc: CompileError, code: str) -> Diagnostic:
+    return next(d for d in exc.diagnostics if d.code == code)
+
+
+def _line_of(source: str, needle: str) -> int:
+    """The 1-based line of `needle` in `source` -- so a located diagnostic is
+    checked against the line the marker really is on, not a hardcoded number
+    that the fixture's own shape could silently invalidate."""
+    for lineno, line in enumerate(source.splitlines(), start=1):
+        if needle in line:
+            return lineno
+    raise AssertionError(f"{needle!r} is not in the rendered source")
 
 
 # --- construction (§B.1's on-chain shape) ------------------------------------
@@ -544,3 +558,66 @@ def test_the_fixture_source_declares_what_these_tests_assume() -> None:
 def _named(name: str) -> object:
     """The chain-type class `name` refers to in the fixture's own namespace."""
     return _LOADED.namespace[name]
+
+
+# --- SPT3022: a tag() comparison against a Symbol naming no variant ----------
+#
+# F.1.7 calls this "the single highest-value NEW diagnostic in the surface", and
+# the reason is what happens WITHOUT it: `Symbol` equality compiles (§C.6), so a
+# typo'd case name is a permanently dead branch that compiles, deploys, and
+# quietly takes the fallthrough forever. The variant-name set is statically
+# known at the comparison, so the compiler can see it and nothing else can.
+
+
+def test_a_tag_comparison_against_an_unknown_variant_is_SPT3022() -> None:
+    body = 'if s.tag() == Symbol("Cirlce"):\n    return U32(1)\nreturn U32(0)'
+    exc = _expect_module_reject(body, "SPT3022")
+    diag = _diag_for(exc, "SPT3022")
+    assert diag.loc.line == _line_of(_module(body), "Cirlce")
+    assert "Cirlce" in diag.message
+    assert "Circle" in (diag.help or ""), "the help must name the variants that DO exist"
+
+
+def test_the_unknown_variant_is_refused_in_either_operand_order() -> None:
+    """The check is over the checked IR, not the source order, so which side the
+    author wrote the literal on cannot change the answer."""
+    body = 'if Symbol("Cirlce") == s.tag():\n    return U32(1)\nreturn U32(0)'
+    exc = _expect_module_reject(body, "SPT3022")
+    assert "Cirlce" in _message_for(exc, "SPT3022")
+
+
+def test_a_tag_comparison_against_a_real_variant_compiles() -> None:
+    for spelling in (
+        'if s.tag() == Symbol("Circle"):\n    return U32(1)\nreturn U32(0)',
+        'if Symbol("Empty") == s.tag():\n    return U32(1)\nreturn U32(0)',
+        'if s.tag() != Symbol("Rect"):\n    return U32(1)\nreturn U32(0)',
+    ):
+        assert _compile(spelling) is not None
+
+
+def test_a_plain_symbol_comparison_is_untouched() -> None:
+    """The no-false-positive half: the check fires only when one side really is
+    the `vec_get`-at-0 read on a `Ty.Union` receiver that `_recognize_union_read`
+    builds. A `Symbol` compared against anything else -- a parameter, another
+    `Symbol` literal, another tag read -- is none of this rule's business, and a
+    Symbol that happens not to name a variant is a perfectly ordinary value."""
+    for spelling in (
+        'if sym == Symbol("Cirlce"):\n    return U32(1)\nreturn U32(0)',
+        'if Symbol("Cirlce") == sym:\n    return U32(1)\nreturn U32(0)',
+        "if sym == s.tag():\n    return U32(1)\nreturn U32(0)",
+        "if s.tag() == sym:\n    return U32(1)\nreturn U32(0)",
+        "if s.tag() == s.tag():\n    return U32(1)\nreturn U32(0)",
+    ):
+        assert _compile(spelling) is not None
+
+
+def test_an_element_read_at_index_zero_of_a_real_vec_is_untouched() -> None:
+    """The narrower half of the same guard: `items.get(U32(0))` is also a
+    `vec_get` at 0, and it is NOT a tag read -- the receiver's `Ty` is what
+    tells the two apart, so a `Vec` element compared against a Symbol literal
+    must stay compilable."""
+    source = _MODULE.format(
+        ret="U32",
+        body='if syms.get(U32(0)) == Symbol("Cirlce"):\n            return U32(1)\n        return U32(0)',
+    ).replace("sym: Symbol", "sym: Symbol, syms: Vec[Symbol]")
+    assert compile_module(source, PATH) is not None

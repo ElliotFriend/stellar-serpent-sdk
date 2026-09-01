@@ -536,8 +536,9 @@ def resolve_annotation(obj: object, loaded: LoadedModule, loc: Loc, sink: Diagno
             loc,
             f"{_INTENT['SPT3013']}: {exc}",
             help=(
-                "use one of serpent's chain types, a `@contracttype` struct, `X | None` of "
-                "one, `Vec[T]`, or `Map[K, V]`"
+                "use one of serpent's chain types, a `@contracttype` struct, a "
+                "`@contractunion` union, a `@contractenum` int enum, `X | None` of one, "
+                "`Vec[T]`, or `Map[K, V]`"
             ),
             notes=(str(exc),),
         )

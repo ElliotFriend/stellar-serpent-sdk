@@ -11,7 +11,7 @@ ever disagree; the failure message names the regeneration command.
 
 serpent compiles a restricted subset of Python to a Soroban contract.
 This document is generated, in full, from the compiler's own registry
-of diagnostic codes, its `tests/must_reject/` fixture suite (107 minimal counter-examples, one per rejected
+of diagnostic codes, its `tests/must_reject/` fixture suite (108 minimal counter-examples, one per rejected
 construct), and its recognized-surface tables -- never hand-authored,
 so it cannot say something the compiler does not actually do.
 
@@ -37,7 +37,7 @@ A bare literal with no chain type in scope is rejected (SPT3008):
 wrap the literal in a chain type, e.g. U32(5). Operators are restricted to
 same-width, same-signedness operands, and `==`/`<`/`<=`/`>`/`>=` are
 restricted to the types the on-chain value model can actually order.
-21 type rules are enforced end to end; see [SPT3xxx](#spt3xxx----types) below for the exact
+22 type rules are enforced end to end; see [SPT3xxx](#spt3xxx----types) below for the exact
 list.
 
 ### 1.3 Env API
@@ -1424,7 +1424,7 @@ class Contract:
 ```
 
 - **message:** this annotation cannot be expressed in the contract spec: int has no contract-spec type: not a chain type, a `@contracttype` struct, or `X | None` of one (the contract spec can only carry serpent's chain types)
-- **help:** use one of serpent's chain types, a `@contracttype` struct, `X | None` of one, `Vec[T]`, or `Map[K, V]`
+- **help:** use one of serpent's chain types, a `@contracttype` struct, a `@contractunion` union, a `@contractenum` int enum, `X | None` of one, `Vec[T]`, or `Map[K, V]`
 - **note:** int has no contract-spec type: not a chain type, a `@contracttype` struct, or `X | None` of one (the contract spec can only carry serpent's chain types)
 
 #### SPT3014
@@ -1630,6 +1630,35 @@ class Contract:
 
 - **message:** this payload() read matches no variant of the union: no variant of `Shape` declares a Bool at payload index 0
 - **help:** index 0 is declared as: U32
+
+#### SPT3022
+
+**Construct:** Compare -- a tag() comparison against a Symbol literal naming no variant of the union (`s.tag() == Symbol("Cirlce")`), in either operand order
+
+**Intent:** this tag() comparison names no variant of the union
+
+#### tag() compared against a Symbol naming no variant (`types/union_tag_unknown_case.py`)
+
+```python
+from serpent import ContractUnion, Env, Symbol, U32, contract, contractunion, variant
+
+
+@contractunion
+class Shape(ContractUnion):
+    Circle = variant(U32)
+    Rect = variant(U32, U32)
+
+
+@contract
+class Contract:
+    def compute(self, env: Env, s: Shape) -> U32:
+        if s.tag() == Symbol("Cirlce"):  # HERE
+            return U32(1)
+        return U32(0)
+```
+
+- **message:** this tag() comparison names no variant of the union: `Shape` has no variant named `Cirlce`
+- **help:** the declared variants are: Circle, Rect
 
 ### SPT4xxx -- contract shape (declarations)
 

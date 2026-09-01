@@ -630,6 +630,26 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "this payload() read matches no variant of the union",
         "Task 4 (M1-E2)",
     ),
+    # Added in M1-E2 (tagged unions and int enums), for the mistake the
+    # sub-plan's own risk table (F.1.7) calls the single highest-value NEW
+    # diagnostic in the surface. `if s.tag() == Symbol("Cirlce")` is well-typed
+    # `Symbol` equality -- it compiles, deploys, and quietly takes the
+    # fallthrough FOREVER, because the two names simply never match. Nothing
+    # else in the toolchain can see it: `Symbol` carries no per-union type, so
+    # mypy cannot, and tier 1 answers `False` exactly as the host does, so no
+    # differential test can either. Only the compiler knows the variant-name
+    # set at the comparison. Not SPT3018 (both sides really are `Symbol`s;
+    # nothing is a declared-vs-actual disagreement) and not SPT3021 (that row
+    # is about a `payload()` read's index/type, a different construct), so it
+    # is its own row.
+    CodeEntry(
+        "SPT3022",
+        "SPT3xxx",
+        "Compare -- a tag() comparison against a Symbol literal naming no variant of the "
+        'union (`s.tag() == Symbol("Cirlce")`), in either operand order',
+        "this tag() comparison names no variant of the union",
+        "Task 4 (M1-E2)",
+    ),
 )
 
 # --- SPT4xxx: contract shape (dossier D.1; SS B.3) --------------------------

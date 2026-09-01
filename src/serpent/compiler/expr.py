@@ -603,6 +603,17 @@ def _recognize_attribute(node: ast.Attribute, ctx: FuncCtx) -> IRExpr | None:
     return recognize_attribute(node, ctx)
 
 
+def _unknown_union_tag(lhs: IRExpr, rhs: IRExpr, ctx: FuncCtx, loc: Loc) -> bool:
+    """`recognize.check_union_tag_comparison` -- see `_recognize_call` on the
+    import. The RULE lives there, with the rest of the union surface; what
+    belongs to this module is only the position (every `ast.Compare` in the
+    language is checked in `_check_compare`, and a `tag()` call site cannot see
+    the comparison it sits inside)."""
+    from serpent.compiler.recognize import check_union_tag_comparison
+
+    return check_union_tag_comparison(lhs, rhs, ctx, loc)
+
+
 _UNRECOGNIZED_HELP = (
     "use a recognized surface: env.storage().<instance|persistent|temporary>()."
     "<set|get|has|del_|extend_ttl>(...), env.ledger().<timestamp|sequence>(), "
@@ -1867,6 +1878,13 @@ def _check_compare(node: ast.Compare, ctx: FuncCtx) -> IRExpr:
             f"{lhs.ty.render()} and {rhs.ty.render()} cannot be compared",
             help="convert one side explicitly; comparing foreign chain types is an error",
         )
+        return _invalid(loc)
+
+    if op in (CompareOp.EQ, CompareOp.NE) and _unknown_union_tag(lhs, rhs, ctx, loc):
+        # F.1.7: `s.tag() == Symbol("Cirlce")` is well-typed `Symbol` equality
+        # and a permanently dead branch. Equality only -- ordering a union tag
+        # against a Symbol is a legal (if odd) Symbol ordering, and the typo
+        # rule is about the NAME, not the operator.
         return _invalid(loc)
 
     if op not in (CompareOp.EQ, CompareOp.NE) and lhs.ty.tag not in _ORDERABLE_TAGS:
