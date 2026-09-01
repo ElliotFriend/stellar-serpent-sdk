@@ -433,20 +433,22 @@ def test_every_bridge_rule_needle_has_a_row() -> None:
 
 
 #: The declaration-layer functions whose every `raise` must carry a
-#: `_BRIDGE_RULES` needle -- M1-E2's two decorators, their refusal helpers, and
-#: the two case factories a class body calls. `(module, function names)`.
+#: `_BRIDGE_RULES` needle -- M1-E2's two decorators, their refusal helpers, the
+#: two case factories a class body calls, and (as of M1-E2 Task 5, fed item
+#: X2/E10 -- controller ruling on the task-5 report's concern) `_check_method`
+#: and `_build_record`, the two functions whose `topic`-marker raises this task
+#: gave their own needle and code (`SPT4026`). `(module, function names)`.
 #:
 #: Scoped to this surface on purpose, and NOT to `decorators.py` wholesale: the
-#: M1-E Task 5 event-convention raises (`data_format must be one of ...`, the
-#: prefix-topic refusals) carry no needle either and fall to MJ-11's catch-all
-#: today -- a pre-existing gap this round did not create and is not chartered
-#: to fix (see the fix report; the controller has it). The TOPIC-MARKER
-#: refusal is no longer in that gap -- M1-E2 Task 5 (fed item X2/E10) gave it
-#: its own needle and code, SPT4026, covering the struct-field spelling
-#: (`_build_record`) and the two new `_check_method` spellings (a parameter
-#: and the return type) -- but neither function is added to this tuple: this
-#: gate is scoped to the M1-E2 Task 2 surface by design, and widening it is
-#: outside this task's charter even though it would now pass.
+#: OTHER M1-E Task 5 event-convention raises (`data_format must be one of
+#: ...`, the prefix-topic refusals) still carry no needle and still fall to
+#: MJ-11's catch-all -- a pre-existing gap this round did not create and is
+#: not chartered to fix (see the fix report; the controller has it). Every
+#: raise actually inside `_check_method`/`_build_record` IS bridged today
+#: (verified: this gate passes with both added), which is exactly why adding
+#: them here is safe -- no OTHER function in `decorators.py` is added
+#: alongside them, since this gate's surface stays exactly what M1-E2 Tasks 2
+#: and 5 chartered, no wider.
 _BRIDGED_RAISE_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "serpent.decorators",
@@ -456,6 +458,8 @@ _BRIDGED_RAISE_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "_check_udt_base",
             "_reject_bare_case",
             "_reject_empty_udt",
+            "_check_method",
+            "_build_record",
         ),
     ),
     ("serpent.types._udt", ("variant", "enumvalue", "_bind_variant", "_reject_wide_payload")),
