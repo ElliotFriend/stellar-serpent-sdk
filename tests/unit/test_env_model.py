@@ -393,7 +393,7 @@ def test_an_option_ty_accepts_the_wrapped_family() -> None:
     # is written deliberately here (hence the `noqa`) because it is a value a
     # hand-written caller can pass, and the predicate answers for both.
     assert (
-        bucket.get(Symbol("k"), Optional[U32])  # type: ignore[arg-type]  # noqa: UP045
+        bucket.get(Symbol("k"), Optional[U32])  # type: ignore[call-overload]  # noqa: UP045
         == U32(1)
     )
     with pytest.raises(AbiCheckFailed):

@@ -117,13 +117,15 @@ class EnvSurface:
         differential compares `answer_type`, which is what turns that into a
         failure.
 
-        `mypy --strict` cannot see M1-C's adoption: it solves `_T` against both
-        `U32` (from `ty`) and `int` (from `default`) and gets `object`, so the
-        return carries the one narrow ignore code that names exactly that. It
-        is the only place in the repo that spells the shape, and the reason a
-        contract normally writes `default=U32(0)`.
+        Before M1-E2 Task 7, `mypy --strict` could not see M1-C's adoption: a
+        single signature solved `_T` against both `U32` and `int` and got
+        `object`, so this return carried the one narrow ignore code naming
+        exactly that. Task 7 split `get` into four `@overload`s
+        (`_StorageBucket.get`), one keyword-only over `int | str | bytes |
+        bool`, so a raw-literal `default` no longer joins `_T`: it solves from
+        `ty` alone, this returns a plain `U32`, and the ignore is gone.
         """
-        return env.storage().instance().get(key, U32, default=0)  # type: ignore[return-value]
+        return env.storage().instance().get(key, U32, default=0)
 
     def has_instance(self, env: Env, key: Symbol) -> Bool:
         return env.storage().instance().has(key)

@@ -1041,16 +1041,18 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     fixture added later is fuzzed automatically instead of being silently
     skipped (the count is asserted as a floor: Task 11b's 95, less the SPT1032
     fixture M1-E deleted when `Event.publish(env)` became supported, plus the
-    eleven M1-E2 Task 2 added for the union/int-enum declaration codes -- 105
-    today).
+    eleven M1-E2 Task 2 added for the union/int-enum declaration codes, plus
+    the one M1-E2 Task 7 added for the `get` overload set -- 106 today).
 
     The `fixtures/` and `examples/` lists are asserted EXACTLY rather than as a
     floor, so adding a contract is a deliberate act: Task 13 promoted the two
     `sandbox/` contracts into `tests/fixtures/` (F.2.8), M1-E added
     `examples/`, M1-E Task 9 added `env_surface.py` (the E9 scenario table's
-    contract), and M1-E2 Task 1 added `udt_style.py` (the union/int-enum
-    authoring fixture) -- each joined this corpus automatically, which is the
-    intended behavior, and updating these lines is how it gets acknowledged.
+    contract), M1-E2 Task 1 added `udt_style.py` (the union/int-enum
+    authoring fixture), and M1-E2 Task 7 added `get_default_typing.py` (the
+    `get` overload set's positive typing fixture, B5) -- each joined this
+    corpus automatically, which is the intended behavior, and updating these
+    lines is how it gets acknowledged.
     """
     must_reject = [name for name, _ in CORPUS if name.startswith("must_reject/")]
     fixtures = [name for name, _ in CORPUS if name.startswith("fixtures/")]
@@ -1058,6 +1060,7 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     assert len(must_reject) >= 94, len(must_reject)
     assert sorted(fixtures) == [
         "fixtures/env_surface.py",
+        "fixtures/get_default_typing.py",
         "fixtures/sandbox_counter.py",
         "fixtures/sandbox_hello_world.py",
         "fixtures/spike1_reauthored.py",

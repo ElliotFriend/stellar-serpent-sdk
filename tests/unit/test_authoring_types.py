@@ -194,3 +194,76 @@ def test_the_negative_snippet_is_wrong_in_exactly_five_places(
     snippet, a broken export, a declaration the surface refuses for a reason
     nobody meant -- cannot hide inside a green run."""
     assert {line for line, _ in negative_errors} == {_line_of(source) for source, _ in _ROWS}
+
+
+# --- Task 7: the `get` overload set's negative half (fed item X4, E12) ------
+
+#: The two mismatches the four `@overload`s must still catch, alongside
+#: `tests/fixtures/get_default_typing.py`'s five accepts (B5's split: a
+#: tracked file cannot be both clean and wrong). Both surface as
+#: `[return-value]`, not `[arg-type]`/`[call-overload]` at the argument: an
+#: unconstrained `_T` always has a join to fall back to (`I32`/`U32`'s common
+#: `_ChainArith`, or plain `object` for two unrelated chain types), so the
+#: matching arm accepts the call and the mismatch only shows up where that
+#: joined `_T` meets the function's own declared return type -- the same
+#: shape the RED case above has, and the same correction of the fed item's
+#: own "arg-type" description.
+_GET_MISMATCH_SOURCE = '''\
+"""The two mismatches the get overload set must still catch."""
+
+from serpent import I32, U32, Env, Symbol
+
+
+def mismatched_chain_value_default(env: Env, key: Symbol) -> U32:
+    return env.storage().persistent().get(key, U32, default=I32(0))
+
+
+def mismatched_return_type(env: Env, key: Symbol) -> U32:
+    return env.storage().persistent().get(key, Symbol)
+'''
+
+
+@pytest.fixture(scope="module")
+def get_mismatch_errors(tmp_path_factory: pytest.TempPathFactory) -> list[tuple[int, str]]:
+    """Every error in `_GET_MISMATCH_SOURCE`, from ONE mypy run."""
+    return run_mypy(_GET_MISMATCH_SOURCE, tmp_path_factory.mktemp("get_overloads"))
+
+
+#: The mistake, and the mypy error code it must produce.
+_GET_ROWS: list[tuple[str, str]] = [
+    ("return env.storage().persistent().get(key, U32, default=I32(0))", "return-value"),
+    ("return env.storage().persistent().get(key, Symbol)", "return-value"),
+]
+
+
+def _line_of_get(line_source: str) -> int:
+    """`_line_of`'s counterpart for `_GET_MISMATCH_SOURCE`, pinned to exactly
+    one match for the same reason."""
+    lines = _GET_MISMATCH_SOURCE.splitlines()
+    matches = [index + 1 for index, text in enumerate(lines) if text.strip() == line_source]
+    assert len(matches) == 1, f"{line_source!r} is not on exactly one line of the snippet"
+    return matches[0]
+
+
+@pytest.mark.parametrize(("line_source", "code"), _GET_ROWS)
+def test_the_get_overloads_still_catch_the_mismatches(
+    line_source: str, code: str, get_mismatch_errors: list[tuple[int, str]]
+) -> None:
+    """The POSITIVE half of this surface is
+    `tests/fixtures/get_default_typing.py`, whose cleanliness gate 2 asserts
+    by configuration (B5) -- these two are the only snippets that cannot live
+    in a tracked file."""
+    line = _line_of_get(line_source)
+    codes = [reported for reported_line, reported in get_mismatch_errors if reported_line == line]
+    assert code in codes, f"line {line} reported {codes}, not {code}"
+
+
+def test_the_get_mismatch_snippet_is_wrong_in_exactly_two_places(
+    get_mismatch_errors: list[tuple[int, str]],
+) -> None:
+    """Every reported line is one of the two, so a third error -- an arm
+    reordered into `overload-cannot-match`, a join that stops happening --
+    cannot hide inside a green run."""
+    assert {line for line, _ in get_mismatch_errors} == {
+        _line_of_get(source) for source, _ in _GET_ROWS
+    }

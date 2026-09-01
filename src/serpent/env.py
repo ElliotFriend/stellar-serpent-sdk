@@ -152,7 +152,7 @@ import copy
 import inspect
 from collections.abc import Callable, Hashable, Iterable, Iterator
 from types import UnionType
-from typing import Any, ClassVar, TypeAlias, TypeVar, Union, cast, get_args, get_origin
+from typing import Any, ClassVar, TypeAlias, TypeVar, Union, cast, get_args, get_origin, overload
 
 from serpent import _frame
 from serpent._host._scalars import STORAGE_TYPE
@@ -859,12 +859,38 @@ class _StorageBucket:
         if live_until is not None:
             self._set_live_until(entry, live_until)
 
+    @overload
+    def get(self, key: ChainValue, ty: type[_T], *, default: int | str | bytes | bool) -> _T: ...
+    @overload
+    def get(self, key: ChainValue, ty: type[_T], *, default: _T) -> _T: ...
+    @overload
+    def get(self, key: ChainValue, ty: type[_T], default: _T | None = ..., /) -> _T: ...
+    @overload
+    def get(self, key: ChainValue, ty: type[_T]) -> _T: ...
     def get(self, key: ChainValue, ty: type[_T], default: _T | None = None) -> _T:
         """Read `key`, decoding it as `ty`.
 
         `ty` is passed explicitly because the host returns an untyped `Val`;
         it is what tells both the compiler and the type checker what comes
         back. Without a `default`, a missing key is a contract error.
+
+        Task 7 (fed item X4, ruling E12) splits `default` into four
+        `@overload`s above so a RAW-LITERAL default (`default=0`) types as
+        `_T`, not `object`: a single signature solves `_T` against both `ty`
+        and `default` and joins them, which is exactly what defeats it for the
+        literal case (`tests/fixtures/env_surface.py`'s now-removed
+        `# type: ignore[return-value]` was that join). The four arms, in the
+        order that matters: a keyword-only raw-literal `default` (adopted
+        through `ty`, M1-C); a keyword-only chain-value `default` (ruling E5's
+        pass-through); a POSITIONAL-ONLY `default` (today's
+        `get(key, ty, default)` accepts one, and keyword-only overloads alone
+        would SHRINK accepts); and no `default` at all. The third arm's
+        trailing `/` is why the fourth stays reachable for `get(key=...,
+        ty=...)` -- a positional-only parameter cannot bind a keyword
+        argument, so that spelling can only match the last arm. This is
+        typing only: the runtime signature below, and every semantic (E5's
+        pass-through, M1-C's adoption, `default=None`'s no-default sentinel),
+        are unchanged.
 
         The model's three rules, each mirroring the compiled form:
 
