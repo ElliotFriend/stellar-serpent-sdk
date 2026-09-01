@@ -77,10 +77,13 @@ class Slot:
 class Logged(Event):
     """`(Symbol("logged"), who)` as topics, the amount as bare data.
 
-    The prefix topic is 6 characters so that the CANONICAL spelling can publish
-    the identical record: a hand-written `topics[0]` is held to the 9-character
-    `SymbolSmall` bound (`SPT3019`), where a declared prefix may run to 32
-    (`examples/events.py` explains the split).
+    `logged` is 6 characters, so it packs into a `SymbolSmall` immediate instead
+    of pooling through linear memory -- this fixture drives the E9 differential
+    table, and keeping its topic on the immediate path leaves the pooled-symbol
+    lowering to the files that exist to exercise it (`examples/events.py`,
+    `examples/structs.py`). Nothing FORCES the length: `SPT3019` asks only that
+    `topics[0]` be a Symbol, so `log_declared` and `log_canonical` would publish
+    the identical record at any length up to the Symbol's 32.
     """
 
     who: Annotated[Address, topic]

@@ -492,17 +492,22 @@ def test_events_publish_accepts_a_long_first_topic() -> None:
     assert isinstance(first, Const) and first.py_value == "round_closed"
 
 
-def test_the_32_character_symbol_bound_is_symbols_own_and_is_restated_nowhere() -> None:
-    """Ruling E11's other half: with the length arm gone, exactly ONE place in
-    the tree bounds an event topic's length -- `Symbol` itself.
+def test_the_symbol_bound_is_symbols_own_and_the_event_path_restates_no_length() -> None:
+    """Ruling E11's other half, in two halves of its own.
 
-    Half behavior, half source, deliberately. The BEHAVIOR half proves the
-    surviving bound is real and lives in the constructor (33 characters raise,
-    32 do not). The SOURCE half has to be a grep: a second check that AGREED
-    with `Symbol` would be invisible to behavior, and "nobody restates it" is
-    a claim only a scan can make. The two files scanned are the two that
-    carried the dead restatement -- `recognize.py`'s `_is_short_symbol` and
-    `env.py`'s `Events.publish`.
+    BEHAVIOR: the bound that survives is `Symbol`'s own, and it lives in the
+    constructor -- 33 characters raise, 32 do not. That is where an event topic
+    gets its length checked, and the only place this test proves anything about.
+
+    SOURCE: a DELETION GUARD, scoped exactly to the two files ruling E11
+    emptied -- `recognize.py` (`_is_short_symbol`) and `env.py`
+    (`Events.publish`) -- asserting neither names `_is_short_symbol` or
+    `fits_symbol_small` again. It has to be a grep rather than a behavior
+    check, because a reintroduced check that AGREED with `Symbol` would be
+    invisible to behavior. It deliberately does NOT claim more than that: it is
+    not a tree-wide proof that nothing else bounds a topic's length (a
+    hand-rolled `len(...) > 32` here, or a restatement in `frontend.py` or
+    `decorators.py`, would pass it), only that the two deletions stay deleted.
     """
     with pytest.raises(ValueError, match="1-32 characters"):
         Symbol("a" * 33)

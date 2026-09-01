@@ -496,10 +496,9 @@ def test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm() ->
     Two things `errors.py`/`structs.py`'s cross-checks did not need to cover,
     which this contract's enumerated requirements ("events on approve/
     transfer") do: the published `Approval` and `Transfer` events, decoded and
-    compared the same way `events.py`'s cross-check compares
-    `Scored`/`RoundClosed`
-    (`test_the_events_example_answers_the_same_at_tier_1_and_as_wasm`); and
-    that `approve` and the successful `transfer_from` each really reach
+    compared the same way `events.py`'s cross-check compares `Scored` and
+    `RoundClosed` (`test_the_events_example_answers_the_same_at_tier_1_and_as_wasm`);
+    and that `approve` and the successful `transfer_from` each really reach
     `extend_contract_data_ttl` once, via the host's own call count -- proving
     the re-extend-on-access call in `transfer_from` is not dead code.
     """
