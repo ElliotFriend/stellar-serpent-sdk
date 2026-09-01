@@ -11,7 +11,7 @@ ever disagree; the failure message names the regeneration command.
 
 serpent compiles a restricted subset of Python to a Soroban contract.
 This document is generated, in full, from the compiler's own registry
-of diagnostic codes, its `tests/must_reject/` fixture suite (108 minimal counter-examples, one per rejected
+of diagnostic codes, its `tests/must_reject/` fixture suite (111 minimal counter-examples, one per rejected
 construct), and its recognized-surface tables -- never hand-authored,
 so it cannot say something the compiler does not actually do.
 
@@ -27,7 +27,7 @@ so it cannot say something the compiler does not actually do.
 
 Every top-level class needs exactly one of @contract/@contracttype/@contracterror/@contractevent/@contractunion/@contractenum. A method's `self` must come
 first, every parameter and the return both need a chain-type
-annotation, and `__init__` compiles to the constructor. 25
+annotation, and `__init__` compiles to the constructor. 26
 declaration-shape rules are enforced end to end; see [SPT4xxx](#spt4xxx----contract-shape-declarations) below
 for the exact list.
 
@@ -2320,6 +2320,65 @@ class Contract:
 - **message:** union classes must inherit ContractUnion and int enums ContractEnum
 - **help:** declare the union as `class Name(ContractUnion):` and the int enum as `class Name(ContractEnum):` -- one base, and never a declared type
 - **note:** ValueError: Shape: a @contractunion class declares exactly one base, `ContractUnion` (`class Shape(ContractUnion):`) -- got no base class. The base is what makes the class statically a chain value at every position (a decorator cannot add one a type checker can see), and a subclass of a declared type would type as the subclass while constructing the declared one.
+
+#### SPT4026
+
+**Construct:** `Annotated[T, topic]` on a @contracttype field, a contract method parameter, or a contract method's return type -- none of the three has topics, so the marker would be silently ignored
+
+**Intent:** the `topic` marker only means something on a @contractevent field
+
+#### topic marker on a contract method parameter (`shape/topic_on_method_parameter.py`)
+
+```python
+from serpent import Annotated, Env, U32, contract, topic
+
+
+@contract
+class Contract:
+    def compute(self, env: Env, x: Annotated[U32, topic]) -> U32:  # HERE
+        return x
+```
+
+- **message:** Contract.compute: the `topic` marker only means something on a @contractevent field
+- **help:** drop `Annotated[T, topic]` down to plain `T` here -- `topic` only means something on a @contractevent field
+- **note:** ValueError: Contract.compute: `topic` marks a field of a @contractevent class as a published topic; parameter 'x' of a contract method has no topics, so the marker would be silently ignored here
+
+#### topic marker on a contract method return type (`shape/topic_on_method_return.py`)
+
+```python
+from serpent import Annotated, Env, U32, contract, topic
+
+
+@contract
+class Contract:
+    def compute(self, env: Env) -> Annotated[U32, topic]:  # HERE
+        return U32(0)
+```
+
+- **message:** Contract.compute: the `topic` marker only means something on a @contractevent field
+- **help:** drop `Annotated[T, topic]` down to plain `T` here -- `topic` only means something on a @contractevent field
+- **note:** ValueError: Contract.compute: `topic` marks a field of a @contractevent class as a published topic; the return type of a contract method has no topics, so the marker would be silently ignored here
+
+#### topic marker on a @contracttype field (`shape/topic_on_struct_field.py`)
+
+```python
+from serpent import Annotated, Env, U32, contract, contracttype, topic
+
+
+@contracttype
+class Point:
+    x: Annotated[U32, topic]  # HERE
+
+
+@contract
+class Contract:
+    def compute(self, env: Env, x: U32) -> U32:
+        return x
+```
+
+- **message:** Point.x: the `topic` marker only means something on a @contractevent field
+- **help:** drop `Annotated[T, topic]` down to plain `T` here -- `topic` only means something on a @contractevent field
+- **note:** ValueError: Point.x: `topic` marks a field of a @contractevent class as a published topic; a @contracttype struct has no topics, so the marker would be silently ignored here
 
 ### SPT5xxx -- spec / XDR limits
 

@@ -72,6 +72,11 @@ contains its code's registry intent; the uses worth naming are:
   discriminant, a wrong base, a payload wider than S4's tuple arity).
 * `SPT2004` ("name shadows an existing declaration") covers both a
   module-level redeclaration and a duplicate member inside one class body.
+* `SPT4026` (M1-E2 Task 5, fed item X2/E10) bridges the `topic` marker in a
+  position that has no topics: a @contracttype field (previously the SPT1037
+  catch-all, now recoded with its message unchanged) and, new in this task, a
+  contract method's parameter or return type -- both of which used to compile
+  the marker away in silence rather than raise at all.
 * `SPT1037` -- MJ-11's explicit exhaustive-dispatch catch-all -- is the
   last resort: a Python `SyntaxError` (from `ast.parse` OR from `compile`,
   which rejects a whole class of source that parses fine), and any exec-time
@@ -282,6 +287,10 @@ _HELP: dict[str, str] = {
     ),
     "SPT5001": "use at most 30 characters from [a-zA-Z0-9_]",
     "SPT5006": "carry at most 12 payload values in one variant (S4's tuple arity)",
+    "SPT4026": (
+        "drop `Annotated[T, topic]` down to plain `T` here -- `topic` only means "
+        "something on a @contractevent field"
+    ),
 }
 
 
@@ -384,6 +393,15 @@ _BRIDGE_RULES: tuple[_BridgeRule, ...] = (
     _BridgeRule(_VALUE_ERROR, "needs a type annotation -- exported signatures", "SPT4004"),
     _BridgeRule(_VALUE_ERROR, "the return type needs an annotation", "SPT4005"),
     _BridgeRule(_VALUE_ERROR, "must be annotated `-> None`", "SPT4006"),
+    # M1-E2 Task 5 (fed item X2, ruling E10): `topic` in a position that has no
+    # topics. The struct-field needle is `_build_record`'s own message,
+    # unchanged (it used to fall through to the SPT1037 catch-all with no row
+    # here at all); the method needle is shared by BOTH new `_check_method`
+    # raises (a parameter and the return type), one rule per RULE rather than
+    # per position, exactly as SPT4021-SPT4025 share one needle across their
+    # two kinds.
+    _BridgeRule(_VALUE_ERROR, "a @contracttype struct has no topics", "SPT4026"),
+    _BridgeRule(_VALUE_ERROR, "of a contract method has no topics, so the marker", "SPT4026"),
     _BridgeRule(_VALUE_ERROR, "names are capped at", "SPT5001"),
     _BridgeRule(_VALUE_ERROR, "names must be valid Symbols", "SPT5001"),
     _BridgeRule(_VALUE_ERROR, "cannot resolve annotations", "SPT2003"),

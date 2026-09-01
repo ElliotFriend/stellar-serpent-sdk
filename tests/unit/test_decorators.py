@@ -10,6 +10,7 @@ decorator also catches at runtime.
 
 import dataclasses
 import pathlib
+import typing
 from typing import Annotated, cast
 
 import pytest
@@ -204,6 +205,17 @@ class Example:
     # Single-underscore privates are not exported and are not checked.
     def _helper(self, whatever) -> None:  # type: ignore[no-untyped-def]
         ...
+
+
+@contract
+class Contract:
+    """M1-E2 Task 5's seam pin (E10): `_check_method` reads with
+    `include_extras=True` now, exactly like `_build_record` always has, so an
+    `Annotated[...]` wrapper that carries something OTHER than `topic` must
+    still come out STRIPPED -- only the marker itself is meaningful here."""
+
+    def go(self, env: Env, x: Annotated[U32, "not a topic"]) -> U32:
+        return x
 
 
 def _meta(cls: type[object]) -> dict[str, object]:
@@ -672,6 +684,55 @@ def test_the_topic_marker_must_wrap_the_WHOLE_field_annotation() -> None:
         @contractevent
         class Nested(Event):
             who: Annotated[Address, topic] | None
+
+
+# --- the topic marker is refused on a contract method too (M1-E2 Task 5) ----
+# Fed item X2, ruling E10: `topic` means something ONLY on a @contractevent
+# field. Before this task a method parameter or return annotation carrying
+# the marker compiled silently -- `_check_method` read hints with
+# `include_extras=False` (the default), which let `get_type_hints` strip the
+# marker before anything could see it, so the metadata recorded a plain type
+# and no diagnostic ever fired. Both are now refused, symmetrically with the
+# struct-field case above.
+
+
+def test_the_topic_marker_is_refused_on_a_method_parameter() -> None:
+    """Was: compiles silently, with the marker discarded, no diagnostic at
+    all. `_check_method` now reads `include_extras=True` and runs the same
+    `_split_topic` helper `_build_record` uses -- naming the method AND the
+    parameter position in the message."""
+    with pytest.raises(ValueError, match="parameter 'x' of a contract method has no topics"):
+
+        @contract
+        class C:
+            def go(self, env: Env, x: Annotated[U32, topic]) -> U32:
+                return x
+
+
+def test_the_topic_marker_is_refused_on_a_method_return_type() -> None:
+    """The second silent position -- probe-verified twice (§C.9 + review),
+    since the M1-E triage that fed this task forward did not name it."""
+    with pytest.raises(ValueError, match="return type of a contract method has no topics"):
+
+        @contract
+        class C:
+            def go(self, env: Env) -> Annotated[U32, topic]:
+                return U32(0)
+
+
+def test_the_stored_annotation_is_still_stripped_everywhere() -> None:
+    """D5 deliberately SHRANK the Annotated license to one seam
+    (_build_record, decorators.py:344). _check_method (:669) is now a SECOND
+    seam, named as such -- and the property D5 was protecting still holds:
+    what flows into the metadata, and therefore into to_spec_type and
+    resolve_annotation, is the STRIPPED annotation. Neither ever sees an
+    Annotated (risk F.1.12)."""
+    methods = _meta(Contract)["methods"]
+    assert isinstance(methods, list)
+    _name, params, returns = methods[0]
+    assert params[1] == ("x", U32)
+    assert returns is U32
+    assert typing.get_origin(params[1][1]) is not typing.Annotated
 
 
 def test_contract_metadata_lists_constructor_and_public_methods() -> None:

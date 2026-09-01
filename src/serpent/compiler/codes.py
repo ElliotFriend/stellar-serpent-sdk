@@ -863,6 +863,25 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "union classes must inherit ContractUnion and int enums ContractEnum",
         "M1-E2 Task 2",
     ),
+    # Appended by M1-E2 Task 5 (fed item X2, ruling E10): `Annotated[T, topic]`
+    # is meaningful only on a @contractevent field, and three OTHER positions
+    # accept the same spelling with no topics to put it in -- a @contracttype
+    # field (previously refused under the SPT1037 catch-all, recoded here), a
+    # contract method's parameter, and its return type (both previously
+    # SILENTLY IGNORED: the marker vanished and the method compiled as if it
+    # were never written). All three now share this one code; a fourth spot
+    # the marker can appear -- inside a function BODY annotation -- stays on
+    # SPT3013, since giving it its own honest message needs annotation-
+    # resolver plumbing this task declines to build.
+    CodeEntry(
+        "SPT4026",
+        "SPT4xxx",
+        "`Annotated[T, topic]` on a @contracttype field, a contract method "
+        "parameter, or a contract method's return type -- none of the three has "
+        "topics, so the marker would be silently ignored",
+        "the `topic` marker only means something on a @contractevent field",
+        "M1-E2 Task 5",
+    ),
 )
 
 # --- SPT5xxx: spec/XDR limits (dossier D.1; SS B.3) -------------------------

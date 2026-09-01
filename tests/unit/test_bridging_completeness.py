@@ -39,8 +39,9 @@ PATH = "contract.py"
 
 _IMPORTS = (
     "from serpent import ("
-    "ContractEnum, ContractUnion, Env, U32, contract, contractenum, contracterror, "
-    "contractevent, contracttype, contractunion, enumvalue, errorcode, variant"
+    "Annotated, ContractEnum, ContractUnion, Env, U32, contract, contractenum, "
+    "contracterror, contractevent, contracttype, contractunion, enumvalue, errorcode, "
+    "topic, variant"
     ")"
 )
 
@@ -351,6 +352,30 @@ _ROWS: tuple[tuple[str, str, str, str], ...] = (
         "variant() takes payload types",
         "@contractunion\nclass U(ContractUnion):\n    Circle = variant(U32(3))  # HERE",
     ),
+    # --- M1-E2 Task 5: the `topic`-marker refusal (fed item X2, ruling E10) --
+    # `SPT4026` in a position that has no topics. One row per new needle
+    # (P8): the struct-field spelling (`_build_record`, recoded off the
+    # SPT1037 catch-all) and the `_check_method` spelling, whose needle is
+    # shared by BOTH new positions (a parameter and the return type), so one
+    # row here (the parameter spelling) proves the shared needle; the return
+    # spelling and the located-message assertions for all three positions are
+    # `tests/unit/test_decorators.py`'s job.
+    (
+        "struct_field_topic_marker",
+        "SPT4026",
+        "a @contracttype struct has no topics",
+        "@contracttype\nclass S:\n    a: Annotated[U32, topic]  # HERE",
+    ),
+    (
+        "method_parameter_topic_marker",
+        "SPT4026",
+        "of a contract method has no topics, so the marker",
+        (
+            "@contract\nclass D:\n"
+            "    def go(self, env: Env, x: Annotated[U32, topic]) -> U32:  # HERE\n"
+            "        return U32(0)"
+        ),
+    ),
 )
 
 
@@ -413,9 +438,15 @@ def test_every_bridge_rule_needle_has_a_row() -> None:
 #:
 #: Scoped to this surface on purpose, and NOT to `decorators.py` wholesale: the
 #: M1-E Task 5 event-convention raises (`data_format must be one of ...`, the
-#: prefix-topic and topic-marker refusals) carry no needle either and fall to
-#: MJ-11's catch-all today -- a pre-existing gap this round did not create and
-#: is not chartered to fix (see the fix report; the controller has it).
+#: prefix-topic refusals) carry no needle either and fall to MJ-11's catch-all
+#: today -- a pre-existing gap this round did not create and is not chartered
+#: to fix (see the fix report; the controller has it). The TOPIC-MARKER
+#: refusal is no longer in that gap -- M1-E2 Task 5 (fed item X2/E10) gave it
+#: its own needle and code, SPT4026, covering the struct-field spelling
+#: (`_build_record`) and the two new `_check_method` spellings (a parameter
+#: and the return type) -- but neither function is added to this tuple: this
+#: gate is scoped to the M1-E2 Task 2 surface by design, and widening it is
+#: outside this task's charter even though it would now pass.
 _BRIDGED_RAISE_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "serpent.decorators",

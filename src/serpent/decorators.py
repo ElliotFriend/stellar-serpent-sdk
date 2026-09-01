@@ -851,10 +851,22 @@ def _check_method(
     split is what makes the recorded metadata identical whether or not the
     contract module uses `from __future__ import annotations` -- under PEP 563
     every annotation would otherwise be recorded as a string.
+
+    Read with `include_extras=True` (the SECOND seam this file grants the
+    marker, `_build_record`/:518 being the first, M1-E2 Task 5/E10) so a
+    parameter or return annotation carrying `Annotated[T, topic]` is visible
+    here instead of `get_type_hints` silently stripping it -- a contract
+    method has no topics, so the marker would otherwise compile in and do
+    nothing. `_split_topic` (the same helper `_build_record` uses) is run over
+    every parameter annotation and the return annotation; a marker found on
+    either is refused rather than silently ignored, and what is STORED in
+    `params`/`returns` -- and therefore in `_serpent_type_["methods"]`, and
+    downstream in `to_spec_type`/`resolve_annotation` -- is always the
+    STRIPPED annotation, never an `Annotated` (risk F.1.12).
     """
     signature = inspect.signature(func)
     parameters = list(signature.parameters.values())
-    hints = _annotations_of(func)
+    hints = _annotations_of(func, include_extras=True)
 
     if not parameters or parameters[0].name != "self":
         first = parameters[0].name if parameters else "<none>"
@@ -889,7 +901,15 @@ def _check_method(
                 f"{cls.__name__}.{name}: parameter {parameter.name!r} needs a type "
                 "annotation -- exported signatures are compiled into contractspecv0"
             )
-        params.append((parameter.name, hints[parameter.name]))
+        stripped, is_topic = _split_topic(cls, name, hints[parameter.name])
+        if is_topic:
+            raise ValueError(
+                f"{cls.__name__}.{name}: `topic` marks a field of a @contractevent "
+                f"class as a published topic; parameter {parameter.name!r} of a "
+                "contract method has no topics, so the marker would be silently "
+                "ignored here"
+            )
+        params.append((parameter.name, stripped))
 
     if signature.return_annotation is inspect.Signature.empty:
         raise ValueError(
@@ -899,7 +919,13 @@ def _check_method(
     # `get_type_hints` normalizes a `-> None` annotation to `NoneType`, so this
     # holds for a PEP 563 module too, where the raw annotation is the str
     # `"None"`.
-    returns = hints["return"]
+    returns, return_is_topic = _split_topic(cls, name, hints["return"])
+    if return_is_topic:
+        raise ValueError(
+            f"{cls.__name__}.{name}: `topic` marks a field of a @contractevent "
+            "class as a published topic; the return type of a contract method has "
+            "no topics, so the marker would be silently ignored here"
+        )
     if name == "__init__" and returns is not types.NoneType:
         raise ValueError(
             f"{cls.__name__}.__init__ must be annotated `-> None` (got "
@@ -937,10 +963,17 @@ def _annotations_of(owner: Any, *, include_extras: bool = False) -> dict[str, An
     a bare `NameError`.
 
     `include_extras` keeps `Annotated[...]` wrappers intact instead of letting
-    `get_type_hints` strip them, which is what `_build_record` needs to see the
-    `topic` marker at all. It defaults to False so the METHOD path
-    (`_check_method`) is untouched: a parameter annotation flows straight into
-    the spec and has no marker convention.
+    `get_type_hints` strip them. `_build_record` (:518) was the marker's one
+    seam until M1-E2 Task 5/E10 named `_check_method` (:843) a SECOND: a
+    method parameter or return annotation can carry `Annotated[T, topic]` too,
+    and the marker has to be visible here to be refused rather than silently
+    dropped. It defaults to False because most callers (module-level constants,
+    and every OTHER `typing.get_type_hints` use) have no marker convention to
+    see; both seams that DO pass `include_extras=True` still hand back only the
+    STRIPPED annotation to their caller -- `_serpent_type_["fields"]` and
+    `_serpent_type_["methods"]` never store an `Annotated`, so `to_spec_type`,
+    `resolve_annotation` and every other downstream reader keep seeing plain
+    chain types (risk F.1.12).
     """
     try:
         return typing.get_type_hints(owner, include_extras=include_extras)

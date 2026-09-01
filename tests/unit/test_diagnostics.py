@@ -269,8 +269,10 @@ _EXPECTED_CODES = frozenset(
         *(f"SPT3{n:03d}" for n in range(1, 23)),
         # M1-E2 Task 2's five declaration rows for @contractunion/@contractenum
         # take SPT4xxx to 25, and SPT5006 (a variant payload wider than S4's
-        # tuple arity) takes SPT5xxx to 6.
-        *(f"SPT4{n:03d}" for n in range(1, 26)),
+        # tuple arity) takes SPT5xxx to 6. M1-E2 Task 5 (fed item X2, ruling
+        # E10) appends SPT4026, the one sanctioned code for this task: the
+        # `topic` marker in a position that has no topics.
+        *(f"SPT4{n:03d}" for n in range(1, 27)),
         *(f"SPT5{n:03d}" for n in range(1, 7)),
         "SPT6001",
         *(f"SPT7{n:03d}" for n in range(1, 6)),
@@ -331,7 +333,13 @@ def test_registry_is_complete_not_a_sample() -> None:
     # union/int-enum reject reuses a row that already existed: an arity mistake
     # is SPT3020, a per-slot type disagreement SPT3018, for-in over a union
     # SPT1019.
-    assert len(codes.REGISTRY) == 108
+    #
+    # M1-E2 Task 5 (fed item X2, ruling E10) appended the last one, SPT4026:
+    # `Annotated[T, topic]` in a position that has no topics -- a
+    # @contracttype field (recoded off the SPT1037 catch-all it used to share)
+    # and a contract method's parameter or return type (previously silently
+    # ignored, no diagnostic at all).
+    assert len(codes.REGISTRY) == 109
 
 
 def test_registry_code_set_matches_the_frozen_snapshot() -> None:
