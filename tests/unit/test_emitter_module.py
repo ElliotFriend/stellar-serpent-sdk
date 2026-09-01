@@ -939,12 +939,28 @@ class C:
 """
 
 
+def _unpack_all(payload: bytes) -> list[xdr.SCSpecEntry]:
+    unpacker = Unpacker(payload)
+    entries: list[xdr.SCSpecEntry] = []
+    while unpacker.get_position() < len(payload):
+        entries.append(xdr.SCSpecEntry.unpack(unpacker))
+    return entries
+
+
 def test_a_declared_union_reaches_the_spec_as_a_udt_union_entry() -> None:
-    """F.1.6, both directions: `spec_inputs.declared_types_in_order` carries
-    the union class, the assembled wasm's `contractspecv0` is exactly what
-    `build_spec_entries` produces from it, and decoding those bytes back finds
-    the matching `UDT_UNION_V0` entry (Q5's footgun runs the OTHER way when
-    `types` is honored -- the reference and the entry agree)."""
+    """F.1.6, both directions.
+
+    Direction 1 (`types` HONORED): `spec_inputs.declared_types_in_order`
+    carries the union class, the assembled wasm's `contractspecv0` is exactly
+    what `build_spec_entries` produces from it, and decoding those bytes back
+    finds the matching `UDT_UNION_V0` entry.
+
+    Direction 2 (`types` OMITTED, the Q5 footgun): calling
+    `build_spec_entries` with no `types=` at all still compiles -- the
+    annotation `Shape` never appears in, so nothing REFERENCES it either --
+    but the point stands generally: a caller that forgets to pass a declared
+    type gets a spec with no matching `UDT_UNION_V0` entry, silently.
+    """
     c = compiled(UNION_SRC)
     contract_cls = c.spec_inputs.contract_cls
     assert contract_cls is not None
@@ -953,13 +969,17 @@ def test_a_declared_union_reaches_the_spec_as_a_udt_union_entry() -> None:
     payload = _customs(module.assemble(c, meta={}, version=None).wasm)[sections.SPEC_SECTION_NAME]
     assert payload == build_spec_entries(contract_cls, types=c.spec_inputs.declared_types_in_order)
 
-    unpacker = Unpacker(payload)
-    entries: list[xdr.SCSpecEntry] = []
-    while unpacker.get_position() < len(payload):
-        entries.append(xdr.SCSpecEntry.unpack(unpacker))
+    entries = _unpack_all(payload)
     unions = [e.udt_union_v0 for e in entries if e.udt_union_v0 is not None]
     assert len(unions) == 1
     assert unions[0].name == b"Shape"
+
+    # Direction 2: omitting `types` entirely gets a spec with NO UDT_UNION_V0
+    # entry at all -- the documented footgun `build_spec_entries`'s own
+    # docstring names ("a caller that omits `types` silently emits a spec
+    # whose UDT references have no matching entries").
+    omitted = build_spec_entries(contract_cls)
+    assert not any(e.udt_union_v0 is not None for e in _unpack_all(omitted))
 
 
 def test_a_built_module_carries_the_event_spec_entry() -> None:

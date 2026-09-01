@@ -681,7 +681,6 @@ def test_a_union_variant_name_over_the_symbol_cap_is_refused() -> None:
     class Wordy3(ContractUnion):
         A = variant()
 
-    Wordy3.__name__ = "Wordy3"
     vars(Wordy3)["_serpent_type_"]["cases"] = [("x" * 33, ())]
     with pytest.raises(SpecNameError, match="capped at 32"):
         build_spec_entries(Counter, types=(Wordy3,))

@@ -59,7 +59,7 @@ reference names a type, and an event is not one.
 import inspect
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType, NoneType
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from stellar_sdk import xdr
 
@@ -94,12 +94,19 @@ TYPE_NAME_LIMIT: Final = 60
 #: variant, which uses `val.SCSYMBOL_LIMIT` instead -- see `_union_case`).
 CASE_NAME_LIMIT: Final = 60
 
+#: The four `_serpent_type_["kind"]` values `types=` can carry, closed so
+#: mypy catches a kind added to `_TYPE_ENTRY_ORDER` (or to
+#: `_declared_type_entry`'s dispatch) but not the other -- the two must always
+#: agree on the same four members, or a kind's entries silently never join the
+#: assembled payload.
+_DeclaredTypeKind = Literal["struct", "union", "enum", "error_enum"]
+
 #: Ruling E7 (the XDR's own kind order): a declared type's entry is emitted
 #: struct first, then union, then int enum, then error enum -- structs, unions
 #: and int enums share ONE spec namespace (a UDT reference is name-only,
 #: §B.3), which is exactly why `build_spec_entries`' `seen` guard below covers
 #: every kind in `types` regardless of which of these four it turns out to be.
-_TYPE_ENTRY_ORDER: Final[tuple[str, ...]] = ("struct", "union", "enum", "error_enum")
+_TYPE_ENTRY_ORDER: Final[tuple[_DeclaredTypeKind, ...]] = ("struct", "union", "enum", "error_enum")
 
 #: `stellar_sdk.xdr.constants.SC_SPEC_DOC_LIMIT`, restated so the pre-check
 #: does not depend on a private-ish constant import.
@@ -169,15 +176,16 @@ def build_spec_entries(
     """The `contractspecv0` payload for one `@contract` class.
 
     **`types` is not discovered, it is declared** -- and so is `events`. This
-    function cannot find the `@contracttype` structs and `@contracterror` enums
-    a contract's signatures mention -- an annotation only yields a UDT
-    *reference*, never the entry it points at -- and it cannot find the
-    `@contractevent` classes a module declares either. Sub-plan D collects the
-    module's decorated classes and passes them here; **a caller that omits
-    `types` silently emits a spec whose UDT references have no matching
-    entries**, which decodes fine and renders as an unknown type. When in
-    doubt, pass every decorated class in the module: structs and error enums in
-    `types`, events in `events`.
+    function cannot find the `@contracttype` structs, `@contractunion` unions,
+    `@contractenum` int enums, and `@contracterror` enums a contract's
+    signatures mention -- an annotation only yields a UDT *reference*, never
+    the entry it points at -- and it cannot find the `@contractevent` classes
+    a module declares either. Sub-plan D collects the module's decorated
+    classes and passes them here; **a caller that omits `types` silently
+    emits a spec whose UDT references have no matching entries**, which
+    decodes fine and renders as an unknown type. When in doubt, pass every
+    decorated class in the module: structs, unions, int enums and error enums
+    in `types`, events in `events`.
 
     Entry order is pinned (and tested independently of the golden bytes),
     matching `spikes/spike1/sections.py`'s recorded rationale -- a stable order
@@ -213,10 +221,12 @@ def build_spec_entries(
         raise SpecTypeError(
             f"{contract_cls.__name__} is not a @contract class, so it has no "
             "contractspecv0 entries -- pass the contract class itself, and its "
-            "structs and error enums via `types=`"
+            "structs, unions, int enums and error enums via `types=`"
         )
 
-    entries_by_kind: dict[str, list[xdr.SCSpecEntry]] = {kind: [] for kind in _TYPE_ENTRY_ORDER}
+    entries_by_kind: dict[_DeclaredTypeKind, list[xdr.SCSpecEntry]] = {
+        kind: [] for kind in _TYPE_ENTRY_ORDER
+    }
     seen: dict[str, type] = {}
     for declared in types:
         # Structs, unions and int enums share one spec namespace (and an error
@@ -253,7 +263,7 @@ def build_spec_entries(
     )
 
 
-def _declared_type_entry(declared: type) -> tuple[str, xdr.SCSpecEntry]:
+def _declared_type_entry(declared: type) -> tuple[_DeclaredTypeKind, xdr.SCSpecEntry]:
     """One declared type's `(kind, entry)`, or a refusal naming the class."""
     metadata = _metadata_of(declared)
     kind = metadata.get("kind") if metadata is not None else None
@@ -270,8 +280,8 @@ def _declared_type_entry(declared: type) -> tuple[str, xdr.SCSpecEntry]:
             f"{declared.__name__} is a @contractevent class -- pass it in `events=`, "
             "not in `types=`. An event is its own entry kind (EVENT_V0) with its own "
             "prefix topics, per-parameter locations and data format; `types=` carries "
-            "the structs and error enums a UDT reference can name, and an event is "
-            "not one of those"
+            "the structs, unions, int enums and error enums a UDT reference can name, "
+            "and an event is not one of those"
         )
     if kind == "contract":
         raise SpecTypeError(
