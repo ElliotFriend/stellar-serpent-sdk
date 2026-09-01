@@ -874,7 +874,7 @@ class _StorageBucket:
         it is what tells both the compiler and the type checker what comes
         back. Without a `default`, a missing key is a contract error.
 
-        Task 7 (fed item X4, ruling E12) splits `default` into four
+        Ruling E12 (decisions.md 2026-08-31) splits `default` into four
         `@overload`s above so a RAW-LITERAL default (`default=0`) types as
         `_T`, not `object`: a single signature solves `_T` against both `ty`
         and `default` and joins them, which is exactly what defeats it for the

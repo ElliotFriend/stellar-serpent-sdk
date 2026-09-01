@@ -53,6 +53,8 @@ from serpent import (
     topic,
 )
 from serpent import env as env_module
+from serpent.compiler.diagnostics import CompileError
+from serpent.compiler.frontend import compile_module
 from serpent.env import (
     DEFAULT_LEDGER_SEQUENCE,
     DEFAULT_LEDGER_TIMESTAMP,
@@ -260,6 +262,22 @@ def test_a_raw_default_the_requested_type_refuses_raises_the_types_own_error() -
     bucket = deployed_env().storage().persistent()
     with pytest.raises((ValueError, TypeError, OverflowError)):
         bucket.get(Symbol("absent"), U32, default=-1)
+
+
+def test_a_wrong_kind_raw_default_also_raises_the_types_own_error() -> None:
+    """decisions.md 2026-09-01: `get`'s arm 1 (`default: int | str | bytes |
+    bool`) has no relation to `_T`, so `mypy --strict` no longer catches a
+    raw literal of the WRONG chain family for `ty` -- `default="oops"`
+    against `U32` type-checks (the accepted gap `test_authoring_types.py`
+    pins from the typing side). Tier 1 still refuses it LOUDLY: the adoption
+    is `U32("oops")`, and `U32`'s own constructor raises `TypeError` for the
+    wrong KIND of literal, same as the compiled tier's `SPT3018`
+    (`test_the_get_overloads_accepted_gaps_are_rejected_at_compile_time`
+    below). Nothing here silently returns the raw string.
+    """
+    bucket = deployed_env().storage().persistent()
+    with pytest.raises(TypeError):
+        bucket.get(Symbol("absent"), U32, default="oops")
 
 
 def test_an_explicit_none_default_is_the_no_default_case() -> None:
@@ -965,3 +983,52 @@ def test_the_inspection_surfaces_are_not_in_the_authoring_namespace() -> None:
     assert "tag_of_chain_value" not in serpent.__all__
     assert "tag_of_chain_value" not in env_module.__all__
     assert "DEFAULT_LEDGER_TIMESTAMP" not in env_module.__all__
+
+
+# --- decisions.md 2026-09-01: get's arm-1 typing gap, pinned at the compiler --
+
+
+def test_the_get_overloads_accepted_gaps_are_rejected_at_compile_time() -> None:
+    """The other half of the accepted gap: `mypy --strict` no longer catches
+    a raw literal of the WRONG chain family for `ty` (arm 1's `default: int |
+    str | bytes | bool` has no relation to `_T` --
+    `tests/unit/test_authoring_types.py` pins the resulting silence), but the
+    compiler is the authority that still refuses it, with a LOCATED
+    diagnostic. Both spellings from decisions.md 2026-09-01 go through
+    `compile_module` here; each fails `_coerce_literal`'s `_validate_literal`
+    the same way -- the adopting constructor raises `TypeError` (the wrong
+    KIND of literal, not an out-of-range value), which `expr.py` maps to
+    `SPT3018` -- matching tier 1's own `TypeError`
+    (`test_a_wrong_kind_raw_default_also_raises_the_types_own_error` above).
+    """
+    wrong_kind_for_u32 = """
+from serpent import Env, Symbol, U32, contract
+
+
+@contract
+class C:
+    def go(self, env: Env, k: Symbol) -> U32:
+        return env.storage().persistent().get(k, U32, default="oops")
+"""
+    wrong_kind_for_symbol = """
+from serpent import Env, Symbol, contract
+
+
+@contract
+class C:
+    def go(self, env: Env, k: Symbol) -> Symbol:
+        return env.storage().persistent().get(k, Symbol, default=0)
+"""
+    expectations = [
+        (wrong_kind_for_u32, "U32() takes an int, not str"),
+        (wrong_kind_for_symbol, "Symbol() takes a str, not int"),
+    ]
+    for source, constructor_detail in expectations:
+        with pytest.raises(CompileError) as info:
+            compile_module(source, "<gap-probe>")
+        (diagnostic,) = info.value.diagnostics
+        assert diagnostic.code == "SPT3018"
+        assert diagnostic.loc.line == 8
+        assert diagnostic.message == (
+            f"value's type does not match the declared/expected type: {constructor_detail}"
+        )

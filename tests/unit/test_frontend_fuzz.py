@@ -1041,8 +1041,8 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     fixture added later is fuzzed automatically instead of being silently
     skipped (the count is asserted as a floor: Task 11b's 95, less the SPT1032
     fixture M1-E deleted when `Event.publish(env)` became supported, plus the
-    eleven M1-E2 Task 2 added for the union/int-enum declaration codes, plus
-    the one M1-E2 Task 7 added for the `get` overload set -- 106 today).
+    eleven M1-E2 Task 2 added for the union/int-enum declaration codes -- 105
+    today).
 
     The `fixtures/` and `examples/` lists are asserted EXACTLY rather than as a
     floor, so adding a contract is a deliberate act: Task 13 promoted the two

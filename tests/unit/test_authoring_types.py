@@ -165,10 +165,11 @@ _ROWS: list[tuple[str, str]] = [
 ]
 
 
-def _line_of(line_source: str) -> int:
-    """The 1-based line `line_source` sits on, pinned to exactly one match so a
-    reworded snippet cannot silently start asserting about the wrong line."""
-    lines = _NEGATIVE_SOURCE.splitlines()
+def _line_of(source: str, line_source: str) -> int:
+    """The 1-based line `line_source` sits on in `source`, pinned to exactly
+    one match so a reworded snippet cannot silently start asserting about the
+    wrong line. Shared by every `run_mypy` snippet in this module."""
+    lines = source.splitlines()
     matches = [index + 1 for index, text in enumerate(lines) if text.strip() == line_source]
     assert len(matches) == 1, f"{line_source!r} is not on exactly one line of the snippet"
     return matches[0]
@@ -182,7 +183,7 @@ def test_the_descriptor_surface_catches_the_author_mistakes(
     this surface is tests/fixtures/udt_style.py, whose cleanliness gate 2
     asserts by configuration (B5) -- these five are the only snippets that
     cannot live in a tracked file."""
-    line = _line_of(line_source)
+    line = _line_of(_NEGATIVE_SOURCE, line_source)
     codes = [reported for reported_line, reported in negative_errors if reported_line == line]
     assert code in codes, f"line {line} reported {codes}, not {code}"
 
@@ -193,7 +194,9 @@ def test_the_negative_snippet_is_wrong_in_exactly_five_places(
     """Every reported line is one of the five, so a sixth error -- a typo in the
     snippet, a broken export, a declaration the surface refuses for a reason
     nobody meant -- cannot hide inside a green run."""
-    assert {line for line, _ in negative_errors} == {_line_of(source) for source, _ in _ROWS}
+    assert {line for line, _ in negative_errors} == {
+        _line_of(_NEGATIVE_SOURCE, source) for source, _ in _ROWS
+    }
 
 
 # --- Task 7: the `get` overload set's negative half (fed item X4, E12) ------
@@ -236,15 +239,6 @@ _GET_ROWS: list[tuple[str, str]] = [
 ]
 
 
-def _line_of_get(line_source: str) -> int:
-    """`_line_of`'s counterpart for `_GET_MISMATCH_SOURCE`, pinned to exactly
-    one match for the same reason."""
-    lines = _GET_MISMATCH_SOURCE.splitlines()
-    matches = [index + 1 for index, text in enumerate(lines) if text.strip() == line_source]
-    assert len(matches) == 1, f"{line_source!r} is not on exactly one line of the snippet"
-    return matches[0]
-
-
 @pytest.mark.parametrize(("line_source", "code"), _GET_ROWS)
 def test_the_get_overloads_still_catch_the_mismatches(
     line_source: str, code: str, get_mismatch_errors: list[tuple[int, str]]
@@ -253,7 +247,7 @@ def test_the_get_overloads_still_catch_the_mismatches(
     `tests/fixtures/get_default_typing.py`, whose cleanliness gate 2 asserts
     by configuration (B5) -- these two are the only snippets that cannot live
     in a tracked file."""
-    line = _line_of_get(line_source)
+    line = _line_of(_GET_MISMATCH_SOURCE, line_source)
     codes = [reported for reported_line, reported in get_mismatch_errors if reported_line == line]
     assert code in codes, f"line {line} reported {codes}, not {code}"
 
@@ -265,5 +259,43 @@ def test_the_get_mismatch_snippet_is_wrong_in_exactly_two_places(
     reordered into `overload-cannot-match`, a join that stops happening --
     cannot hide inside a green run."""
     assert {line for line, _ in get_mismatch_errors} == {
-        _line_of_get(source) for source, _ in _GET_ROWS
+        _line_of(_GET_MISMATCH_SOURCE, source) for source, _ in _GET_ROWS
     }
+
+
+# --- decisions.md 2026-09-01: get's accepted arm-1 typing gap ---------------
+
+#: Arm 1's `default: int | str | bytes | bool` has no relation to the return
+#: TypeVar `_T`, so a raw literal of the WRONG chain family for `ty` type-
+#: checks anyway: the old single signature caught this incidentally (both
+#: `ty` and `default` fed the same `_T`, joining to `object`), and arm 1 was
+#: added specifically to STOP that join for the IN-KIND case -- an in-family
+#: literal (`default=0` against `U32`) types as `_T` now, but a cross-family
+#: one (`default="oops"` against `U32`) is no longer flagged either. Ruling:
+#: the four-arm set stays exactly as E12 specifies (decisions.md 2026-09-01,
+#: "get overload arm 1 accepts type-wrong raw literals statically") because
+#: the compiler is the authority that still refuses both spellings, with a
+#: located `SPT3018` (`tests/unit/test_env_model.py`), and tier 1 raises the
+#: matching `TypeError` at runtime (also pinned there). This test is the
+#: mypy-side half of that pin: proof the silence is real, not assumed.
+_GET_ACCEPTED_GAP_SOURCE = '''\
+"""Two type-wrong raw-literal defaults arm 1 does not catch (accepted gap)."""
+
+from serpent import U32, Env, Symbol
+
+
+def wrong_kind_for_u32(env: Env, key: Symbol) -> U32:
+    return env.storage().persistent().get(key, U32, default="oops")
+
+
+def wrong_kind_for_symbol(env: Env, key: Symbol) -> Symbol:
+    return env.storage().persistent().get(key, Symbol, default=0)
+'''
+
+
+def test_the_get_overloads_accepted_gap_is_silent_under_mypy(tmp_path: Path) -> None:
+    """decisions.md 2026-09-01's documented typing gap: neither spelling in
+    `_GET_ACCEPTED_GAP_SOURCE` produces a mypy error. See
+    `tests/unit/test_env_model.py` for the two tiers that DO still catch it
+    (the compiler's `SPT3018`, tier 1's matching `TypeError`)."""
+    assert run_mypy(_GET_ACCEPTED_GAP_SOURCE, tmp_path) == []

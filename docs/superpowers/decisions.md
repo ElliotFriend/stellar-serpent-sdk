@@ -700,3 +700,28 @@ entry.
 - Reversal cost: per-item low pre-execution; the limits.py routing is the
   one with public-diagnostic consequences and it lands with fixtures
   pinning both kinds' messages.
+
+## 2026-09-01 get overload arm 1 accepts type-wrong raw literals statically
+- Context: M1-E2 Task 7 review, fix round 1. Ruling E12's arm 1
+  (`default: int | str | bytes | bool`) has no relation to the return
+  TypeVar `_T`, so `get(key, U32, default="oops")` and
+  `get(key, Symbol, default=0)` are now statically SILENT under
+  `mypy --strict` -- the old single signature caught both incidentally,
+  via the `object` join arm 1 exists specifically to avoid for the
+  IN-KIND literal case.
+- Ruling: the four-arm set stays exactly as E12 specifies; the gap is
+  ACCEPTED because the compiler is the authority that rejects a
+  type-wrong literal (verified: both spellings raise a located `SPT3018`
+  through `compile_module`, and tier 1 raises the matching `TypeError`
+  from the adopting constructor at runtime) -- not a silent divergence,
+  just one `mypy --strict` no longer catches ahead of compile time. The
+  trade is PINNED explicitly rather than left implicit: a `run_mypy`
+  test asserting no mypy error for both spellings
+  (`tests/unit/test_authoring_types.py`), a `compile_module` test
+  asserting the located `SPT3018` rejection (`tests/unit/test_env_model.py`),
+  and a runtime test asserting tier 1's matching `TypeError`
+  (`tests/unit/test_env_model.py`).
+- Reversal cost: low -- a future narrower arm 1 (e.g. `int` alone, or a
+  `Literal` per scalar family) could recover the static catch without
+  touching the other three arms; nothing downstream depends on today's
+  silence.
