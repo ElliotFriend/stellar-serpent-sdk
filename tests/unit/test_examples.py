@@ -372,13 +372,20 @@ def test_the_structs_examples_long_field_name_goes_through_linear_memory() -> No
 
 
 def test_the_events_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
-    """`record_score` (the AUTHORING form, topics-marked) then `record_tally`
-    (the CANONICAL form, all-data `"vec"`), both published events compared
-    between tier 1 and WASM as decoded chain values.
+    """`record_score` (the AUTHORING form, topics-marked) then
+    `record_round_closed` (the CANONICAL form, all-data `"vec"`), both
+    published events compared between tier 1 and WASM as decoded chain values.
 
-    `record_tally`'s data is a `VecObject` on the WASM side, so it is decoded
-    through `host._vec` element by element rather than through the single
-    `host.chain_value` call that suffices for `record_score`'s bare `U32`.
+    `record_round_closed`'s data is a `VecObject` on the WASM side, so it is
+    decoded through `host._vec` element by element rather than through the
+    single `host.chain_value` call that suffices for `record_score`'s bare
+    `U32`.
+
+    Its topic is `round_closed` -- 12 characters, so a `SymbolObject` pooled
+    through linear memory rather than a `SymbolSmall` word. Ruling E11 is what
+    makes that spellable by hand: `SPT3019` used to refuse a hand-written
+    `topics[0]` past nine characters, and the example had to carry a
+    deliberately short name to be reachable through both spellings.
 
     **Carried obligation (sub-plan F): `host._vec` is PRIVATE.** `FullHost` has
     no public container decoder, so this test reaches past the harness's own
@@ -394,49 +401,74 @@ def test_the_events_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
     scoreboard = deploy(module.Scoreboard, env)
     with env.frame():
         scoreboard.record_score(env, Address(ACCOUNT), U32(7))
-        scoreboard.record_tally(env, U32(3), U32(1))
-    (score_topics, score_data), (tally_topics, tally_data) = env.published_events
+        scoreboard.record_round_closed(env, U32(3), U32(1))
+    (score_topics, score_data), (round_topics, round_data) = env.published_events
 
     _built, host, mini = start(EXAMPLE_EVENTS)
     player = host.val_word(Address(ACCOUNT))
     assert mini.invoke("record_score", player, val.pack_u32val(7)) == val.VOID_VAL
-    assert mini.invoke("record_tally", val.pack_u32val(3), val.pack_u32val(1)) == val.VOID_VAL
-    (wasm_score_topics, wasm_score_data), (wasm_tally_topics, wasm_tally_data) = host.events
-    # `tally_data` is a `ChainValue` union; narrow it to `Vec` before iterating
+    assert (
+        mini.invoke("record_round_closed", val.pack_u32val(3), val.pack_u32val(1)) == val.VOID_VAL
+    )
+    (wasm_score_topics, wasm_score_data), (wasm_round_topics, wasm_round_data) = host.events
+    # `round_data` is a `ChainValue` union; narrow it to `Vec` before iterating
     # (a struct or a scalar has no `__iter__` mypy --strict can see).
-    assert isinstance(tally_data, Vec)
+    assert isinstance(round_data, Vec)
 
     assert [host.chain_value(t) for t in wasm_score_topics] == list(score_topics)
     assert host.chain_value(wasm_score_data) == score_data
-    assert [host.chain_value(t) for t in wasm_tally_topics] == list(tally_topics)
+    assert [host.chain_value(t) for t in wasm_round_topics] == list(round_topics)
     # `host._vec`: the private coupling this test's docstring carries to
     # sub-plan F -- a public container decoder on `FullHost` is the fix.
-    assert [host.chain_value(item) for item in host._vec(wasm_tally_data)] == list(tally_data)
+    assert [host.chain_value(item) for item in host._vec(wasm_round_data)] == list(round_data)
 
     assert score_topics == (Symbol("scored"), Address(ACCOUNT))
     assert score_data == U32(7)
-    assert tally_topics == (Symbol("tally"),)
-    assert list(tally_data) == [U32(3), U32(1)]
+    # Both legs pinned to the literal 12-character name, not just to each
+    # other: a rename that drifted in ONE leg would already have failed the
+    # comparisons above, and a rename that drifted in BOTH fails here.
+    assert round_topics == (Symbol("round_closed"),)
+    assert [host.chain_value(t) for t in wasm_round_topics] == [Symbol("round_closed")]
+    assert list(round_data) == [U32(3), U32(1)]
 
 
 def test_the_events_examples_canonical_spelling_matches_the_authoring_forms_desugar() -> None:
     """The equivalence claim, checked on THIS file's own all-data event.
 
-    `record_tally` hand-writes `env.events().publish((Symbol("tally"),),
-    Vec(U32, [wins, losses]))`; `Tally(wins=..., losses=...).publish(env)` is
-    the authoring form the module docstring says produces the identical
-    record. Both are published into the SAME frame here, and the two
-    `PublishedEvent` snapshots compare equal -- topics word for word (chain
-    values, via `ChainValue.__eq__`) and the `Vec` data the same way.
+    `record_round_closed` hand-writes `env.events().publish((Symbol(
+    "round_closed"),), Vec(U32, [wins, losses]))`; `RoundClosed(wins=...,
+    losses=...).publish(env)` is the authoring form the module docstring says
+    produces the identical record. Both are published into the SAME frame
+    here, and the two `PublishedEvent` snapshots compare equal -- topics word
+    for word (chain values, via `ChainValue.__eq__`) and the `Vec` data the
+    same way.
+
+    The WASM leg is then compared to the AUTHORING form's snapshot, which the
+    cross-check above never does (it compares WASM to the CANONICAL form).
+    That closes the triangle on the 12-character prefix topic: the declared
+    name, the hand-written name, and the `SymbolObject` the compiled contract
+    pools through linear memory are one and the same `round_closed`.
     """
     module = load_example(EXAMPLE_EVENTS)
     env = Env()
     scoreboard = deploy(module.Scoreboard, env)
     with env.frame():
-        scoreboard.record_tally(env, U32(3), U32(1))
-        module.Tally(wins=U32(3), losses=U32(1)).publish(env)
+        scoreboard.record_round_closed(env, U32(3), U32(1))
+        module.RoundClosed(wins=U32(3), losses=U32(1)).publish(env)
     canonical, authored = env.published_events
     assert canonical == authored
+    authored_topics, authored_data = authored
+    assert authored_topics == (Symbol("round_closed"),)
+    assert isinstance(authored_data, Vec)
+
+    _built, host, mini = start(EXAMPLE_EVENTS)
+    assert (
+        mini.invoke("record_round_closed", val.pack_u32val(3), val.pack_u32val(1)) == val.VOID_VAL
+    )
+    ((wasm_topics, wasm_data),) = host.events
+    assert [host.chain_value(t) for t in wasm_topics] == list(authored_topics)
+    # `host._vec` again: the same private coupling, disclosed above.
+    assert [host.chain_value(item) for item in host._vec(wasm_data)] == list(authored_data)
 
 
 # ===========================================================================
@@ -464,7 +496,8 @@ def test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm() ->
     Two things `errors.py`/`structs.py`'s cross-checks did not need to cover,
     which this contract's enumerated requirements ("events on approve/
     transfer") do: the published `Approval` and `Transfer` events, decoded and
-    compared the same way `events.py`'s cross-check compares `Scored`/`Tally`
+    compared the same way `events.py`'s cross-check compares
+    `Scored`/`RoundClosed`
     (`test_the_events_example_answers_the_same_at_tier_1_and_as_wasm`); and
     that `approve` and the successful `transfer_from` each really reach
     `extend_contract_data_ttl` once, via the host's own call count -- proving

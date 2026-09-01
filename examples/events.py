@@ -13,24 +13,25 @@ made side by side rather than across a diff.
   container). `record_score` publishes it through the AUTHORING form:
   `Scored(player=player, score=score).publish(env)`. Kwargs-only construction,
   every field required -- the same rule `@contracttype` enforces.
-* `Tally` is **all-data**: no field is marked `topic`, so its only topic is the
-  default prefix (the snake-cased class name, `tally`). `record_tally`
-  publishes it through the CANONICAL form, spelled out by hand to match
-  exactly what `Tally(...).publish(env)` would desugar to:
-  `env.events().publish((Symbol("tally"),), Vec(U32, [wins, losses]))`.
+* `RoundClosed` is **all-data**: no field is marked `topic`, so its only topic
+  is the default prefix (the snake-cased class name, `round_closed`).
+  `record_round_closed` publishes it through the CANONICAL form, spelled out by
+  hand to match exactly what `RoundClosed(...).publish(env)` would desugar to:
+  `env.events().publish((Symbol("round_closed"),), Vec(U32, [wins, losses]))`.
 
-**Why `Tally`'s prefix topic is kept short, on purpose.** A DECLARED prefix
-topic may be up to 32 characters (`Event.publish`'s own docstring --
-`examples/structs.py` shows the linear-memory consequence of a long name
-elsewhere), but the CANONICAL spelling's hand-written topics tuple is held to
-the stricter 9-character `SymbolSmall` bound at compile time (`SPT3019`,
-S11's convention for a hand-written topic list). Reaching `Tally` through
-BOTH spellings in this file -- which is the whole point of putting it next to
-`env.events().publish(...)` -- means its prefix has to satisfy the tighter of
-the two rules, so `tally` (5 characters) was chosen instead of a longer, more
-descriptive name that only the authoring form could have carried.
+**Why `round_closed` is spelled out at 12 characters.** A topic Symbol has ONE
+bound -- the Symbol's own 32 characters -- and it is the same bound whether the
+name comes from a DECLARED prefix topic or from a hand-written topics tuple
+(`SPT3019` says only that `topics[0]` must be a Symbol). Past nine characters
+the name stops fitting a `SymbolSmall` word and becomes a `SymbolObject` the
+compiler pools through linear memory at the publish site --
+`examples/structs.py` shows that same consequence for a long name elsewhere --
+which costs a `symbol_new_from_linear_memory` call and nothing else. So
+reaching this event through BOTH spellings, which is the whole point of putting
+it next to `env.events().publish(...)`, does not force a terse name: an event
+gets named for what happened.
 
-**`data_format="vec"` is `Tally`'s other reason for existing.** `wins` and
+**`data_format="vec"` is `RoundClosed`'s other reason for existing.** `wins` and
 `losses` publish as one `Vec[U32]`, not a `Map` (the default) and not two
 separate values -- and M1 restricts `"vec"` to a UNIFORM element type across
 every data field (`_check_data_format`), which is why both fields here are the
@@ -41,10 +42,10 @@ repeat it.
 
 `tests/unit/test_examples.py` proves the two things worth proving about this
 file: the tier-1 and WASM legs agree on both published events, and the
-canonical spelling in `record_tally` really does produce the identical
-`(topics, data)` that `Tally(wins=..., losses=...).publish(env)` would -- the
-equivalence claim, checked on the events THIS file ships rather than only on
-`token_style.py`'s pair.
+canonical spelling in `record_round_closed` really does produce the identical
+`(topics, data)` that `RoundClosed(wins=..., losses=...).publish(env)` would --
+the equivalence claim, checked on the events THIS file ships rather than only
+on `token_style.py`'s pair.
 
 Run it two ways -- `tests/unit/test_examples.py` does both and asserts the two
 legs agree:
@@ -55,7 +56,7 @@ legs agree:
     scoreboard = deploy(Scoreboard, env)
     with env.frame():
         scoreboard.record_score(env, player, U32(7))
-        scoreboard.record_tally(env, U32(3), U32(1))
+        scoreboard.record_round_closed(env, U32(3), U32(1))
         env.published_events   # -> the two (topics, data) snapshots
 """
 
@@ -82,10 +83,10 @@ class Scored(Event):
 
 
 @contractevent(data_format="vec")
-class Tally(Event):
-    """All-data: no `topic`-marked field, so the topic list is just the
-    default prefix (`tally`, derived from the class name). Both data fields
-    are `U32`, which `"vec"` requires."""
+class RoundClosed(Event):
+    """All-data: no `topic`-marked field, so the topic list is just the default
+    prefix (`round_closed`, derived from the class name). Both data fields are
+    `U32`, which `"vec"` requires."""
 
     wins: U32
     losses: U32
@@ -99,8 +100,8 @@ class Scoreboard:
         """The AUTHORING form."""
         Scored(player=player, score=score).publish(env)
 
-    def record_tally(self, env: Env, wins: U32, losses: U32) -> None:
-        """The CANONICAL form, hand-written to match `Tally(wins=wins,
+    def record_round_closed(self, env: Env, wins: U32, losses: U32) -> None:
+        """The CANONICAL form, hand-written to match `RoundClosed(wins=wins,
         losses=losses).publish(env)`'s desugar exactly: the same prefix topic
         naming the event, and the same `Vec[U32]` data."""
-        env.events().publish((Symbol("tally"),), Vec(U32, [wins, losses]))
+        env.events().publish((Symbol("round_closed"),), Vec(U32, [wins, losses]))
