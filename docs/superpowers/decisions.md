@@ -16,6 +16,9 @@ Format:
 - Reversal cost:
 ```
 
+Append new entries at the end of the file; never insert before an existing
+entry.
+
 ## 2026-08-26 Standing-autonomy mechanics for M1
 - Context: Elliot granted continue-through-M1 autonomy with a reviewable
   decision record ("keep chugging... clearly see where those decisions were
@@ -256,6 +259,14 @@ Format:
 - Why: one entry point keeps the public contract reviewable; an
   expression-level API has no consumer outside tests.
 - Reversal cost: additive — export a wrapper later if D/E want one.
+
+## 2026-08-27 M1-C final-review minors folded into parked passes
+- Minors 2 and 3 from the final whole-branch review (registry intent strings
+  hardcode limit numbers; frontend.py imports _host._protocol via the private
+  path) are folded into the already-parked sanctioned wording/cleanup passes
+  (see the M1-C attention file §8-9). Minor 4 (runtime_parts ratification
+  caveat) fixed in-code at merge time; Minor 1 is the
+  `compile_expression retired` entry.
 
 ## 2026-08-27 M1-D emitter rulings (dossier §E, all 16 recommendations adopted)
 - Context: the M1-D inputs dossier (specs/2026-08-27-m1d-inputs-dossier.md)
@@ -689,10 +700,3 @@ Format:
 - Reversal cost: per-item low pre-execution; the limits.py routing is the
   one with public-diagnostic consequences and it lands with fixtures
   pinning both kinds' messages.
-
-## 2026-08-27 M1-C final-review minors folded into parked passes
-- Minors 2 and 3 from the final whole-branch review (registry intent strings
-  hardcode limit numbers; frontend.py imports _host._protocol via the private
-  path) are folded into the already-parked sanctioned wording/cleanup passes
-  (see the M1-C attention file §8-9). Minor 4 (runtime_parts ratification
-  caveat) fixed in-code at merge time; Minor 1 is the entry above.
