@@ -573,8 +573,8 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
     CodeEntry(
         "SPT3019",
         "SPT3xxx",
-        "events().publish(topics, data) -- topics[0] is not a short Symbol (S11)",
-        "the first event topic must be a short Symbol naming the event",
+        "events().publish(topics, data) -- topics[0] is not a Symbol (S11)",
+        "the first event topic must be a Symbol naming the event",
         "Task 7a",
     ),
     # Added in Task 5's review fix round (controller ruling). A chain-type

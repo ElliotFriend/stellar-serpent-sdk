@@ -469,9 +469,14 @@ def test_explicit_topics_and_data_format_are_recorded() -> None:
 
 
 def test_a_prefix_topic_longer_than_nine_characters_is_legal() -> None:
-    """`fits_symbol_small` (<=9) is the WRONG cap here: a longer prefix topic is
-    a perfectly valid Symbol that pools via linear memory at the publish site
-    (S19)."""
+    """The cap is the Symbol's 32, not `fits_symbol_small`'s 9: a longer prefix
+    topic is a perfectly valid Symbol that pools via linear memory at the
+    publish site (S19).
+
+    That used to be an asymmetry -- the hand-written canonical spelling was
+    held to the shorter bound by `SPT3019` while a DECLARED prefix was not.
+    Ruling E11 dropped that arm as dead code, so the 32-character bound is now
+    the only one either spelling meets."""
 
     @contractevent(topics=("transfer_from",))
     class Long(Event):

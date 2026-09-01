@@ -801,17 +801,23 @@ def test_published_events_is_an_immutable_snapshot_view() -> None:
     assert len(reread) == 1
 
 
-def test_publish_requires_a_short_symbol_first_topic() -> None:
+def test_publish_requires_a_symbol_first_topic() -> None:
     """S10's convention, enforced at tier 1 and NOT by the host -- a
     deliberate tier-1-only reject, mirroring the frontend's SPT3019 so that
-    nothing a compiled contract can express reaches it."""
+    nothing a compiled contract can express reaches it.
+
+    "A Symbol" is the WHOLE of it (ruling E11). A topic past the 9-character
+    `SymbolSmall` bound is an ordinary Symbol -- `Symbol.__init__` is the one
+    place its 32-character bound lives -- so it is RECORDED here, exactly as a
+    declared prefix topic of the same length already was.
+    """
     env = deployed_env()
     with pytest.raises(BadArgument, match="topic"):
         env.events().publish((), U32(1))
     with pytest.raises(BadArgument, match="Symbol"):
         env.events().publish((U32(1),), U32(1))
-    with pytest.raises(BadArgument, match="short"):
-        env.events().publish((Symbol("a_very_long_name"),), U32(1))
+    env.events().publish((Symbol("a_very_long_name"),), U32(1))
+    assert env.published_events[-1] == ((Symbol("a_very_long_name"),), U32(1))
 
 
 def test_an_undecorated_event_subclass_cannot_publish() -> None:
@@ -881,11 +887,13 @@ def test_event_publish_needs_a_frame_like_every_other_env_operation() -> None:
 
 
 def test_event_publish_accepts_a_prefix_topic_longer_than_nine_characters() -> None:
-    """The declaration-time cap is the Symbol's 32, not SymbolSmall's 9 (Task
-    5), and the frontend desugar pools a long prefix through linear memory
-    rather than refusing it -- so the model must not refuse it either. This is
-    exactly why `publish` does not re-run `Events.publish`'s tier-1-only
-    short-Symbol check."""
+    """The cap is the Symbol's 32, not SymbolSmall's 9 (Task 5), and the
+    frontend desugar pools a long prefix through linear memory rather than
+    refusing it -- so the model must not refuse it either.
+
+    Ruling E11 made that ONE rule rather than two: `Events.publish` no longer
+    holds a hand-written `topics[0]` to the shorter bound, so this length is
+    now legal through both halves of the surface and not just this one."""
     env = deployed_env()
     TransferCompleted(amount=U32(1)).publish(env)
     (topics, _data) = env.published_events[0]

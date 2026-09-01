@@ -1542,9 +1542,9 @@ class Contract:
 
 #### SPT3019
 
-**Construct:** events().publish(topics, data) -- topics[0] is not a short Symbol (S11)
+**Construct:** events().publish(topics, data) -- topics[0] is not a Symbol (S11)
 
-**Intent:** the first event topic must be a short Symbol naming the event
+**Intent:** the first event topic must be a Symbol naming the event
 
 #### event topics[0] not a Symbol (`types/event_topic_not_symbol.py`)
 
@@ -1559,8 +1559,8 @@ class Contract:
         return x
 ```
 
-- **message:** the first event topic must be a short Symbol naming the event: topics[0] is U32, not Symbol
-- **help:** make topics[0] a short Symbol, e.g. Symbol('transfer')
+- **message:** the first event topic must be a Symbol naming the event: topics[0] is U32, not Symbol
+- **help:** make topics[0] a Symbol naming the event, e.g. Symbol('transfer')
 
 #### SPT3020
 

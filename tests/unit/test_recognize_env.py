@@ -19,9 +19,12 @@ Three obligations, mirroring the task brief:
 from __future__ import annotations
 
 import ast
+import pathlib
 
 import pytest
 
+from serpent import Symbol
+from serpent import env as env_module
 from serpent._host import functions_by_name
 from serpent.compiler import codes, recognize
 from serpent.compiler.ctx import AliasTable, FuncCtx, SlotTable
@@ -469,12 +472,46 @@ def test_events_publish() -> None:
     assert isinstance(data, ParamRef) and data.name == "amt"
 
 
-def test_events_publish_rejects_a_long_first_topic() -> None:
-    """Minor 4 (fix round 1): the too-long case says WHY, distinct from the
-    non-Symbol case below."""
-    diag = _reject_call('env.events().publish((Symbol("a" * 10), addr), amt)')
-    _assert_reject(diag, "SPT3019", "too long")
-    assert "<= 9" in diag.message
+def test_events_publish_accepts_a_long_first_topic() -> None:
+    """Ruling E11: `SPT3019` means exactly one thing -- topics[0] is not a
+    Symbol.
+
+    The arm this replaces refused a hand-written `topics[0]` past the
+    9-character `SymbolSmall` bound, which was dead code: the real bound is
+    the Symbol's own 32 characters, enforced by `Symbol.__init__` (and by a
+    frozen semantics reject case), so nothing longer could denote a Symbol
+    here in the first place. A 12-character topic -- `round_closed`, the one
+    `examples/events.py` publishes -- compiles, and pools through linear
+    memory at the publish site like any other long Symbol.
+    """
+    node = _ok_call('env.events().publish((Symbol("round_closed"), addr), amt)')
+    assert isinstance(node, HostCall)
+    topics = node.args[0]
+    assert isinstance(topics, MakeTopics)
+    first = topics.topics[0]
+    assert isinstance(first, Const) and first.py_value == "round_closed"
+
+
+def test_the_32_character_symbol_bound_is_symbols_own_and_is_restated_nowhere() -> None:
+    """Ruling E11's other half: with the length arm gone, exactly ONE place in
+    the tree bounds an event topic's length -- `Symbol` itself.
+
+    Half behavior, half source, deliberately. The BEHAVIOR half proves the
+    surviving bound is real and lives in the constructor (33 characters raise,
+    32 do not). The SOURCE half has to be a grep: a second check that AGREED
+    with `Symbol` would be invisible to behavior, and "nobody restates it" is
+    a claim only a scan can make. The two files scanned are the two that
+    carried the dead restatement -- `recognize.py`'s `_is_short_symbol` and
+    `env.py`'s `Events.publish`.
+    """
+    with pytest.raises(ValueError, match="1-32 characters"):
+        Symbol("a" * 33)
+    assert Symbol("a" * 32).text == "a" * 32
+
+    for module in (recognize, env_module):
+        source = pathlib.Path(module.__file__ or "").read_text(encoding="utf-8")
+        assert "fits_symbol_small" not in source, module.__name__
+        assert "_is_short_symbol" not in source, module.__name__
 
 
 def test_events_publish_rejects_a_non_symbol_first_topic() -> None:

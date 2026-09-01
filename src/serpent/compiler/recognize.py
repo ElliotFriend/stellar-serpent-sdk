@@ -157,7 +157,7 @@ from enum import Enum, auto
 from functools import cmp_to_key
 from typing import Any
 
-from serpent import errors, val
+from serpent import errors
 from serpent._host import STORAGE_TYPE, functions_by_name
 from serpent.compiler import codes
 from serpent.compiler.ctx import MUTABLE_TAGS, FuncCtx, Ownership
@@ -247,7 +247,7 @@ _HELP: dict[str, str] = {
         "call it and chain the recognized form, e.g. env.storage().instance().get(...), "
         "or env.events().publish((Symbol('name'), ...), data)"
     ),
-    "SPT3019": "make topics[0] a short Symbol, e.g. Symbol('transfer')",
+    "SPT3019": "make topics[0] a Symbol naming the event, e.g. Symbol('transfer')",
 }
 
 #: The comprehension node kinds, and the rewrite their SS B.2 row names. Used
@@ -1254,20 +1254,6 @@ def _recognize_events_method(node: ast.Call, ctx: FuncCtx, method: str) -> IRExp
     return _events_publish(node, ctx, loc)
 
 
-def _is_short_symbol(node: IRExpr) -> bool:
-    """Whether `node` (already proven `Ty.Symbol`) is PROVABLY a short
-    (<= 9 character) Symbol -- S11's `topics[0]` requirement. A literal
-    `Symbol("...")` construction is checked against `val.fits_symbol_small`
-    directly; a non-literal Symbol-typed expression (a param, a local, a
-    module constant) is accepted, because M1 supports no long-Symbol host
-    form at all yet (`Symbol.to_val()` raises `NotImplementedError` past 9
-    characters -- sub-plan B), so nothing reaching this point could denote a
-    long Symbol in the first place."""
-    if isinstance(node, Const) and isinstance(node.py_value, str):
-        return val.fits_symbol_small(node.py_value)
-    return True
-
-
 def _events_publish(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
     spec = RECOGNIZED["events.publish"]
     bound = _bind(node, ctx, loc, spec.surface, ("topics", "data"))
@@ -1292,14 +1278,6 @@ def _events_publish(node: ast.Call, ctx: FuncCtx, loc: Loc) -> IRExpr:
     first = topic_irs[0]
     if first.ty != Ty.Symbol:
         _error(ctx, "SPT3019", loc, f"topics[0] is {first.ty.render()}, not Symbol")
-        return _invalid(loc)
-    if not _is_short_symbol(first):
-        _error(
-            ctx,
-            "SPT3019",
-            loc,
-            "topics[0] is too long; event topic Symbols must be <= 9 characters",
-        )
         return _invalid(loc)
 
     data = _check_value(bound["data"], ctx)

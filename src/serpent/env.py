@@ -154,7 +154,7 @@ from collections.abc import Callable, Hashable, Iterable, Iterator
 from types import UnionType
 from typing import Any, ClassVar, TypeAlias, TypeVar, Union, cast, get_args, get_origin
 
-from serpent import _frame, val
+from serpent import _frame
 from serpent._host._scalars import STORAGE_TYPE
 from serpent.errors import AbiCheckFailed, BadArgument, ContractError, MissingValue
 from serpent.types import (
@@ -677,14 +677,13 @@ class Event:
 
         Recorded through the same snapshot path `Events.publish` uses
         (`_record`), and deliberately NOT through that method's argument
-        validation. `Events.publish` refuses a `topics[0]` longer than the
-        9-character SymbolSmall bound, which is an honest tier-1-only reject for
-        a HAND-WRITTEN topics tuple (the frontend refuses the same shape,
-        `SPT3019`). A DECLARED prefix topic is capped at the Symbol's 32
-        characters instead, on purpose: `transfer_completed` is an ordinary
-        event name, and the compiler pools it through linear memory at the
-        publish site rather than refusing it. Re-running the short-Symbol check
-        here would refuse events the compiler accepts and the chain publishes.
+        validation: the topic list here comes from a declaration
+        `@contractevent` has already checked, so re-checking it would only be a
+        second copy of the same rule. The one bound either half applies to a
+        topic Symbol is the Symbol's own 32 characters, held by
+        `Symbol.__init__`: `transfer_completed` is an ordinary event name, and
+        the compiler pools it through linear memory at the publish site rather
+        than refusing it.
         """
         topics, data = _event_payload(self)
         env.events()._record(topics, data)
@@ -1165,21 +1164,26 @@ class Events:
         `topics` is a heterogeneous tuple, not a homogeneous `Vec`: the
         canonical Soroban shape is `(Symbol, Address, Address)` -- an event
         name followed by the addresses it concerns. `topics[0]` is
-        conventionally a short `Symbol` naming the event; the host does not
-        enforce that, but indexers and RPC filtering assume it.
+        conventionally a `Symbol` naming the event; the host does not enforce
+        that, but indexers and RPC filtering assume it.
 
         The model DOES enforce it, with `BadArgument`, and that is a
-        tier-1-only reject: the frontend already refuses all three shapes at
-        compile time (`SPT1038` for an empty topic tuple, `SPT3019` for a first
-        topic that is not a `Symbol` or is longer than the 9-character short
-        bound), so no compiled contract can reach these raises through THIS
-        surface, and a hand-written tier-1 call gets the same answer the
-        compiler would have given. The host itself enforces none of it.
+        tier-1-only reject: the frontend already refuses both shapes at compile
+        time (`SPT1038` for an empty topic tuple, `SPT3019` for a first topic
+        that is not a `Symbol`), so no compiled contract can reach these raises
+        through THIS surface, and a hand-written tier-1 call gets the same
+        answer the compiler would have given. The host itself enforces none of
+        it.
 
-        `Event.publish` records through `_record` instead, skipping these three
+        LENGTH is not part of it (ruling E11). A topic Symbol's one bound is
+        the Symbol's own 32 characters, held by `Symbol.__init__`, so a
+        hand-written `topics[0]` past the 9-character `SymbolSmall` form is
+        recorded here exactly as a declared prefix topic of the same length
+        already was; it pools through linear memory at the publish site.
+
+        `Event.publish` records through `_record` instead, skipping these two
         checks deliberately -- its topic list comes from a declaration the
-        decorator has already validated, where a prefix topic longer than nine
-        characters is legal and pools through linear memory (see that method).
+        decorator has already validated (see that method).
 
         The recorded event is a SNAPSHOT (ruling E5): a later mutation of the
         topics or the data cannot change what was published, exactly as on
@@ -1195,10 +1199,6 @@ class Events:
         if not isinstance(name, Symbol):
             raise BadArgument(
                 f"topics[0] must be a Symbol naming the event, not a {type(name).__name__}"
-            )
-        if not val.fits_symbol_small(name.text):
-            raise BadArgument(
-                f"topics[0] must be a short Symbol (at most 9 characters): {name.text!r}"
             )
         self._record(topics, data)
 
