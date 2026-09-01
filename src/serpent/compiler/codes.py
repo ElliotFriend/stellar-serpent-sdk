@@ -609,6 +609,27 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "call has the wrong arguments (missing, extra, or duplicate keyword)",
         "Task 5/7a",
     ),
+    # Added in M1-E2 (tagged unions and int enums). `s.payload(index, T)` reads
+    # one payload slot of a union whose VARIANT is not known at the call site
+    # -- but the union's widest payload and its per-slot type SET both are
+    # (ruling E2), so two mistakes are decidable at compile time: an index no
+    # variant could have, and a `T` no variant declares at that index. Neither
+    # is an arity mistake against a known call shape (SPT3020 -- the call
+    # itself takes exactly two arguments and got them) and neither is a
+    # declared-vs-actual disagreement (SPT3018 -- both arguments are perfectly
+    # well typed; it is the COMBINATION the union cannot satisfy), so it is its
+    # own row. Left unreported, both compile to a `vec_get` that traps on chain
+    # or a narrow that fails there -- an on-chain failure for something the
+    # compiler could see.
+    CodeEntry(
+        "SPT3021",
+        "SPT3xxx",
+        "payload() -- a read no variant of the union could satisfy: an index at or above "
+        "the widest variant's payload, or a `ty` no variant declares at that index -- "
+        "`s.payload(U32(9), U32)`, `s.payload(U32(0), Bool)`",
+        "this payload() read matches no variant of the union",
+        "Task 4 (M1-E2)",
+    ),
 )
 
 # --- SPT4xxx: contract shape (dossier D.1; SS B.3) --------------------------

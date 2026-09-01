@@ -11,7 +11,7 @@ ever disagree; the failure message names the regeneration command.
 
 serpent compiles a restricted subset of Python to a Soroban contract.
 This document is generated, in full, from the compiler's own registry
-of diagnostic codes, its `tests/must_reject/` fixture suite (105 minimal counter-examples, one per rejected
+of diagnostic codes, its `tests/must_reject/` fixture suite (107 minimal counter-examples, one per rejected
 construct), and its recognized-surface tables -- never hand-authored,
 so it cannot say something the compiler does not actually do.
 
@@ -37,7 +37,7 @@ A bare literal with no chain type in scope is rejected (SPT3008):
 wrap the literal in a chain type, e.g. U32(5). Operators are restricted to
 same-width, same-signedness operands, and `==`/`<`/`<=`/`>`/`>=` are
 restricted to the types the on-chain value model can actually order.
-20 type rules are enforced end to end; see [SPT3xxx](#spt3xxx----types) below for the exact
+21 type rules are enforced end to end; see [SPT3xxx](#spt3xxx----types) below for the exact
 list.
 
 ### 1.3 Env API
@@ -1582,6 +1582,54 @@ class Contract:
 
 - **message:** call has the wrong arguments (missing, extra, or duplicate keyword): `U32()` takes exactly one argument, got 2
 - **help:** pass exactly one value, e.g. U32(x)
+
+#### SPT3021
+
+**Construct:** payload() -- a read no variant of the union could satisfy: an index at or above the widest variant's payload, or a `ty` no variant declares at that index -- `s.payload(U32(9), U32)`, `s.payload(U32(0), Bool)`
+
+**Intent:** this payload() read matches no variant of the union
+
+#### payload() index at or above the union's widest variant (`types/union_payload_index_out_of_arity.py`)
+
+```python
+from serpent import ContractUnion, Env, U32, contract, contractunion, variant
+
+
+@contractunion
+class Shape(ContractUnion):
+    Circle = variant(U32)
+    Rect = variant(U32, U32)
+
+
+@contract
+class Contract:
+    def compute(self, env: Env, s: Shape) -> U32:
+        return s.payload(U32(2), U32)  # HERE
+```
+
+- **message:** this payload() read matches no variant of the union: index 2 is at or above `Shape`'s widest variant, which carries 2 payload value(s)
+- **help:** payload indices for `Shape` run 0 to 1
+
+#### payload() ty that no variant declares at that index (`types/union_payload_wrong_type.py`)
+
+```python
+from serpent import Bool, ContractUnion, Env, U32, contract, contractunion, variant
+
+
+@contractunion
+class Shape(ContractUnion):
+    Circle = variant(U32)
+    Rect = variant(U32, U32)
+
+
+@contract
+class Contract:
+    def compute(self, env: Env, s: Shape) -> Bool:
+        return s.payload(U32(0), Bool)  # HERE
+```
+
+- **message:** this payload() read matches no variant of the union: no variant of `Shape` declares a Bool at payload index 0
+- **help:** index 0 is declared as: U32
 
 ### SPT4xxx -- contract shape (declarations)
 

@@ -263,7 +263,9 @@ _EXPECTED_CODES = frozenset(
     {
         *(f"SPT1{n:03d}" for n in range(1, 40)),
         *(f"SPT2{n:03d}" for n in range(1, 7)),
-        *(f"SPT3{n:03d}" for n in range(1, 21)),
+        # M1-E2 Task 4's SPT3021 (a payload() read no variant of the union
+        # could satisfy) takes SPT3xxx to 21.
+        *(f"SPT3{n:03d}" for n in range(1, 22)),
         # M1-E2 Task 2's five declaration rows for @contractunion/@contractenum
         # take SPT4xxx to 25, and SPT5006 (a variant payload wider than S4's
         # tuple arity) takes SPT5xxx to 6.
@@ -316,7 +318,15 @@ def test_registry_is_complete_not_a_sample() -> None:
     # discriminant, a missing/wrong base) and SPT5006 for a variant payload
     # wider than S4's tuple arity. SPT5002/SPT5003's wording widened in the
     # same commit -- a sanctioned re-attribution, no renumber.
-    assert len(codes.REGISTRY) == 106
+    #
+    # M1-E2 Task 4 appended ONE more, also from the sub-plan's sanctioned
+    # enumeration: SPT3021, a `payload()` read no variant of the union could
+    # satisfy (an index at or above the widest variant's payload, or a `ty` no
+    # variant declares at that index -- both decidable at compile time from the
+    # declaration alone, ruling E2). Every other union/int-enum reject reuses a
+    # row that already existed: an arity mistake is SPT3020, a per-slot type
+    # disagreement SPT3018, for-in over a union SPT1019.
+    assert len(codes.REGISTRY) == 107
 
 
 def test_registry_code_set_matches_the_frozen_snapshot() -> None:

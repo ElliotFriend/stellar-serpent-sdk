@@ -109,6 +109,7 @@ from serpent.compiler.ir import (
     MakeMap,
     MakeStruct,
     MakeTopics,
+    MakeUnion,
     MakeVec,
     ModuleIR,
     Raise,
@@ -627,7 +628,10 @@ def _collect_host_fns(
             # HERE, not by D.
             if not val.fits_symbol_small(node.field):
                 note((_FIELD_SYMBOL_FN,), node.loc, certain=True)
-        elif isinstance(node, (MakeVec, MakeTopics)):
+        elif isinstance(node, (MakeVec, MakeTopics, MakeUnion)):
+            # M1-E2 SS B.1: a union value IS a `Vec` on chain, built by the
+            # very same trio -- and REACHABLE, not certain, because which of
+            # the two forms runs is D's choice.
             note(_VEC_BUILD_FNS, node.loc, certain=False)
         elif isinstance(node, MakeMap):
             note(_MAP_BUILD_FNS, node.loc, certain=False)
@@ -884,11 +888,11 @@ def _needs_memory(ir: ModuleIR, literals: LiteralInventory, used: frozenset[str]
     (`_LINEAR_MEMORY_HOST_FNS`) settles it too.
 
     **A bulk construction counts when C can see that D has the choice**, which
-    is not the same test for all three nodes:
+    is not the same test for every node:
 
-    * `MakeVec`/`MakeMap` carry `all_static`, so that flag answers it directly.
-      A construction with a non-static item falls back to the build-up chain,
-      which needs no memory at all.
+    * `MakeVec`/`MakeMap`/`MakeUnion` carry `all_static`, so that flag answers
+      it directly. A construction with a non-static item falls back to the
+      build-up chain, which needs no memory at all.
     * `MakeTopics` has NO `all_static` flag -- topics are a heterogeneous tuple
       by design (D8), so the node never computed one -- and the equivalent test
       has to be made here: every topic being a `Const` is exactly the condition
@@ -921,7 +925,11 @@ def _needs_memory(ir: ModuleIR, literals: LiteralInventory, used: frozenset[str]
 
 def _bulk_construction_can_use_memory(node: object) -> bool:
     """Whether `node` is a bulk construction D could lay out in linear memory."""
-    if isinstance(node, (MakeVec, MakeMap)):
+    if isinstance(node, (MakeVec, MakeMap, MakeUnion)):
+        # `MakeUnion` HAS an `all_static` flag of its own (unlike `MakeTopics`
+        # below), so it belongs on this arm: recomputing the every-item-a-
+        # `Const` test for it would be a second, divergable copy of a fact the
+        # node already carries.
         return node.all_static
     if isinstance(node, MakeTopics):
         return all(isinstance(topic, Const) for topic in node.topics)

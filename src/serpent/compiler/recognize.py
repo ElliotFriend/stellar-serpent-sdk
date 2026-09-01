@@ -179,6 +179,7 @@ from serpent.compiler.ir import (
     MakeMap,
     MakeStruct,
     MakeTopics,
+    MakeUnion,
     MakeVec,
     Nop,
     ParamRef,
@@ -754,6 +755,23 @@ def recognize_call(node: ast.Call, ctx: FuncCtx) -> IRExpr | None:
     if method in _CONTAINER_METHOD_NAMES:
         return _recognize_container_method(node, ctx, method, base)
 
+    # M1-E2's two union/int-enum call shapes, both purely syntactic at this
+    # point and so placed before `_malformed_env_chain_step`'s fallback:
+    # `Shape.Rect(a, b)` -- an attribute call whose BASE NAME is a declared
+    # union (or an int enum, whose members are never called)...
+    if isinstance(base, ast.Name):
+        variant = _recognize_udt_case_call(node, ctx, base.id, method)
+        if variant is not None:
+            return variant
+
+    # ...and `s.tag()` / `s.payload(i, T)`, the one shape here whose receiver
+    # is a union VALUE rather than a class name -- so, like the container
+    # methods above, the method NAME gates it and the receiver's TYPE decides.
+    if method in _UNION_READ_METHODS:
+        read = _recognize_union_read(node, ctx, method, base)
+        if read is not None:
+            return read
+
     # Nothing above claimed the SHAPE. Before giving up, check whether this is
     # an `env` chain with one broken LINK (`env.storage(1).instance()...`):
     # the surface is recognized and supported, only miscalled, and saying so at
@@ -791,6 +809,13 @@ def recognize_attribute(node: ast.Attribute, ctx: FuncCtx) -> IRExpr | None:
     loc = Loc.from_node(ctx.path, node)
     if isinstance(node.value, ast.Name) and node.value.id == "env":
         return _recognize_env_top_level(ctx, loc, node.attr)
+    # M1-E2: `Shape.Empty` / `Color.Red` -- matched BEFORE the base is checked
+    # as a value, because a union/int-enum CLASS is not a value and checking
+    # it would report an unrelated diagnostic for a perfectly good case
+    # reference.
+    case = _recognize_udt_case_attribute(node, ctx, loc)
+    if case is not None:
+        return case
     base = _check_value(node.value, ctx)
     if _failed(base):
         return _invalid(loc)
@@ -2190,6 +2215,356 @@ def _recognize_field_get(node: ast.Attribute, ctx: FuncCtx, loc: Loc, base: IREx
         help=f"the declared fields are: {', '.join(name for name, _ in fields)}",
     )
     return _invalid(loc)
+
+
+# --- unions and int enums (M1-E2 SS B.1) ------------------------------------
+
+#: The syntactic gate for the two union READER methods, exactly as
+#: `_CONTAINER_METHOD_NAMES` gates the container surface: an attribute call
+#: with another name is still "not recognized at all" and its receiver is never
+#: checked for it. Both names come from `ContractUnion`'s own tier-1 API
+#: (`types/_udt.py`), so a row here cannot recognize a surface the oracle
+#: cannot run.
+_UNION_READ_METHODS: frozenset[str] = frozenset({"tag", "payload"})
+
+#: The two `_serpent_type_["kind"]` values this section owns, and what one
+#: case of each is CALLED in a diagnostic -- a union has variants, an int enum
+#: has members, and saying "variant" for an int enum would send an author
+#: looking for a `variant()` that is not in the declaration at all.
+_UDT_CASE_NOUN: Mapping[str, str] = {"union": "variant", "enum": "member"}
+
+
+def _union_cases(ctx: FuncCtx, name: str) -> Sequence[tuple[str, tuple[Any, ...]]] | None:
+    """A declared union's `(variant name, payload annotations)` pairs in
+    DECLARATION order, straight from `_serpent_type_` (SS B.1) -- the twin of
+    `_struct_fields`, reading the same metadata the same way. An empty payload
+    tuple is a UNIT variant, which on chain is a one-element `Vec`."""
+    for decl in ctx.loaded.decorated_types_in_order:
+        if decl.name == name and decl.kind == "union":
+            cases = decl.metadata.get("cases")
+            if isinstance(cases, list):
+                return [(str(case), tuple(payload)) for case, payload in cases]
+    return None
+
+
+def _declared_udt(ctx: FuncCtx, name: str) -> tuple[str, Sequence[tuple[str, Any]]] | None:
+    """`(kind, cases)` when `name` names a declared union or int enum in THIS
+    module's namespace, else `None`.
+
+    `vars(...)`, never `getattr` -- `_recognize_construction`'s own discipline:
+    an undecorated subclass inherits `_serpent_type_` without having been
+    declared, and constructing one would name a spec entry nothing writes.
+    """
+    obj = ctx.loaded.namespace.get(name)
+    if not isinstance(obj, type):
+        return None
+    metadata = vars(obj).get(_METADATA_ATTR)
+    if not isinstance(metadata, dict):
+        return None
+    kind = metadata.get("kind")
+    if kind not in ("union", "enum"):
+        return None
+    cases = metadata.get("cases")
+    assert isinstance(cases, list), f"@contract{kind} {name} carries no case list"
+    return str(kind), [(str(case), detail) for case, detail in cases]
+
+
+def _unknown_case(
+    ctx: FuncCtx, loc: Loc, name: str, kind: str, attr: str, cases: Sequence[tuple[str, Any]]
+) -> IRExpr:
+    noun = _UDT_CASE_NOUN[kind]
+    _error(
+        ctx,
+        "SPT2001",
+        loc,
+        f"`{name}` has no {noun} `{attr}`",
+        help=f"the declared {noun}s are: {', '.join(case for case, _ in cases)}",
+    )
+    return _invalid(loc)
+
+
+def _recognize_udt_case_attribute(node: ast.Attribute, ctx: FuncCtx, loc: Loc) -> IRExpr | None:
+    """`Shape.Empty` / `Color.Red` -- one case of a declared union or int enum,
+    referenced as a VALUE.
+
+    A unit variant is a ONE-element `Vec` led by its name `Symbol` (SS B.1), so
+    it is a `MakeUnion` with a single item. An int-enum member IS a bare `u32`
+    on chain, so it is a `Const` carrying the DISCRIMINANT and typed
+    `Ty.Enum(name)` -- no node of its own, and no discriminant serpent ever
+    invents (ruling E5 makes them explicit in the declaration).
+
+    Returns `None` -- sink untouched -- when the base is not a declared
+    union/int-enum name at all, which is every other attribute in the language.
+    """
+    if not isinstance(node.value, ast.Name):
+        return None
+    declared = _declared_udt(ctx, node.value.id)
+    if declared is None:
+        return None
+    kind, cases = declared
+    name = node.value.id
+    for case, detail in cases:
+        if case != node.attr:
+            continue
+        if kind == "enum":
+            return Const(loc=loc, ty=Ty.Enum(name), py_value=int(detail))
+        payload = tuple(detail)
+        if payload:
+            _error(
+                ctx,
+                "SPT3020",
+                loc,
+                f"`{name}.{case}` takes {len(payload)} payload value(s), got none",
+                help=f"construct it, e.g. {name}.{case}(...)",
+            )
+            return _invalid(loc)
+        return MakeUnion(
+            loc=loc,
+            ty=Ty.Union(name),
+            case=case,
+            items=(Const(loc=loc, ty=Ty.Symbol, py_value=case),),
+            all_static=True,
+        )
+    return _unknown_case(ctx, loc, name, kind, node.attr, cases)
+
+
+def _recognize_udt_case_call(node: ast.Call, ctx: FuncCtx, name: str, method: str) -> IRExpr | None:
+    """`Shape.Rect(a, b)` -- a variant construction -- or an int-enum member
+    that has been CALLED, which it never is (`Color.Red` IS the value).
+
+    Returns `None` when `name` is not a declared union/int-enum name, leaving
+    the sink untouched for whatever surface does own the call.
+    """
+    declared = _declared_udt(ctx, name)
+    if declared is None:
+        return None
+    kind, cases = declared
+    loc = Loc.from_node(ctx.path, node)
+    for case, detail in cases:
+        if case != method:
+            continue
+        if kind == "enum":
+            _error(
+                ctx,
+                "SPT3020",
+                loc,
+                f"`{name}.{case}` is an int-enum member, not a call",
+                help=f"write it as a value, e.g. `{name}.{case}`",
+            )
+            return _invalid(loc)
+        return _union_construction(node, ctx, loc, name, case, tuple(detail))
+    return _unknown_case(ctx, loc, name, kind, method, cases)
+
+
+def _union_construction(
+    node: ast.Call,
+    ctx: FuncCtx,
+    loc: Loc,
+    name: str,
+    case: str,
+    payload: tuple[Any, ...],
+) -> IRExpr:
+    """One tuple variant's checked construction: `MakeUnion(items=(Symbol
+    Const, *payload))`, in DECLARATION order (SS B.1).
+
+    POSITIONAL only, which is the exact opposite of `_bind_record_fields`'
+    keywords-only rule -- and for the same reason, read the other way round: a
+    struct is a `Map<Symbol, V>` whose on-chain order is the SORTED one, so
+    naming every field is what keeps the source from implying an order that is
+    not there; a variant payload is a TUPLE whose on-chain order IS the
+    declaration order, so position is the only thing that identifies a slot.
+
+    A wrong ARITY is `SPT3020` (an arity-shaped mistake against a KNOWN shape),
+    a per-slot TYPE disagreement is `SPT3018`; the SPT1038 row records the
+    controller ruling that reusing SPT3018 for a non-type disagreement is the
+    wrong KIND of error.
+    """
+    if not payload:
+        _error(
+            ctx,
+            "SPT3020",
+            loc,
+            f"`{name}.{case}` is a unit variant, not a call",
+            help=f"write it as a value, e.g. `{name}.{case}`",
+        )
+        return _invalid(loc)
+    if node.keywords:
+        shown = node.keywords[0].arg or "**"
+        _error(
+            ctx,
+            "SPT3020",
+            loc,
+            f"`{name}.{case}(...)` takes positional arguments only, got `{shown}=`",
+            help="a variant payload is a tuple, so pass its values in declaration order",
+        )
+        return _invalid(loc)
+    if len(node.args) != len(payload):
+        _error(
+            ctx,
+            "SPT3020",
+            loc,
+            f"`{name}.{case}` takes {len(payload)} payload value(s), got {len(node.args)}",
+        )
+        return _invalid(loc)
+
+    values: list[IRExpr] = []
+    for index, (arg, annotation) in enumerate(zip(node.args, payload, strict=True)):
+        slot_ty = resolve_annotation(annotation, ctx.loaded, loc, ctx.sink)
+        if slot_ty is None:
+            return _invalid(loc)
+        value = _check_value(arg, ctx, expected=slot_ty)
+        if _failed(value):
+            return _invalid(loc)
+        if not _assignable(value.ty, slot_ty):
+            _error(
+                ctx,
+                "SPT3018",
+                loc,
+                f"payload value {index} is {value.ty.render()}, not {slot_ty.render()}",
+            )
+            return _invalid(loc)
+        values.append(value)
+
+    # Exactly `_struct_construction`'s escape rule: a container handed to a
+    # payload slot is held by a value that outlives the expression.
+    note_escapes(values, ctx)
+    items = (Const(loc=loc, ty=Ty.Symbol, py_value=case), *values)
+    return MakeUnion(
+        loc=loc,
+        ty=Ty.Union(name),
+        case=case,
+        items=items,
+        all_static=_all_static(items),
+    )
+
+
+def _recognize_union_read(
+    node: ast.Call, ctx: FuncCtx, method: str, base: ast.expr
+) -> IRExpr | None:
+    """`s.tag()` and `s.payload(index, T)` on a union VALUE (SS B.1).
+
+    Both are ONE `vec_get` -- the tag at element 0, payload slot `i` at element
+    `i + 1`, because the index is 0-based over the PAYLOAD (ruling E2's
+    sub-ruling) -- so the whole surface adds ZERO host functions, and
+    `_lower_host_call`'s `narrow_to` gives the payload read the same tag-level
+    check a `storage.get` already gets (F.1.9: no second narrow to drift).
+
+    Returns `None` when the receiver is not a union, leaving the sink
+    untouched: the method NAME alone cannot claim the surface (mirrors
+    `_recognize_container_method`).
+    """
+    loc = Loc.from_node(ctx.path, node)
+    recv = _check_value(base, ctx)
+    if _failed(recv):
+        # Committed: the receiver's diagnostic is already in the sink, so
+        # `None` here would invite a second, cascaded one.
+        return _invalid(loc)
+    if recv.ty.tag is not TyTag.UNION:
+        return None
+    assert recv.ty.name is not None
+    name = recv.ty.name
+    cases = _union_cases(ctx, name)
+    assert cases is not None, (
+        f"Ty.Union({name!r}) resolved outside this module's declared-type "
+        "inventory; resolve_annotation already refuses that (F.1.14)"
+    )
+    (get_fn,) = RECOGNIZED["vec.get"].host_fns
+
+    if method == "tag":
+        if _bind(node, ctx, loc, f"{name}.tag()", ()) is None:
+            return _invalid(loc)
+        return HostCall(
+            loc=loc,
+            ty=Ty.Symbol,
+            fn_name=get_fn,
+            args=(recv, Const(loc=loc, ty=Ty.U32, py_value=0)),
+        )
+
+    bound = _bind(node, ctx, loc, f"{name}.payload(index, ty)", ("index", "ty"))
+    if bound is None:
+        return _invalid(loc)
+    slot_ty = _resolve_type_arg(bound["ty"], ctx, loc)
+    if slot_ty is None:
+        return _invalid(loc)
+    index = _check_value(bound["index"], ctx, expected=Ty.U32)
+    if _failed(index):
+        return _invalid(loc)
+    if not _assignable(index.ty, Ty.U32):
+        _error(ctx, "SPT3018", loc, f"`index` is {index.ty.render()}, not U32")
+        return _invalid(loc)
+    if not isinstance(index, Const) or not isinstance(index.py_value, int):
+        # The slots of one union have DIFFERENT declared types, so the index is
+        # what makes `ty` checkable at all -- a computed one would leave both
+        # SPT3021 arms undecidable and put an unverified decode on chain. A
+        # reject may be stricter than tier 1 (only ACCEPTS must be runnable).
+        _error(
+            ctx,
+            _FALLBACK_CODE,
+            loc,
+            "the payload index must be a literal",
+            help=f"name the slot directly, e.g. `{name}.payload(U32(0), U32)`",
+        )
+        return _invalid(loc)
+
+    slot = index.py_value
+    widest = max(len(payload) for _case, payload in cases)
+    if slot >= widest:
+        # Ruling E2: the VARIANT is not known at the call site, but the union's
+        # maximum arity is -- so an index no variant could have is a compile
+        # reject rather than a `vec_get` that traps on chain.
+        _error(
+            ctx,
+            "SPT3021",
+            loc,
+            f"index {slot} is at or above `{name}`'s widest variant, which carries "
+            f"{widest} payload value(s)",
+            help=f"payload indices for `{name}` run 0 to {widest - 1}",
+        )
+        return _invalid(loc)
+    declared_at_slot = _payload_slot_types(ctx, cases, slot, loc)
+    if declared_at_slot is None:
+        return _invalid(loc)
+    if slot_ty not in declared_at_slot:
+        # ...and the per-slot type SET is known too, across every variant wide
+        # enough to have the slot. A `ty` outside it can never succeed, however
+        # the value was built.
+        rendered = ", ".join(ty.render() for ty in declared_at_slot)
+        _error(
+            ctx,
+            "SPT3021",
+            loc,
+            f"no variant of `{name}` declares a {slot_ty.render()} at payload index {slot}",
+            help=f"index {slot} is declared as: {rendered}",
+        )
+        return _invalid(loc)
+    return HostCall(
+        loc=loc,
+        ty=slot_ty,
+        fn_name=get_fn,
+        args=(recv, Const(loc=loc, ty=Ty.U32, py_value=slot + 1)),
+    )
+
+
+def _payload_slot_types(
+    ctx: FuncCtx, cases: Sequence[tuple[str, tuple[Any, ...]]], slot: int, loc: Loc
+) -> list[Ty] | None:
+    """Every `Ty` some variant declares at payload index `slot`, in declaration
+    order and de-duplicated, or `None` after reporting.
+
+    A LIST rather than a set so the diagnostic reads in declaration order; the
+    set semantics are what matter (ruling E2: the variant is unknown, the slot
+    types are not).
+    """
+    tys: list[Ty] = []
+    for _case, payload in cases:
+        if slot >= len(payload):
+            continue
+        ty = resolve_annotation(payload[slot], ctx.loaded, loc, ctx.sink)
+        if ty is None:
+            return None
+        if ty not in tys:
+            tys.append(ty)
+    return tys
 
 
 # --- container methods: readers (value position) ----------------------------
