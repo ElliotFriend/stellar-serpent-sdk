@@ -24,7 +24,7 @@ from serpent import (
 from serpent.compiler.ctx import AliasTable, FuncCtx, LocalSlot, Ownership, SlotTable
 from serpent.compiler.diagnostics import Diagnostics, Loc
 from serpent.compiler.loader import CompilerBugError, LoadedModule, load_module
-from serpent.compiler.types_ import ReprForm, Ty, resolve_annotation
+from serpent.compiler.types_ import ReprForm, Ty, TyTag, resolve_annotation
 
 PATH = "contract.py"
 
@@ -33,8 +33,10 @@ PATH = "contract.py"
 _SOURCE = """
 from serpent import (
     Address, Bool, Bytes, Bytes32, ContractError, Duration, Env, Event,
+    ContractEnum, ContractUnion,
     I32, I64, I128, Map, String, Symbol, Timepoint, U32, U64, U128, Vec,
-    bytes_n, contract, contracterror, contractevent, contracttype, errorcode,
+    bytes_n, contract, contracterror, contractenum, contractevent, contracttype,
+    contractunion, enumvalue, errorcode, variant,
 )
 
 
@@ -52,6 +54,18 @@ class Err:
 @contractevent
 class Transfer(Event):
     amount: U32
+
+
+@contractunion
+class Shape(ContractUnion):
+    Empty = variant()
+    Circle = variant(U32)
+
+
+@contractenum
+class Color(ContractEnum):
+    Red = enumvalue(0)
+    Green = enumvalue(1)
 
 
 @contract
@@ -79,6 +93,10 @@ class C:
         p_struct: Balance,
         p_option: U32 | None,
         p_vec_struct: Vec[Balance],
+        p_union: Shape,
+        p_enum: Color,
+        p_vec_union: Vec[Shape],
+        p_option_enum: Color | None,
     ) -> U32:
         return p_u32
 """
@@ -119,6 +137,10 @@ _GOLDENS: list[tuple[Ty, ReprForm, int, int | None]] = [
     (Ty.Vec(Ty.U32), ReprForm.HOST_OBJECT, 16, None),
     (Ty.Map(Ty.Symbol, Ty.U32), ReprForm.HOST_OBJECT, 17, None),
     (Ty.Struct("Balance"), ReprForm.HOST_OBJECT, 17, None),
+    # M1-E2 §B.1: a tagged union IS an `ScVec` on chain (Vec's rank, always an
+    # object handle); an int enum IS a bare `u32` (U32's rank, always inline).
+    (Ty.Union("Shape"), ReprForm.HOST_OBJECT, 16, None),
+    (Ty.Enum("Color"), ReprForm.IMMEDIATE, 3, None),
     (Ty.Address, ReprForm.HOST_OBJECT, 18, None),
     (Ty.Void, ReprForm.IMMEDIATE, 1, None),
     (Ty.ErrorEnum("Err"), ReprForm.IMMEDIATE, 2, None),
@@ -154,6 +176,8 @@ _RENDER_GOLDENS: list[tuple[Ty, str]] = [
     (Ty.Vec(Ty.U32), "Vec(U32)"),
     (Ty.Map(Ty.Symbol, Ty.U32), "Map(Symbol, U32)"),
     (Ty.Struct("Balance"), "Struct(Balance)"),
+    (Ty.Union("Shape"), "Union(Shape)"),
+    (Ty.Enum("Color"), "Enum(Color)"),
     (Ty.Option(Ty.U32), "Option(U32)"),
     (Ty.Void, "Void"),
     (Ty.ErrorEnum("Err"), "ErrorEnum(Err)"),
@@ -209,6 +233,10 @@ _MAPPING_ROWS: list[tuple[str, Ty]] = [
     ("p_struct", Ty.Struct("Balance")),
     ("p_option", Ty.Option(Ty.U32)),
     ("p_vec_struct", Ty.Vec(Ty.Struct("Balance"))),
+    ("p_union", Ty.Union("Shape")),
+    ("p_enum", Ty.Enum("Color")),
+    ("p_vec_union", Ty.Vec(Ty.Union("Shape"))),
+    ("p_option_enum", Ty.Option(Ty.Enum("Color"))),
 ]
 
 
@@ -220,6 +248,36 @@ def test_resolve_annotation_mapping_rows(param_name: str, expected: Ty) -> None:
     result = resolve_annotation(hints[param_name], loaded, _loc(), sink)
     assert not sink
     assert result == expected
+
+
+def test_a_union_and_an_int_enum_annotation_never_resolve_to_a_struct() -> None:
+    """The transient `Ty.Struct` collision M1-E2 Task 3 opened and this task
+    closes (carried acceptance criterion).
+
+    `resolve_annotation` DELEGATES classification to `to_spec_type`
+    (`types_.py`'s own docstring), and Task 3 widened `to_spec_type` to accept
+    a union/int-enum class as a name-only UDT reference. Until `_build_ty`
+    grew its two arms, both fell through the tail whose comment claimed "the
+    only shape `to_spec_type` still accepts at this point is a
+    `@contracttype` struct" -- silently, with no diagnostic, to
+    `Ty.Struct(name)`: `Map`'s ScVal rank, `Map`'s ABI tag, and `map_get`
+    field reads on a value that is an `ScVec` or a bare `u32` on chain.
+
+    So this asserts the NEGATIVE as well as the positive: neither annotation
+    may resolve to `TyTag.STRUCT`, whatever else changes.
+    """
+    loaded = _loaded()
+    hints = _hints(loaded)
+    for param_name, tag, expected in (
+        ("p_union", TyTag.UNION, Ty.Union("Shape")),
+        ("p_enum", TyTag.ENUM, Ty.Enum("Color")),
+    ):
+        sink = Diagnostics()
+        result = resolve_annotation(hints[param_name], loaded, _loc(), sink)
+        assert not sink, [d.message for d in sink.diagnostics]
+        assert result == expected
+        assert result is not None and result.tag is tag
+        assert result.tag is not TyTag.STRUCT
 
 
 def test_resolve_annotation_option_both_spellings() -> None:

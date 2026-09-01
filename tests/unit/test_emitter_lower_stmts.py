@@ -32,6 +32,7 @@ What is being protected, in order of how badly it would bite:
 
 from __future__ import annotations
 
+import struct as _struct
 from collections.abc import Iterator, Sequence
 
 import pytest
@@ -57,6 +58,8 @@ from serpent.compiler.ir import (
     IRStmt,
     LetLocal,
     LocalRef,
+    MakeUnion,
+    MakeVec,
     Nop,
     ParamRef,
     Raise,
@@ -1005,6 +1008,23 @@ PROLOGUE_MATRIX: list[tuple[str, Ty, list[int], list[int]]] = [
         [object_word(val.TAG_VEC_OBJECT)],
     ),
     (
+        # M1-E2 §B.1 (byte-verified): a tagged union IS an `ScVec` on chain --
+        # a Symbol-led heterogeneous one -- so its tag is the vec's, exactly
+        # as a struct's is the map's.
+        "Union",
+        Ty.Union("Shape"),
+        [object_word(val.TAG_VEC_OBJECT)],
+        [object_word(val.TAG_MAP_OBJECT)],
+    ),
+    (
+        # ...and an int enum IS a bare `u32`, so its check is `U32`'s own --
+        # tag AND the nonzero-minor range case, both from one compare.
+        "Enum",
+        Ty.Enum("Color"),
+        [val.pack_u32val(0), val.pack_u32val(0xFFFF_FFFF)],
+        [val.pack_i32val(1), val.from_major_minor_tag(1, 7, val.TAG_U32)],
+    ),
+    (
         "Option[U32]",
         Ty.Option(Ty.U32),
         [val.VOID_VAL, val.pack_u32val(3)],
@@ -1082,6 +1102,8 @@ def _sample_ty(tag: TyTag) -> Ty:
         TyTag.STRUCT: Ty.Struct("S"),
         TyTag.OPTION: Ty.Option(Ty.U32),
         TyTag.ERROR_ENUM: Ty.ErrorEnum("E"),
+        TyTag.UNION: Ty.Union("U"),
+        TyTag.ENUM: Ty.Enum("C"),
     }
     return parametrized.get(tag, Ty(tag))
 
@@ -1500,3 +1522,97 @@ def test_the_tagcheck_part_returns_the_value_it_checked() -> None:
     store.attach(host_)
     handle = bytes_object(store, b"abcd")
     assert host_.invoke("tagcheck_bytes_n", handle, 4) == handle
+
+
+# --- M1-E2: the int-enum immediate and the MakeUnion lowering ---------------------
+
+
+def test_an_enum_const_emits_a_u32_immediate() -> None:
+    """Corrects ruling E3's wording in detail while keeping its substance: E3
+    says int enums need zero emitter change, but `_lower_const` dispatches on
+    `ty.tag is TyTag.U32`, so a `Ty.Enum` `Const` fell past every arm --
+    `_SMALL64` is {DURATION, I64, TIMEPOINT, U64}, `_SMALL128` is {I128,
+    U128}, and `_pooled_blob` answers `None` for every tag but SYMBOL/STRING/
+    BYTES/BYTES_N/ADDRESS -- and reached `EmitError("no Const lowering for
+    Enum(Color)")`. The fix is a tag TEST, not a new node, a new host call or
+    a `Convert`, all of which would be heavier for a value that IS a bare
+    `u32` on chain (§B.1, byte-verified).
+    """
+    color = Ty.Enum("Color")
+    node = func("go", [Return(loc=LOC, value=const(color, 1))], ret=color)
+    store, host_ = start([node])
+    assert host_.invoke("go") == val.pack_u32val(1)
+    # An immediate: no host object is allocated for it, so no call at all.
+    assert store.call_names() == []
+
+
+def test_a_fully_static_enum_vector_uses_the_linear_memory_form() -> None:
+    """Review M1: the SECOND `U32` dispatch. `_lower_const` and `_static_word`
+    each have their own `ty.tag is TyTag.U32` arm, and widening only the first
+    is silently LOSSY rather than merely incomplete -- `_static_words` would
+    answer `None` for an all-`Const` construction containing a `Ty.Enum`,
+    dropping it to the `vec_new` + `vec_push_back` chain (correct output) while
+    `frontend._bulk_construction_can_use_memory` still reports `all_static`,
+    so `needs_memory` claims a data segment the module never writes.
+    """
+    color = Ty.Enum("Color")
+    node = MakeVec(
+        loc=LOC,
+        ty=Ty.Vec(color),
+        elem_ty=color,
+        items=(const(color, 0), const(color, 1)),
+        all_static=True,
+    )
+    fns, ctx, memory = compile_all([func("go", [Return(loc=LOC, value=node)], ret=Ty.Vec(color))])
+    assert "vec_new_from_linear_memory" in ctx.import_order
+    assert "vec_push_back" not in ctx.import_order
+    expected = b"".join(_struct.pack("<Q", val.pack_u32val(i)) for i in (0, 1))
+    assert expected in memory.pool_bytes()
+    assert fns[0].finish()  # the body really was compiled, not skipped
+
+
+def test_a_make_union_lowers_to_the_symbol_led_vec_and_nothing_else() -> None:
+    """The one dispatch line (§B.1): `MakeUnion` reuses `_lower_make_vec`,
+    which never reads an element type, so a Symbol-led heterogeneous vec is
+    byte-for-byte the shape it already builds. Landing this in the same commit
+    as the `ir.py` node is what keeps P4's dormant `SPT8004` dormant.
+    """
+    node = MakeUnion(
+        loc=LOC,
+        ty=Ty.Union("Shape"),
+        case="Circle",
+        items=(const(Ty.Symbol, "Circle"), const(Ty.U32, 7)),
+        all_static=True,
+    )
+    built = func(
+        "tag_of",
+        [Return(loc=LOC, value=host("vec_get", Ty.Symbol, node, const(Ty.U32, 0)))],
+        ret=Ty.Symbol,
+    )
+    store, host_ = start([built])
+    assert host_.invoke("tag_of") == val.symbol_small("Circle")
+    # The static form: one linear-memory constructor, one read, no push chain.
+    assert store.call_names() == ["vec_new_from_linear_memory", "vec_get"]
+
+
+def test_a_make_union_with_a_dynamic_payload_takes_the_push_chain() -> None:
+    """`all_static=False` is the other half of the same one-line dispatch: the
+    payload is a parameter, so there is no word to lay out and the vector is
+    built by `vec_new` + a `vec_push_back` per item -- with every mutator
+    result REBOUND (F.1.9), which is what makes the length come out as 2."""
+    node = MakeUnion(
+        loc=LOC,
+        ty=Ty.Union("Shape"),
+        case="Circle",
+        items=(const(Ty.Symbol, "Circle"), param(0, Ty.U32, "r")),
+        all_static=False,
+    )
+    built = func(
+        "len_of",
+        [Return(loc=LOC, value=host("vec_len", Ty.U32, node))],
+        params=[("r", Ty.U32)],
+        ret=Ty.U32,
+    )
+    store, host_ = start([built])
+    assert host_.invoke("len_of", val.pack_u32val(9)) == val.pack_u32val(2)
+    assert store.call_names() == ["vec_new", "vec_push_back", "vec_push_back", "vec_len"]

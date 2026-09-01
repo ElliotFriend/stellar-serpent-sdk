@@ -549,6 +549,14 @@ def test_the_tag_families_agree_with_the_emitters_abi_check_tables() -> None:
         TyTag.VEC: "vec",
         TyTag.MAP: "map",
         TyTag.STRUCT: "map",
+        # M1-E2 ruling E9's two new kinds, the pin `test_a_union_and_an_int_
+        # enum_never_reach_the_struct_fallthrough` above makes at the model's
+        # doors, restated here against the EMITTER's tables: a union IS an
+        # `ScVec` (`vec`, `TAG_VEC_OBJECT`) and an int enum IS a bare `u32`
+        # (`u32`, `TAG_U32`). Were either row missing, `ABI_CHECKED_TAGS` would
+        # have grown a tag this cross-tier comparison never ran.
+        TyTag.UNION: "vec",
+        TyTag.ENUM: "u32",
     }
     assert set(family_by_tag) == ABI_CHECKED_TAGS - {TyTag.OPTION}
     # ...and the family NAMES are the model's own, both directions: a new row in

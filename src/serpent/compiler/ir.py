@@ -29,7 +29,7 @@ exactly the failure mode this file exists to prevent.
   class would otherwise create.
 * **The decisions C owns are RECORDED in the node, not left to D** (R4): the
   `via_obj_cmp` flag on `Compare` (F.1.2/T5), the pre-sorted field order on
-  `MakeStruct` (P7), `all_static` on `MakeVec`/`MakeMap` (MJ-15), and the
+  `MakeStruct` (P7), `all_static` on `MakeVec`/`MakeMap`/`MakeUnion` (MJ-15), and the
   explicit `IsZero` truthiness node (D3).
 """
 
@@ -78,6 +78,7 @@ __all__ = [
     "MakeMap",
     "MakeStruct",
     "MakeTopics",
+    "MakeUnion",
     "MakeVec",
     "ModuleIR",
     "Nop",
@@ -392,6 +393,40 @@ class MakeTopics(IRExpr):
     to be a short `Symbol` naming the event (S11)."""
 
     topics: tuple[IRExpr, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class MakeUnion(IRExpr):
+    """A tagged-union value: a heterogeneous `Vec` led by the variant-name
+    `Symbol` (M1-E2 SS B.1, byte-verified).
+
+    Deliberately its own node and NOT a `MakeVec` -- `MakeVec` carries a single
+    `elem_ty` that `stmt.py`'s for-in desugar reads as TRUTH to type the
+    induction `vec_get`, so a heterogeneous `MakeVec` would lower correctly and
+    LIE in the IR. That is exactly the recorded reason `MakeTopics` exists.
+
+    `items[0]` is the variant-name `Symbol` `Const`, built by the FRONTEND, not
+    synthesized here or in the emitter: `ir.walk` is reflective over dataclass
+    fields, so a real `Const` in this tuple lands in
+    `LiteralInventory.symbols_over_9` for free, and a variant name over 9
+    characters pools through linear memory. A tag synthesized at lowering time
+    would be absent from the pool and fail interning.
+
+    There is no `union_name` field: `ty` is `Ty.Union(name)` and carries it
+    (`ModuleIR`'s own norm below is that storing a fact twice creates two
+    places for one truth). `case` IS kept, because `ty` names the UNION and not
+    the VARIANT; a test pins `items[0] == Const(ty=Ty.Symbol, py_value=case)`
+    so the one remaining overlap cannot drift.
+
+    `all_static` means what it means on `MakeVec`: every item is a literal C
+    validated at compile time, which is necessary but not sufficient for the
+    `vec_new_from_linear_memory` form (D answers the layout question from
+    `Ty.repr_form`). A unit variant is a ONE-element vec, and it is static.
+    """
+
+    case: str
+    items: tuple[IRExpr, ...]
+    all_static: bool
 
 
 @dataclass(frozen=True, kw_only=True)

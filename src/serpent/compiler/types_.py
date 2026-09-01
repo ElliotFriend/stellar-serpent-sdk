@@ -102,6 +102,14 @@ class TyTag(Enum):
     OPTION = auto()
     VOID = auto()
     ERROR_ENUM = auto()
+    #: A `@contractunion` tagged union and a `@contractenum` int enum (M1-E2
+    #: SS B.1, byte-verified): a union value IS an `ScVec` led by the variant-
+    #: name `Symbol`, an int-enum value IS a bare `u32`. Both carry only a
+    #: `name`, exactly as `STRUCT`/`ERROR_ENUM` do -- the CASES live in the
+    #: declaration's `_serpent_type_` metadata, which `recognize.py` reads,
+    #: rather than being duplicated into every `Ty` that mentions the type.
+    UNION = auto()
+    ENUM = auto()
     #: The sink-reported-failure sentinel (minor 13). Never a real type.
     INVALID = auto()
 
@@ -110,8 +118,10 @@ class TyTag(Enum):
 #: Void's TAG_VOID and an Error Val's packed (code, error_type) are both
 #: inline forms too -- see the `ReprForm` docstring above for why EITHER
 #: types cannot be folded in here).
+#: (`Enum` is here for the same reason `U32` is: an int-enum value IS a bare
+#: `u32` on chain, so it always has the inline form -- M1-E2 SS B.1.)
 _IMMEDIATE_TAGS: frozenset[TyTag] = frozenset(
-    {TyTag.BOOL, TyTag.U32, TyTag.I32, TyTag.VOID, TyTag.ERROR_ENUM}
+    {TyTag.BOOL, TyTag.U32, TyTag.I32, TyTag.VOID, TyTag.ERROR_ENUM, TyTag.ENUM}
 )
 
 #: Tags whose Val form depends on the VALUE, not the type (A3's small-value
@@ -139,6 +149,10 @@ _HOST_OBJECT_TAGS: frozenset[TyTag] = frozenset(
         TyTag.VEC,
         TyTag.MAP,
         TyTag.STRUCT,
+        # A union value is a `Vec` object handle (M1-E2 SS B.1) -- there is no
+        # small form for a vector of any length, the one-element unit-variant
+        # vec included.
+        TyTag.UNION,
     }
 )
 
@@ -146,6 +160,9 @@ _HOST_OBJECT_TAGS: frozenset[TyTag] = frozenset(
 #: and `BytesN(n)` share one rank (D5: payload-based equality/ordering across
 #: the whole `Bytes` family). `Struct` shares `Map`'s rank because a struct
 #: compiles to `Map<Symbol, V>` (S9) -- it is the same `ScVal` case on-chain.
+#: `Union` shares `Vec`'s rank and `Enum` shares `U32`'s for the same reason
+#: (M1-E2 SS B.1): a union IS an `ScVec` on chain and an int enum IS an
+#: `ScVal` `U32` -- the same `ScVal` case, not a lookalike.
 #: `ErrorEnum` takes the table's `Error` rank; `Option` has no rank of its
 #: OWN (it is not a distinct `ScVal` case -- on-chain it is either `Void` or
 #: whatever the wrapped type is), so its `scval_rank` delegates to its
@@ -155,6 +172,7 @@ _SCVAL_RANK: dict[TyTag, int] = {
     TyTag.VOID: 1,
     TyTag.ERROR_ENUM: 2,
     TyTag.U32: 3,
+    TyTag.ENUM: 3,
     TyTag.I32: 4,
     TyTag.U64: 5,
     TyTag.I64: 6,
@@ -167,6 +185,7 @@ _SCVAL_RANK: dict[TyTag, int] = {
     TyTag.STRING: 14,
     TyTag.SYMBOL: 15,
     TyTag.VEC: 16,
+    TyTag.UNION: 16,
     TyTag.MAP: 17,
     TyTag.STRUCT: 17,
     TyTag.ADDRESS: 18,
@@ -216,8 +235,8 @@ class Ty:
 
     One dataclass for every variant, discriminated by `tag`; only the fields
     a given tag actually uses are populated (`elem` for `Vec`/`Option`,
-    `key`/`value` for `Map`, `name` for `Struct`/`ErrorEnum`, `n` for
-    `BytesN`). This -- rather than one subclass per variant -- is what gives
+    `key`/`value` for `Map`, `name` for `Struct`/`ErrorEnum`/`Union`/`Enum`,
+    `n` for `BytesN`). This -- rather than one subclass per variant -- is what gives
     equality/hashing for free from `@dataclass(frozen=True)`: two `Ty`s
     compare equal exactly when their `(tag, elem, key, value, name, n)`
     tuples match, so `Ty.Vec(Ty.U32) == Ty.Vec(Ty.U32)` holds structurally and
@@ -226,7 +245,8 @@ class Ty:
     The no-parameter variants are pre-built singletons (`Ty.Bool`, `Ty.U32`,
     ...); the parametrized ones are built through the `Ty.Vec(...)`-style
     static methods below, mirroring the dossier's own `Vec(Ty)`/`Map(Ty,
-    Ty)`/`Struct(name)`/`Option(Ty)`/`ErrorEnum(name)`/`BytesN(n)` notation.
+    Ty)`/`Struct(name)`/`Option(Ty)`/`ErrorEnum(name)`/`Union(name)`/
+    `Enum(name)`/`BytesN(n)` notation.
     """
 
     tag: TyTag
@@ -284,6 +304,26 @@ class Ty:
     @staticmethod
     def ErrorEnum(name: str) -> Ty:
         return Ty(TyTag.ERROR_ENUM, name=name)
+
+    @staticmethod
+    def Union(name: str) -> Ty:
+        """A `@contractunion` tagged union, by NAME (M1-E2 SS B.1).
+
+        Name-only, like `Struct`: the variant list lives in the declaration's
+        `_serpent_type_` metadata that `recognize._union_cases` reads, so a
+        `Ty` that mentions the union does not carry -- and cannot drift from
+        -- the cases themselves.
+        """
+        return Ty(TyTag.UNION, name=name)
+
+    @staticmethod
+    def Enum(name: str) -> Ty:
+        """A `@contractenum` int enum, by NAME (M1-E2 SS B.1).
+
+        `Enum`, not `IntEnum`, mirrors the decorator's own spelling; the
+        `ErrorEnum` variant beside it is the unrelated `@contracterror` kind.
+        """
+        return Ty(TyTag.ENUM, name=name)
 
     # --- derived facts ---------------------------------------------------
 
@@ -356,6 +396,12 @@ class Ty:
         if self.tag is TyTag.ERROR_ENUM:
             assert self.name is not None
             return f"ErrorEnum({self.name})"
+        if self.tag is TyTag.UNION:
+            assert self.name is not None
+            return f"Union({self.name})"
+        if self.tag is TyTag.ENUM:
+            assert self.name is not None
+            return f"Enum({self.name})"
         if self.tag is TyTag.INVALID:
             return "<invalid>"
         return _SCALAR_RENDER[self.tag]
@@ -524,25 +570,57 @@ def _build_ty(obj: object, loaded: LoadedModule) -> Ty:
     scalar = _SCALAR_TY.get(obj)
     if scalar is not None:
         return scalar
-    # The only shape `to_spec_type` still accepts at this point is a
-    # `@contracttype` struct (error enums were intercepted before the
-    # `to_spec_type` call; every other kind of decorated/undecorated class,
-    # and every non-chain type, is one of `to_spec_type`'s OWN rejections).
-    _assert_declared_struct(obj, loaded)
+    # `to_spec_type` accepts THREE kinds of declared class as a name-only UDT
+    # reference (`typemap._UDT_KINDS`, widened by M1-E2): a `@contracttype`
+    # struct, a `@contractunion` tagged union, and a `@contractenum` int enum.
+    # All three encode identically in the SPEC -- `SCSpecTypeUDT` carries only
+    # a name -- but they are three DIFFERENT things on chain (a
+    # `Map<Symbol, V>`, a Symbol-led `ScVec`, a bare `u32`, SS B.1), so the
+    # kind has to be read here rather than assumed. Error enums were
+    # intercepted before the `to_spec_type` call; every other kind of
+    # decorated/undecorated class, and every non-chain type, is one of
+    # `to_spec_type`'s OWN rejections.
+    kind = _declared_kind(obj)
+    if kind == "union":
+        _assert_declared(obj, loaded, "union")
+        return Ty.Union(obj.__name__)
+    if kind == "enum":
+        _assert_declared(obj, loaded, "int enum")
+        return Ty.Enum(obj.__name__)
+    _assert_declared(obj, loaded, "struct")
     return Ty.Struct(obj.__name__)
 
 
-def _assert_declared_struct(obj: type, loaded: LoadedModule) -> None:
-    """F.1.14-style invariant: a struct `resolve_annotation` accepts must be
-    in the SAME module's own declared-type inventory. Real source cannot
-    violate this (imports are restricted to `serpent.__all__`, A22, so no
-    struct class from anywhere else is reachable) -- a violation here is a
-    compiler bug, not a user error, exactly like `loader._cross_check_
-    inventory`'s skew check.
+def _declared_kind(obj: type) -> str | None:
+    """`obj`'s `_serpent_type_["kind"]`, or `None` if it has none.
+
+    `vars(...)`, never `getattr`, for `typemap._decorated`'s own reason: an
+    UNDECORATED subclass of a declared class inherits `_serpent_type_` without
+    having been declared, and treating it as the declared kind would build a
+    `Ty` naming a spec entry nothing writes.
+    """
+    metadata: object = vars(obj).get(_METADATA_ATTR)
+    if not isinstance(metadata, dict):
+        return None
+    kind = metadata.get("kind")
+    return kind if isinstance(kind, str) else None
+
+
+def _assert_declared(obj: type, loaded: LoadedModule, kind: str) -> None:
+    """F.1.14-style invariant: a declared class `resolve_annotation` accepts
+    must be in the SAME module's own declared-type inventory. Real source
+    cannot violate this (imports are restricted to `serpent.__all__`, A22, so
+    no struct/union/int-enum class from anywhere else is reachable) -- a
+    violation here is a compiler bug, not a user error, exactly like
+    `loader._cross_check_inventory`'s skew check.
+
+    ONE function for all three kinds (`kind` is only diagnostic text): the
+    inventory question is the same question, and a per-kind copy would be
+    three places for one invariant.
     """
     if not any(decl.cls is obj for decl in loaded.decorated_types_in_order):
         raise CompilerBugError(
-            f"resolve_annotation resolved {obj!r} as a struct, but it is not in "
+            f"resolve_annotation resolved {obj!r} as a {kind}, but it is not in "
             f"{loaded.path}'s declared-type inventory (loaded.decorated_types_in_order); "
             "only a class reachable from the loaded module's own namespace should ever "
             "reach this point"

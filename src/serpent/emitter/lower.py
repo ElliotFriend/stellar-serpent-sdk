@@ -166,6 +166,7 @@ from serpent.compiler.ir import (
     MakeMap,
     MakeStruct,
     MakeTopics,
+    MakeUnion,
     MakeVec,
     Nop,
     ParamRef,
@@ -486,6 +487,12 @@ def _lower_val(fn: Fn, ctx: LowerCtx, e: IRExpr) -> None:
         # the gate is `_bulk_construction_can_use_memory`'s own test
         # (`frontend.py`) -- every topic a `Const` -- applied by `_static_words`.
         _lower_make_vec(fn, ctx, e.topics, True)
+    elif isinstance(e, MakeUnion):
+        # M1-E2 SS B.1: a union value IS a Symbol-led heterogeneous `Vec`, and
+        # `_lower_make_vec` never reads an element type -- so this is
+        # byte-for-byte the shape it already builds, with `items[0]` the
+        # variant-name `Symbol` the FRONTEND put there.
+        _lower_make_vec(fn, ctx, e.items, e.all_static)
     elif isinstance(e, MakeMap):
         _lower_make_map(fn, ctx, e)
     else:
@@ -527,7 +534,12 @@ def _lower_const(fn: Fn, ctx: LowerCtx, e: Const) -> None:
     if ty.tag is TyTag.BOOL:
         fn.i64_const(val.pack_bool(_as_bool(e)))
         return
-    if ty.tag is TyTag.U32:
+    if ty.tag in (TyTag.U32, TyTag.ENUM):
+        # `Enum` rides the `U32` arm because an int-enum value IS a bare `u32`
+        # on chain (M1-E2 SS B.1) -- a tag TEST, not a new node, a new host
+        # call or a `Convert`. Without it a `Ty.Enum` `Const` falls past every
+        # arm below (`_SMALL64`/`_SMALL128`/`_pooled_blob` all answer for other
+        # tags) and reaches the `EmitError` at the end of this function.
         fn.i64_const(val.pack_u32val(_as_int(e)))
         return
     if ty.tag is TyTag.I32:
@@ -944,7 +956,14 @@ _TAG_MASK = 0xFF
 _MINOR_AND_TAG_MASK = 0xFFFF_FFFF
 
 #: `U32`/`I32`: the whole low 32 bits of a well-formed immediate, tag included.
-_IMMEDIATE_ABI_WORD: dict[TyTag, int] = {TyTag.U32: val.TAG_U32, TyTag.I32: val.TAG_I32}
+#: (`Enum` is `U32`'s own row: an int-enum value IS a bare `u32` on chain --
+#: M1-E2 SS B.1 -- so the tag AND the nonzero-minor range case are the same
+#: single compare.)
+_IMMEDIATE_ABI_WORD: dict[TyTag, int] = {
+    TyTag.U32: val.TAG_U32,
+    TyTag.I32: val.TAG_I32,
+    TyTag.ENUM: val.TAG_U32,
+}
 
 #: Every EITHER-repr type's two legal tags -- the small form and the object
 #: form (A3). Which one a VALUE takes depends on its magnitude (or, for
@@ -962,7 +981,9 @@ _EITHER_ABI_TAGS: dict[TyTag, tuple[int, int]] = {
 
 #: The types that are ALWAYS an object handle: one exact tag compare each.
 #: `Struct` shares `Map`'s tag because a struct IS a `Map<Symbol, V>` on chain
-#: (S9) -- the same ScVal case, not a lookalike.
+#: (S9) -- the same ScVal case, not a lookalike. `Union` shares `Vec`'s for
+#: exactly that reason too (M1-E2 SS B.1: a union value IS an `ScVec` led by
+#: the variant-name `Symbol`).
 _OBJECT_ABI_TAG: dict[TyTag, int] = {
     TyTag.STRING: val.TAG_STRING_OBJECT,
     TyTag.BYTES: val.TAG_BYTES_OBJECT,
@@ -970,6 +991,7 @@ _OBJECT_ABI_TAG: dict[TyTag, int] = {
     TyTag.VEC: val.TAG_VEC_OBJECT,
     TyTag.MAP: val.TAG_MAP_OBJECT,
     TyTag.STRUCT: val.TAG_MAP_OBJECT,
+    TyTag.UNION: val.TAG_VEC_OBJECT,
 }
 
 #: Every ``TyTag`` ``abi_check`` has a check body for, DERIVED from the three
@@ -1454,7 +1476,13 @@ def _static_word(e: IRExpr) -> int | None:
         return _static_word(Const(loc=e.loc, ty=ty.elem, py_value=e.py_value))
     if ty.tag is TyTag.BOOL:
         return val.pack_bool(_as_bool(e))
-    if ty.tag is TyTag.U32:
+    if ty.tag in (TyTag.U32, TyTag.ENUM):
+        # The SECOND `U32` dispatch, widened for the same reason as
+        # `_lower_const`'s. Widening only that one is silently LOSSY: this
+        # function would answer `None` for a `Ty.Enum` item, dropping an
+        # all-`Const` construction to the build-up chain while C still reports
+        # `all_static` -- so `needs_memory` would claim a data segment the
+        # module never writes.
         return val.pack_u32val(_as_int(e))
     if ty.tag is TyTag.I32:
         return val.pack_i32val(_as_int(e))
