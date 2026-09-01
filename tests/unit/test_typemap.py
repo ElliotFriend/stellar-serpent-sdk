@@ -30,6 +30,8 @@ from serpent import (
     Bytes,
     Bytes32,
     Bytes64,
+    ContractEnum,
+    ContractUnion,
     Duration,
     Env,
     Event,
@@ -40,11 +42,15 @@ from serpent import (
     Vec,
     bytes_n,
     contract,
+    contractenum,
     contracterror,
     contractevent,
     contracttype,
+    contractunion,
+    enumvalue,
     errorcode,
     topic,
+    variant,
 )
 from serpent.spec import SpecTypeError, to_spec_type
 
@@ -60,6 +66,23 @@ class Settings:
 class UndecoratedSettings(Settings):
     """An undecorated subclass: it *inherits* `_serpent_type_` but is not
     declared, so it must NOT be mapped as a UDT (the `vars()` rule)."""
+
+
+@contractunion
+class Shape(ContractUnion):
+    """A union fixture: `@contractunion` -> UDT by class name, same as a
+    struct (M1-E2: structs, unions and int enums share one spec namespace)."""
+
+    Empty = variant()
+    Circle = variant(U32)
+
+
+@contractenum
+class Color(ContractEnum):
+    """An int-enum fixture: `@contractenum` -> UDT by class name too."""
+
+    Red = enumvalue(0)
+    Green = enumvalue(1)
 
 
 @contracterror
@@ -189,6 +212,13 @@ MAPPED: list[tuple[str, object, xdr.SCSpecTypeDef]] = [
     ),
     ("Settings", Settings, _udt("Settings")),
     ("Settings | None", Settings | None, _option(_udt("Settings"))),
+    # M1-E2: a tagged union and an int enum are UDT references too, name-only
+    # like a struct's -- §B.3's "structs, unions and int enums share one spec
+    # namespace" is exactly what makes `_udt("Shape")`/`_udt("Color")` the
+    # right expectation with no shape-specific encoding here at all.
+    ("Shape (union)", Shape, _udt("Shape")),
+    ("Shape | None", Shape | None, _option(_udt("Shape"))),
+    ("Color (int enum)", Color, _udt("Color")),
     # A UDT nested in a container. This needed a `# type: ignore[type-var]`
     # until M1-C Task 8 landed ruling E2 (b): `Vec`'s type variable is now
     # bound to `ChainValue | Struct`, so an annotation the decorators accept

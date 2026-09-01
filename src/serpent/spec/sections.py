@@ -23,8 +23,9 @@ the offending line. The caps:
 | what | cap | why that number |
 |---|---|---|
 | function name, function input name, struct field name, event param name | 30 | `decorators.NAME_LIMIT`; the XDR caps inputs/fields/event params at 30 |
-| type name (struct, error enum) | 60 | `SCSpecTypeUDT.name` is a `string<60>`, so a longer name could be declared but never *referenced* |
-| error-enum case name | 60 | `SCSpecUDTErrorEnumCaseV0.name` is a `string<60>` |
+| type name (struct, union, int enum, error enum) | 60 | `SCSpecTypeUDT.name` is a `string<60>`, so a longer name could be declared but never *referenced* |
+| error-enum case name, int-enum case name | 60 | `SCSpecUDTErrorEnumCaseV0.name`/`SCSpecUDTEnumCaseV0.name` are each a `string<60>` |
+| union variant name | 32 | `SCSpecUDTUnionCaseVoidV0.name`/`SCSpecUDTUnionCaseTupleV0.name` are ALSO a `string<60>` in the XDR, but a variant name becomes a runtime `Symbol` (M1-E2's tag encoding), so serpent applies the tighter `val.SCSYMBOL_LIMIT` cap instead -- the same "XDR allows more than serpent does" split an event's name and topics already make |
 | event name, prefix topic | 32 | both are an `SCSymbol` (`val.SCSYMBOL_LIMIT`), NOT a `string<60>` -- an event's name cap is the tighter one |
 | event prefix-topic count | 2 | `SCSpecEventV0.prefix_topics` is an `SCSymbol<2>` |
 | any doc | 1024 | `SC_SPEC_DOC_LIMIT` |
@@ -32,8 +33,12 @@ the offending line. The caps:
 
 **What the decorators do NOT check, and this module must:** `__init__`'s name
 (it is skipped there, and is emitted here as `__constructor`), *parameter*
-names, class names, and error-enum case names. Everything this module emits
-goes through `_check_name` regardless of whether a decorator already saw it.
+names, class names, and error-enum/union/int-enum case names (plan-review B1:
+the LOCATED refusal for the latter three lives in `compiler/limits.py`'s
+SPT5002/SPT5003, but this module re-checks them anyway, unlocated, as the
+belt-and-braces path for metadata that never went through a decorator or a
+compile). Everything this module emits goes through `_check_name` regardless
+of whether a decorator already saw it.
 
 **Events are their own keyword, not a `types=` member.** `SC_SPEC_ENTRY_EVENT_V0`
 is built from `@contractevent`'s topic convention (M1-E Task 5): the metadata
@@ -83,8 +88,18 @@ __all__ = [
 #: declared but never referenced, so 60 is the real cap for both.
 TYPE_NAME_LIMIT: Final = 60
 
-#: `SCSpecUDTErrorEnumCaseV0.name` is a `string<60>`.
+#: `SCSpecUDTErrorEnumCaseV0.name`/`SCSpecUDTEnumCaseV0.name` are each a
+#: `string<60>` -- an error-enum case and an int-enum case share this cap
+#: because neither name ever becomes a runtime `Symbol` (unlike a union
+#: variant, which uses `val.SCSYMBOL_LIMIT` instead -- see `_union_case`).
 CASE_NAME_LIMIT: Final = 60
+
+#: Ruling E7 (the XDR's own kind order): a declared type's entry is emitted
+#: struct first, then union, then int enum, then error enum -- structs, unions
+#: and int enums share ONE spec namespace (a UDT reference is name-only,
+#: §B.3), which is exactly why `build_spec_entries`' `seen` guard below covers
+#: every kind in `types` regardless of which of these four it turns out to be.
+_TYPE_ENTRY_ORDER: Final[tuple[str, ...]] = ("struct", "union", "enum", "error_enum")
 
 #: `stellar_sdk.xdr.constants.SC_SPEC_DOC_LIMIT`, restated so the pre-check
 #: does not depend on a private-ish constant import.
@@ -166,16 +181,25 @@ def build_spec_entries(
 
     Entry order is pinned (and tested independently of the golden bytes),
     matching `spikes/spike1/sections.py`'s recorded rationale -- a stable order
-    keeps builds deterministic:
+    keeps builds deterministic -- and, since M1-E2, ruling E7's own addition:
+    the XDR's own kind order for a declared type.
 
     1. `UDT_STRUCT_V0`, in `types` order,
-    2. `UDT_ERROR_ENUM_V0`, in `types` order,
-    3. `FUNCTION_V0`: `__constructor` first, then declaration order,
-    4. `EVENT_V0`, in `events` order.
+    2. `UDT_UNION_V0`, in `types` order,
+    3. `UDT_ENUM_V0`, in `types` order,
+    4. `UDT_ERROR_ENUM_V0`, in `types` order,
+    5. `FUNCTION_V0`: `__constructor` first, then declaration order,
+    6. `EVENT_V0`, in `events` order.
 
     **Events go LAST on purpose** (ruling E2): appending them cannot move a
     single byte of a spec that declares none, which is what lets the on-chain
-    spike1 golden stay byte-identical now that this keyword exists.
+    spike1 golden stay byte-identical now that this keyword exists. Ruling E7
+    inserts the two new UDT groups in the MIDDLE of that order rather than at
+    the end, and this is EQUALLY byte-safe: a spec declaring no union and no
+    int enum contributes zero bytes for either group (an empty
+    `entries_by_kind[kind]` iterates to nothing), so the golden that declares
+    neither is untouched regardless of where in the order the empty group
+    sits.
 
     A leading `env: Env` parameter is dropped from every signature: the host
     passes the environment implicitly, so it is not a spec input. (The Stellar
@@ -192,14 +216,15 @@ def build_spec_entries(
             "structs and error enums via `types=`"
         )
 
-    structs: list[xdr.SCSpecEntry] = []
-    enums: list[xdr.SCSpecEntry] = []
+    entries_by_kind: dict[str, list[xdr.SCSpecEntry]] = {kind: [] for kind in _TYPE_ENTRY_ORDER}
     seen: dict[str, type] = {}
     for declared in types:
-        # Structs and error enums share one spec namespace, and a UDT reference
-        # carries only a name -- so two entries under one name is a spec that
-        # cannot be resolved, however it was reached (the same class passed
-        # twice, or two same-named classes from different modules).
+        # Structs, unions and int enums share one spec namespace (and an error
+        # enum's ENTRY sits alongside them even though it cannot be referenced
+        # by a UDT type), and a UDT reference carries only a name -- so two
+        # entries under one name is a spec that cannot be resolved, however it
+        # was reached (the same class passed twice, or two same-named classes
+        # from different modules).
         previous = seen.get(declared.__name__)
         if previous is not None:
             raise SpecNameError(
@@ -209,7 +234,7 @@ def build_spec_entries(
             )
         seen[declared.__name__] = declared
         kind, entry = _declared_type_entry(declared)
-        (structs if kind == "struct" else enums).append(entry)
+        entries_by_kind[kind].append(entry)
 
     methods: list[tuple[str, list[tuple[str, object]], object]] = metadata["methods"]
     functions = [
@@ -219,7 +244,13 @@ def build_spec_entries(
 
     event_entries = [_event_entry(declared) for declared in events]
 
-    return b"".join(entry.to_xdr_bytes() for entry in structs + enums + functions + event_entries)
+    # Ruling E7: the four `types` groups, joined THROUGH `_TYPE_ENTRY_ORDER` --
+    # never through the dict's own (insertion) order, which would be the order
+    # `types` happened to list its classes in rather than the XDR's kind order.
+    declared_type_entries = [entry for kind in _TYPE_ENTRY_ORDER for entry in entries_by_kind[kind]]
+    return b"".join(
+        entry.to_xdr_bytes() for entry in declared_type_entries + functions + event_entries
+    )
 
 
 def _declared_type_entry(declared: type) -> tuple[str, xdr.SCSpecEntry]:
@@ -228,6 +259,10 @@ def _declared_type_entry(declared: type) -> tuple[str, xdr.SCSpecEntry]:
     kind = metadata.get("kind") if metadata is not None else None
     if metadata is not None and kind == "struct":
         return "struct", _struct_entry(declared, metadata)
+    if metadata is not None and kind == "union":
+        return "union", _union_entry(declared, metadata)
+    if metadata is not None and kind == "enum":
+        return "enum", _int_enum_entry(declared, metadata)
     if metadata is not None and kind == "error_enum":
         return "error_enum", _enum_entry(declared, metadata)
     if kind == "event":
@@ -244,8 +279,8 @@ def _declared_type_entry(declared: type) -> tuple[str, xdr.SCSpecEntry]:
             "the first argument, not in `types`"
         )
     raise SpecTypeError(
-        f"{declared.__name__} is not a @contracttype struct or @contracterror "
-        "enum, so it has no contractspecv0 entry"
+        f"{declared.__name__} is not a @contracttype struct, @contractunion, "
+        "@contractenum, or @contracterror enum, so it has no contractspecv0 entry"
     )
 
 
@@ -320,6 +355,91 @@ def _struct_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntr
                     type=to_spec_type(annotation),
                 )
                 for field_name, annotation in fields
+            ],
+        ),
+    )
+
+
+def _union_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntry:
+    """A `@contractunion` class's `SC_SPEC_ENTRY_UDT_UNION_V0` entry.
+
+    Each case is VOID (an empty payload tuple, M1-E2's unit variant) or TUPLE
+    (one `SCSpecTypeDef` per payload annotation, in declaration order -- the
+    same order the on-chain `ScVec` carries the payload in, per
+    `decorators.contractunion`'s own docstring). `to_spec_type` maps every
+    payload annotation exactly as it would a field or a parameter, so a
+    struct-payload case is a nested UDT reference like any other.
+    """
+    name = _check_type_name(declared)
+    cases: list[tuple[str, tuple[object, ...]]] = metadata["cases"]
+    return xdr.SCSpecEntry(
+        kind=xdr.SCSpecEntryKind.SC_SPEC_ENTRY_UDT_UNION_V0,
+        udt_union_v0=xdr.SCSpecUDTUnionV0(
+            # NOT COVERED BY THE ON-CHAIN ANCHOR, exactly as for a struct's doc
+            # above -- M1-E2 has no deployed artifact to compare against.
+            doc=_doc_bytes(_class_doc(declared), declared.__name__),
+            lib=b"",
+            name=name.encode("utf-8"),
+            cases=[_union_case(declared, case_name, payload) for case_name, payload in cases],
+        ),
+    )
+
+
+def _union_case(
+    declared: type, case_name: str, payload: Sequence[object]
+) -> xdr.SCSpecUDTUnionCaseV0:
+    """One case of a union entry: `VOID_V0` for a unit variant, `TUPLE_V0`
+    otherwise. `val.SCSYMBOL_LIMIT` (32), not `TYPE_NAME_LIMIT`/`CASE_NAME_LIMIT`
+    (60): a variant name becomes a runtime `Symbol` tag (M1-E2's encoding), so
+    it takes the SAME tighter cap `limits.py`'s SPT5003 already checks located
+    -- despite `SCSpecUDTUnionCase{Void,Tuple}V0.name` being a `string<60>` in
+    the XDR itself, exactly as an event's name is (see the module docstring).
+    """
+    checked = _check_name(case_name, declared, "union variant", val.SCSYMBOL_LIMIT).encode("utf-8")
+    if not payload:
+        return xdr.SCSpecUDTUnionCaseV0(
+            kind=xdr.SCSpecUDTUnionCaseV0Kind.SC_SPEC_UDT_UNION_CASE_VOID_V0,
+            void_case=xdr.SCSpecUDTUnionCaseVoidV0(doc=b"", name=checked),
+        )
+    return xdr.SCSpecUDTUnionCaseV0(
+        kind=xdr.SCSpecUDTUnionCaseV0Kind.SC_SPEC_UDT_UNION_CASE_TUPLE_V0,
+        tuple_case=xdr.SCSpecUDTUnionCaseTupleV0(
+            doc=b"",
+            name=checked,
+            type=[to_spec_type(annotation) for annotation in payload],
+        ),
+    )
+
+
+def _int_enum_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntry:
+    """A `@contractenum` class's `SC_SPEC_ENTRY_UDT_ENUM_V0` entry.
+
+    The exact template `_enum_entry` (below) already is for an error enum,
+    differing only in the entry/case XDR kind and in the case-name cap: an
+    int-enum case name never becomes a runtime `Symbol` (ruling E5's
+    discriminants are always explicit, so there is no tag-encoding reason to
+    tighten it), so it takes `CASE_NAME_LIMIT` (60) exactly as an error-enum
+    case does -- unlike a union variant (see `_union_case`).
+    """
+    name = _check_type_name(declared)
+    cases: list[tuple[str, int]] = metadata["cases"]
+    return xdr.SCSpecEntry(
+        kind=xdr.SCSpecEntryKind.SC_SPEC_ENTRY_UDT_ENUM_V0,
+        udt_enum_v0=xdr.SCSpecUDTEnumV0(
+            # NOT COVERED BY THE ON-CHAIN ANCHOR, exactly as for a struct's doc
+            # above -- M1-E2 has no deployed artifact to compare against.
+            doc=_doc_bytes(_class_doc(declared), declared.__name__),
+            lib=b"",
+            name=name.encode("utf-8"),
+            cases=[
+                xdr.SCSpecUDTEnumCaseV0(
+                    doc=b"",
+                    name=_check_name(case_name, declared, "int-enum case", CASE_NAME_LIMIT).encode(
+                        "utf-8"
+                    ),
+                    value=xdr.Uint32(discriminant),
+                )
+                for case_name, discriminant in cases
             ],
         ),
     )

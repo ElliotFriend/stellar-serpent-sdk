@@ -170,9 +170,12 @@ class Declarations:
     """Everything `check_declarations` resolved, ready for Task 10's assembly.
 
     `spec_types` is B9/B10's "declared, not discovered" inventory -- the
-    STRUCT and ERROR ENUM classes in declaration order, which is exactly what
-    `build_spec_entries(cls, types=...)` takes. Events are in `events` and
-    NOWHERE near `spec_types` (MJ-9).
+    STRUCT, UNION, INT ENUM and ERROR ENUM classes in declaration order, which
+    is exactly what `build_spec_entries(cls, types=...)` takes. Events are in
+    `events` and NOWHERE near `spec_types` (MJ-9). M1-E2's union and int-enum
+    classes join this tuple with no IR node of their own (unlike a struct or
+    an error enum, which also get a `StructDecl`/`ErrorEnumDecl`) -- nothing
+    downstream of `spec_types` needs one yet, so none is built.
     """
 
     structs: tuple[StructDecl, ...]
@@ -242,6 +245,15 @@ def check_declarations(loaded: LoadedModule, sink: Diagnostics) -> Declarations:
                 spec_types.append(decl.cls)
         elif decl.kind == "error_enum":
             error_enums.append(_error_enum_decl(decl, loaded))
+            spec_types.append(decl.cls)
+        elif decl.kind == "union":
+            # M1-E2: a tagged union is a declared TYPE a UDT reference can
+            # name (E7), so it joins `spec_types` exactly as a struct does --
+            # but it gets no IR node of its own (`Declarations`' own
+            # docstring), so there is nothing else to do here.
+            spec_types.append(decl.cls)
+        elif decl.kind == "enum":
+            # Same reasoning, for an int enum.
             spec_types.append(decl.cls)
 
     events = tuple(

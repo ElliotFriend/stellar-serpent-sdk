@@ -36,17 +36,23 @@ from serpent import (
     Address,
     Annotated,
     Bytes32,
+    ContractEnum,
+    ContractUnion,
     Env,
     Event,
     Map,
     String,
     Symbol,
     contract,
+    contractenum,
     contracterror,
     contractevent,
     contracttype,
+    contractunion,
+    enumvalue,
     errorcode,
     topic,
+    variant,
 )
 from serpent._host import declared_protocol
 from serpent.decorators import DATA_FORMATS, DATA_LOCATION, TOPIC_LOCATION
@@ -140,6 +146,24 @@ class Error:
     LimitExceeded = errorcode(7)
 
 
+@contractunion
+class Shape(ContractUnion):
+    """M1-E2's running example: one void case, one single-payload case, one
+    two-payload case -- every `SCSpecUDTUnionCaseV0` shape at once."""
+
+    Empty = variant()
+    Circle = variant(U32)
+    Rect = variant(U32, U32)
+
+
+@contractenum
+class Level(ContractEnum):
+    """An int enum: explicit discriminants, always (ruling E5)."""
+
+    Low = enumvalue(0)
+    High = enumvalue(7)
+
+
 @contract
 class Spike:
     """serpent's re-authoring of `spikes/spike1/contract_src.py`.
@@ -207,6 +231,10 @@ def _shape(entries: list[xdr.SCSpecEntry]) -> list[tuple[str, str]]:
             shape.append(("fn", entry.function_v0.name.sc_symbol.decode()))
         elif entry.udt_struct_v0 is not None:
             shape.append(("struct", entry.udt_struct_v0.name.decode()))
+        elif entry.udt_union_v0 is not None:
+            shape.append(("union", entry.udt_union_v0.name.decode()))
+        elif entry.udt_enum_v0 is not None:
+            shape.append(("enum", entry.udt_enum_v0.name.decode()))
         elif entry.udt_error_enum_v0 is not None:
             shape.append(("error_enum", entry.udt_error_enum_v0.name.decode()))
         elif entry.event_v0 is not None:
@@ -314,6 +342,35 @@ def test_counter_spec_is_byte_equal_to_the_rust_sdk_compat_golden() -> None:
     golden = (GOLDENS / "counter_spec.bin").read_bytes()
     assert len(golden) == 64
     assert build_spec_entries(Counter) == golden
+
+
+def test_the_on_chain_counter_spec_golden_does_not_move() -> None:
+    """Ruling E7's whole safety argument, ASSERTED not assumed, against the
+    REAL anchor: the golden declares no union and no int enum, an empty group
+    contributes zero bytes, and `build_spec_entries` concatenates group by
+    group -- so inserting two groups in the MIDDLE of the order is exactly as
+    byte-safe as appending them last would have been."""
+    golden = (GOLDENS / "counter_spec.bin").read_bytes()
+    assert len(golden) == 64
+    assert build_spec_entries(Counter) == golden
+
+
+def test_entry_order_is_the_xdr_kind_order() -> None:
+    """E7: structs -> unions -> int enums -> error enums -> functions ->
+    events -- the XDR's own kind order, not the order `types=`/`events=` list
+    their classes in (every kind here is passed in the OPPOSITE order)."""
+    entries = _unpack(
+        build_spec_entries(Counter, types=(Error, Level, Shape, Settings), events=(Moved,))
+    )
+    assert [entry.kind for entry in entries] == [
+        xdr.SCSpecEntryKind.SC_SPEC_ENTRY_UDT_STRUCT_V0,
+        xdr.SCSpecEntryKind.SC_SPEC_ENTRY_UDT_UNION_V0,
+        xdr.SCSpecEntryKind.SC_SPEC_ENTRY_UDT_ENUM_V0,
+        xdr.SCSpecEntryKind.SC_SPEC_ENTRY_UDT_ERROR_ENUM_V0,
+        xdr.SCSpecEntryKind.SC_SPEC_ENTRY_FUNCTION_V0,
+        xdr.SCSpecEntryKind.SC_SPEC_ENTRY_FUNCTION_V0,
+        xdr.SCSpecEntryKind.SC_SPEC_ENTRY_EVENT_V0,
+    ]
 
 
 def test_counter_golden_round_trips_through_stellar_sdk() -> None:
@@ -575,6 +632,88 @@ def test_struct_docstring_is_emitted_and_the_dataclass_default_is_not() -> None:
     assert undocumented.udt_struct_v0.doc == b""
 
 
+def test_union_entry_carries_a_void_a_single_and_a_two_payload_case() -> None:
+    """Every `SCSpecUDTUnionCaseV0` shape the XDR defines, round-tripped
+    through `stellar_sdk`'s own encoder so a failure means serpent disagrees
+    with the protocol, not with a paraphrase of it."""
+    entries = _unpack(build_spec_entries(Counter, types=(Shape,)))
+    entry = entries[0]
+    raw = entry.to_xdr_bytes()
+    assert xdr.SCSpecEntry.from_xdr_bytes(raw).to_xdr_bytes() == raw
+
+    union = entry.udt_union_v0
+    assert union is not None
+    assert union.name == b"Shape"
+    assert union.lib == b""
+    assert union.doc == (
+        b"M1-E2's running example: one void case, one single-payload case, one\n"
+        b"two-payload case -- every `SCSpecUDTUnionCaseV0` shape at once."
+    )
+
+    void_case = xdr.SCSpecUDTUnionCaseV0Kind.SC_SPEC_UDT_UNION_CASE_VOID_V0
+    tuple_case = xdr.SCSpecUDTUnionCaseV0Kind.SC_SPEC_UDT_UNION_CASE_TUPLE_V0
+    assert [case.kind for case in union.cases] == [void_case, tuple_case, tuple_case]
+
+    empty = union.cases[0]
+    assert empty.void_case is not None
+    assert (empty.void_case.doc, empty.void_case.name) == (b"", b"Empty")
+
+    circle = union.cases[1]
+    assert circle.tuple_case is not None
+    assert (circle.tuple_case.doc, circle.tuple_case.name) == (b"", b"Circle")
+    assert [t.type for t in circle.tuple_case.type] == [xdr.SCSpecType.SC_SPEC_TYPE_U32]
+
+    rect = union.cases[2]
+    assert rect.tuple_case is not None
+    assert (rect.tuple_case.doc, rect.tuple_case.name) == (b"", b"Rect")
+    assert [t.type for t in rect.tuple_case.type] == [
+        xdr.SCSpecType.SC_SPEC_TYPE_U32,
+        xdr.SCSpecType.SC_SPEC_TYPE_U32,
+    ]
+
+
+def test_a_union_variant_name_over_the_symbol_cap_is_refused() -> None:
+    """A variant name becomes a runtime `Symbol` (M1-E2's tag encoding), so it
+    takes the TIGHTER `val.SCSYMBOL_LIMIT` cap (32) despite the XDR field
+    itself being a `string<60>` -- the same split an event's name makes."""
+
+    @contractunion
+    class Wordy3(ContractUnion):
+        A = variant()
+
+    Wordy3.__name__ = "Wordy3"
+    vars(Wordy3)["_serpent_type_"]["cases"] = [("x" * 33, ())]
+    with pytest.raises(SpecNameError, match="capped at 32"):
+        build_spec_entries(Counter, types=(Wordy3,))
+
+
+def test_int_enum_entry_carries_every_case() -> None:
+    entries = _unpack(build_spec_entries(Counter, types=(Level,)))
+    enum = entries[0].udt_enum_v0
+    assert enum is not None
+    assert enum.name == b"Level"
+    assert enum.lib == b""
+    assert [(case.name, case.doc, case.value.uint32) for case in enum.cases] == [
+        (b"Low", b"", 0),
+        (b"High", b"", 7),
+    ]
+
+
+def test_an_int_enum_case_name_at_the_60_byte_cap_is_accepted() -> None:
+    """Unlike a union variant, an int-enum case name never becomes a runtime
+    `Symbol` (ruling E5's discriminants are always explicit), so it takes the
+    SAME 60-byte cap an error-enum case does -- not the tighter 32."""
+
+    @contractenum
+    class Wordy4(ContractEnum):
+        A = enumvalue(0)
+
+    vars(Wordy4)["_serpent_type_"]["cases"] = [("c" * 60, 0)]
+    entries = _unpack(build_spec_entries(Counter, types=(Wordy4,)))
+    assert entries[0].udt_enum_v0 is not None
+    assert entries[0].udt_enum_v0.cases[0].name == b"c" * 60
+
+
 def test_error_enum_entry_carries_every_errorcode_case() -> None:
     entries = _unpack(build_spec_entries(Counter, types=(token_style.TokenError,)))
     enum = entries[0].udt_error_enum_v0
@@ -806,6 +945,41 @@ def test_two_types_sharing_a_name_are_refused() -> None:
         build_spec_entries(Counter, types=(Settings, Imported))
 
 
+def test_a_duplicate_name_across_the_three_udt_kinds_is_refused() -> None:
+    """§B.3: a UDT reference is name-only, so structs, unions and int enums
+    share ONE spec namespace -- a union colliding with an already-declared
+    struct's name is exactly as unresolvable as two structs sharing a name."""
+
+    @contractunion
+    class Impostor(ContractUnion):
+        Only = variant()
+
+    Impostor.__name__ = "Settings"
+    with pytest.raises(SpecNameError, match="Settings"):
+        build_spec_entries(Counter, types=(Settings, Impostor))
+
+    @contractenum
+    class ImpostorEnum(ContractEnum):
+        Only = enumvalue(0)
+
+    ImpostorEnum.__name__ = "Settings"
+    with pytest.raises(SpecNameError, match="Settings"):
+        build_spec_entries(Counter, types=(Settings, ImpostorEnum))
+
+
+def test_an_undecorated_class_in_types_names_every_mappable_kind() -> None:
+    """The fallthrough refusal now names all three mappable kinds plus the
+    error-enum entry kind, since `@contractunion`/`@contractenum` classes are
+    no longer refused the way an undecorated class still is."""
+    with pytest.raises(SpecTypeError) as exc_info:
+        build_spec_entries(Counter, types=(int,))
+    message = str(exc_info.value)
+    assert "@contracttype" in message
+    assert "@contractunion" in message
+    assert "@contractenum" in message
+    assert "@contracterror" in message
+
+
 def test_omitting_types_silently_drops_the_structs_it_references() -> None:
     """The documented footgun: `build_spec_entries` cannot discover the structs
     a contract mentions, so sub-plan D must collect them from the module. The
@@ -841,6 +1015,28 @@ def test_a_type_name_at_the_cap_is_accepted() -> None:
     AtCap.__name__ = "A" * 60
     entries = _unpack(build_spec_entries(Counter, types=(AtCap,)))
     assert _shape(entries)[0] == ("struct", "A" * 60)
+
+
+def test_an_over_long_union_or_int_enum_name_is_refused_the_same_way() -> None:
+    """`_check_type_name` is reused VERBATIM for the two new kinds (no second
+    cap check was added): an over-long class name is refused identically
+    whether it names a struct, a union, or an int enum."""
+
+    @contractunion
+    class LongUnion(ContractUnion):
+        Only = variant()
+
+    LongUnion.__name__ = "U" * 61
+    with pytest.raises(SpecNameError, match="60"):
+        build_spec_entries(Counter, types=(LongUnion,))
+
+    @contractenum
+    class LongEnum(ContractEnum):
+        Only = enumvalue(0)
+
+    LongEnum.__name__ = "E" * 61
+    with pytest.raises(SpecNameError, match="60"):
+        build_spec_entries(Counter, types=(LongEnum,))
 
 
 def test_an_over_long_error_case_name_raises_spec_name_error_naming_it() -> None:

@@ -263,8 +263,11 @@ class SpecInputs:
     """What `spec.sections.build_spec_entries` needs (SS C.2 output 4).
 
     `declared_types_in_order` is B9's "`types` is declared, not discovered"
-    inventory -- the struct and error-enum CLASSES in declaration order, which
-    is the order `build_spec_entries(cls, types=...)` emits them in (B10).
+    inventory -- now FOUR kinds of CLASSES (M1-E2 adds tagged unions and int
+    enums to the struct and error-enum pair), in declaration order, which is
+    the order `build_spec_entries(cls, types=...)` emits them in (B10). Ruling
+    E7 is what then decides the EMITTED order among those four kinds --
+    `declared_types_in_order` itself stays in DECLARATION order regardless.
 
     `events` is kept strictly SEPARATE (MJ-9): an event is not a declared TYPE
     but its own spec entry kind, so it travels to

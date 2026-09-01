@@ -918,6 +918,50 @@ def test_declared_events_reach_the_events_keyword_and_never_types() -> None:
         )
 
 
+#: M1-E2: a module declaring a union but never annotating anything with it
+#: (Task 4's job, not Task 3's) -- `spec_types` collects a declared type
+#: whether or not any signature references it, exactly like `Balance` in
+#: `test_decls.py`'s own fixture.
+UNION_SRC = """\
+from serpent import U32, ContractUnion, Env, contract, contractunion, variant
+
+
+@contractunion
+class Shape(ContractUnion):
+    Empty = variant()
+    Circle = variant(U32)
+
+
+@contract
+class C:
+    def get(self, env: Env) -> U32:
+        return U32(0)
+"""
+
+
+def test_a_declared_union_reaches_the_spec_as_a_udt_union_entry() -> None:
+    """F.1.6, both directions: `spec_inputs.declared_types_in_order` carries
+    the union class, the assembled wasm's `contractspecv0` is exactly what
+    `build_spec_entries` produces from it, and decoding those bytes back finds
+    the matching `UDT_UNION_V0` entry (Q5's footgun runs the OTHER way when
+    `types` is honored -- the reference and the entry agree)."""
+    c = compiled(UNION_SRC)
+    contract_cls = c.spec_inputs.contract_cls
+    assert contract_cls is not None
+    assert [cls.__name__ for cls in c.spec_inputs.declared_types_in_order] == ["Shape"]
+
+    payload = _customs(module.assemble(c, meta={}, version=None).wasm)[sections.SPEC_SECTION_NAME]
+    assert payload == build_spec_entries(contract_cls, types=c.spec_inputs.declared_types_in_order)
+
+    unpacker = Unpacker(payload)
+    entries: list[xdr.SCSpecEntry] = []
+    while unpacker.get_position() < len(payload):
+        entries.append(xdr.SCSpecEntry.unpack(unpacker))
+    unions = [e.udt_union_v0 for e in entries if e.udt_union_v0 is not None]
+    assert len(unions) == 1
+    assert unions[0].name == b"Shape"
+
+
 def test_a_built_module_carries_the_event_spec_entry() -> None:
     """Dossier F.1.11, end to end: a contract module spelling the topic
     convention -- `from serpent import Annotated, topic` (SPT2005: a contract

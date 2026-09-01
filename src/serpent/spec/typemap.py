@@ -31,6 +31,11 @@ whitelist of the two named classes would silently mis-emit plain `BYTES` for
   (`EVENT_V0`, built by `spec.sections` from `events=`), not a type an author
   can annotate with.
 * `@contracterror` enums -- a spec *entry* (`UDT_ERROR_ENUM_V0`), not a type.
+  (`@contractunion` and `@contractenum` are the opposite case: M1-E2 makes
+  both of THOSE mappable, right alongside `@contracttype` -- a tagged union
+  or an int enum is a value an author can hold in a field or pass as a
+  parameter, so it needs a spec *type*, not only the entry `spec.sections`
+  builds for it.)
 * `@contract` classes -- the contract is not a value.
 * `U256`/`I256` (M2-deferred), `MuxedAddress`, `Val`, `Result`, `Tuple`: no
   authoring surface exists for these at all, so they arrive only as some other
@@ -115,7 +120,9 @@ _SCALARS: Final[dict[type, xdr.SCSpecType]] = {
 _UDT_NAME_LIMIT: Final = 60
 
 #: Per-`_serpent_type_`-kind explanation for a decorated class that is not a
-#: struct. `struct` is absent on purpose: it is the one mappable kind.
+#: UDT. `struct`, `union` and `enum` are absent on purpose: they are the three
+#: mappable kinds (§B.3 -- a UDT reference is name-only, so all three share
+#: one spec namespace).
 _REFUSED_KINDS: Final[dict[str, str]] = {
     "error_enum": (
         "an @contracterror enum is a spec ENTRY (UDT_ERROR_ENUM_V0), not a "
@@ -134,9 +141,10 @@ def to_spec_type(annotation: object) -> xdr.SCSpecTypeDef:
 
     Handles the scalars, the `Bytes`/`BytesN` family, `Vec[T]`, `Map[K, V]`,
     `X | None` (both the `types.UnionType` and `typing.Optional` spellings),
-    and `@contracttype` structs (as `UDT` by class name). Anything else raises
-    `SpecTypeError` naming the annotation -- see the module docstring for the
-    full list and why each is refused.
+    and `@contracttype`/`@contractunion`/`@contractenum` classes (as `UDT` by
+    class name, all three). Anything else raises `SpecTypeError` naming the
+    annotation -- see the module docstring for the full list and why each is
+    refused.
     """
     origin = typing.get_origin(annotation)
     if origin is typing.Union or origin is types.UnionType:
@@ -234,17 +242,24 @@ def _map(annotation: object) -> xdr.SCSpecTypeDef:
     )
 
 
+#: The three `_serpent_type_["kind"]` values a UDT reference can name (§B.3):
+#: a struct, a tagged union, or an int enum. All three encode identically --
+#: `SCSpecTypeUDT` carries only a NAME -- which is why one tuple, not three
+#: separate `if` arms, decides it.
+_UDT_KINDS: Final = ("struct", "union", "enum")
+
+
 def _decorated(annotation: type) -> xdr.SCSpecTypeDef:
-    """A serpent-decorated class: `@contracttype` -> `UDT`, everything else out.
+    """A serpent-decorated class: a struct/union/int enum -> `UDT`, else out.
 
     `vars(...)`, not `getattr`, for the same reason `decorators` uses it: an
-    *undecorated* subclass of a struct inherits `_serpent_type_` without having
-    been declared, and emitting it as a UDT would reference a spec entry that
-    is never written.
+    *undecorated* subclass of a struct (or union, or int enum) inherits
+    `_serpent_type_` without having been declared, and emitting it as a UDT
+    would reference a spec entry that is never written.
     """
     metadata: object = vars(annotation).get(_METADATA_ATTR)
     kind = metadata.get("kind") if isinstance(metadata, dict) else None
-    if kind == "struct":
+    if kind in _UDT_KINDS:
         return xdr.SCSpecTypeDef(
             type=xdr.SCSpecType.SC_SPEC_TYPE_UDT,
             udt=xdr.SCSpecTypeUDT(name=_udt_name(annotation)),
@@ -258,14 +273,14 @@ def _decorated(annotation: type) -> xdr.SCSpecTypeDef:
 
 
 def _udt_name(annotation: type) -> bytes:
-    """The UDT reference name: the struct's class name, UTF-8 encoded.
+    """The UDT reference name: the class's own name, UTF-8 encoded.
 
     The reference has to be the class name because it names the
-    `UDT_STRUCT_V0` entry `spec.sections` writes for the same class. The length
-    check is not this module claiming the cap -- `SCSpecTypeUDT` is a
-    `string<60>` and `stellar_sdk` rejects an over-long name in its
-    constructor, so the alternative is a bare `ValueError` that names no
-    annotation at all.
+    `UDT_STRUCT_V0`/`UDT_UNION_V0`/`UDT_ENUM_V0` entry `spec.sections` writes
+    for the same class. The length check is not this module claiming the cap
+    -- `SCSpecTypeUDT` is a `string<60>` and `stellar_sdk` rejects an
+    over-long name in its constructor, so the alternative is a bare
+    `ValueError` that names no annotation at all.
     """
     encoded = annotation.__name__.encode("utf-8")
     if len(encoded) > _UDT_NAME_LIMIT:

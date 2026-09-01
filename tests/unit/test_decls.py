@@ -56,16 +56,22 @@ _SOURCE = '''"""A bank-shaped module exercising every declaration form."""
 from serpent import (
     U32,
     Address,
+    ContractEnum,
+    ContractUnion,
     Env,
     Event,
     Symbol,
     Vec,
     bytes_n,
     contract,
+    contractenum,
     contracterror,
     contractevent,
     contracttype,
+    contractunion,
+    enumvalue,
     errorcode,
+    variant,
 )
 
 ADMIN = Symbol("ADMIN")
@@ -86,6 +92,23 @@ class Balance:
 
     owner: Address
     amount: U32
+
+
+@contractunion
+class Shape(ContractUnion):
+    """A tagged union this contract declares but never uses (M1-E2): still a
+    declared TYPE that joins `spec_types` (E7), with no IR node of its own."""
+
+    Empty = variant()
+    Circle = variant(U32)
+
+
+@contractenum
+class Level(ContractEnum):
+    """An int enum, same story as `Shape`."""
+
+    Low = enumvalue(0)
+    High = enumvalue(7)
 
 
 @contractevent
@@ -227,15 +250,30 @@ def test_events_are_tracked_separately_from_the_spec_types() -> None:
 def test_spec_types_inventory_feeds_build_spec_entries() -> None:
     """MJ-9's pin, on this module and on the real fixture: the inventory C
     hands `build_spec_entries(cls, types=...)` must be exactly what that
-    function accepts -- structs and error enums, in declaration order."""
+    function accepts -- structs, unions, int enums and error enums, in
+    DECLARATION order (E7 then re-sorts them by kind at emission; `spec_types`
+    itself never does)."""
     loaded = _load()
     sink = Diagnostics()
     decls = check_declarations(loaded, sink)
     assert not sink, [d.message for d in sink.diagnostics]
-    assert [cls.__name__ for cls in decls.spec_types] == ["Err", "Balance"]
+    assert [cls.__name__ for cls in decls.spec_types] == ["Err", "Balance", "Shape", "Level"]
     assert loaded.contract_cls is not None
     payload = build_spec_entries(loaded.contract_cls, types=list(decls.spec_types))
     assert payload
+
+
+def test_a_declared_union_and_int_enum_land_in_spec_types() -> None:
+    """The two new `check_declarations` arms (E7): a union and an int enum
+    join `spec_types` exactly as a struct or an error enum does, with no IR
+    node of their own -- `decls.structs`/`decls.error_enums` stay unaffected."""
+    decls = _ok()
+    assert [cls.__name__ for cls in decls.spec_types if cls.__name__ in ("Shape", "Level")] == [
+        "Shape",
+        "Level",
+    ]
+    assert all(struct.name != "Shape" for struct in decls.structs)
+    assert all(enum.name != "Level" for enum in decls.error_enums)
 
 
 def test_token_style_fixture_feeds_build_spec_entries() -> None:
