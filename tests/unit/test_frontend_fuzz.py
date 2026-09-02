@@ -1053,7 +1053,8 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     authoring fixture), and M1-E2 Task 7 added `get_default_typing.py` (the
     `get` overload set's positive typing fixture, B5), and M1-E2 Task 8 added
     `examples/shapes.py` (the sixth shipped example, the tagged union and the
-    int enum) -- each joined this corpus automatically, which is the intended
+    int enum), and M1-F Task 6 added `host_facts.py` (the HOST_FACTS table's
+    contract) -- each joined this corpus automatically, which is the intended
     behavior, and updating these lines is how it gets acknowledged.
     """
     must_reject = [name for name, _ in CORPUS if name.startswith("must_reject/")]
@@ -1063,6 +1064,7 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     assert sorted(fixtures) == [
         "fixtures/env_surface.py",
         "fixtures/get_default_typing.py",
+        "fixtures/host_facts.py",
         "fixtures/sandbox_counter.py",
         "fixtures/sandbox_hello_world.py",
         "fixtures/spike1_reauthored.py",
