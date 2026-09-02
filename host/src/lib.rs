@@ -3,8 +3,8 @@
 //! method wrapped in `catch_unwind`, every failure one `HostFailure`. Rust
 //! knows nothing about serpent types; `serpent.testing` (Python) does.
 
-pub mod errors;
-pub mod validate;
+mod errors;
+mod validate;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -42,32 +42,62 @@ fn conversion(message: String) -> PyErr {
     failure("conversion", "", 0, message)
 }
 
+type Payload = Box<dyn std::any::Any + Send>;
+
+/// A panic payload as text. Rust panics carry either a `String` (a formatted
+/// `panic!`, which is what the sdk's `unwrap()`s produce) or a `&'static str`.
+fn panic_text(payload: &Payload) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_else(|| "non-string panic payload".to_string())
+}
+
+fn panic_failure(text: String) -> PyErr {
+    failure(
+        "panic",
+        "",
+        0,
+        format!("the embedded host panicked: {text}"),
+    )
+}
+
 /// E4: a residual panic anywhere below becomes a catchable `HostFailure`
 /// of kind "panic", never a `pyo3_runtime.PanicException` (P3).
 fn contained<T>(f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
-        Err(payload) => {
-            let text = payload
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-                .unwrap_or_else(|| "non-string panic payload".to_string());
-            Err(failure(
-                "panic",
-                "",
-                0,
-                format!("the embedded host panicked: {text}"),
-            ))
-        }
+        Err(payload) => Err(panic_failure(panic_text(&payload))),
     }
 }
 
-/// The one place a panic is an ANSWER rather than a failure: the testutils
-/// `get_ttl` panics on an absent or expired entry (review B10), and "no live
-/// entry" is `None` in this module's contract.
-fn unwind_to_none<T>(f: impl FnOnce() -> T) -> Option<T> {
-    catch_unwind(AssertUnwindSafe(f)).ok()
+/// The sdk's testutils `get_ttl` is
+/// `get_..._live_until_ledger(..).unwrap().checked_sub(sequence).unwrap()`, so
+/// it panics two ways (review B10) and they mean different things:
+///
+/// * the SECOND unwrap fails when `live_until < sequence` -- the entry is
+///   EXPIRED, which is `None` on this surface;
+/// * the FIRST unwrap fails with `Error(Storage, MissingValue)` when there is
+///   no entry AT ALL to ask about, which on an undeployed contract address is
+///   the very same fault `storage_get` reports as kind "panic". Mapping that to
+///   `None` would quietly answer "no TTL" for a contract that does not exist.
+///
+/// So only the arithmetic shape becomes `None`; everything else stays a panic
+/// and the two accessors agree. (Pinned by
+/// `test_storage_ttl_of_an_undeployed_contract_panics_like_storage_get`.)
+fn ttl_or_none(f: impl FnOnce() -> u32) -> PyResult<Option<u32>> {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(ttl) => Ok(Some(ttl)),
+        Err(payload) => {
+            let text = panic_text(&payload);
+            if text.contains("`Option::unwrap()` on a `None` value") {
+                Ok(None)
+            } else {
+                Err(panic_failure(text))
+            }
+        }
+    }
 }
 
 fn scval_from(bytes: &[u8], what: &str) -> PyResult<ScVal> {
@@ -470,10 +500,12 @@ impl RealEnv {
     }
 
     /// RELATIVE ledgers remaining, EXCLUDING the current ledger (review B10):
-    /// `live_until = sequence + ttl`. The testutils `get_ttl` PANICS on an
-    /// absent or expired entry, so an absent entry is pre-checked with `has`
-    /// and an expired one is caught by `unwind_to_none`; both are `None`. The
-    /// instance form takes NO key, so a non-empty key there is a caller bug.
+    /// `live_until = sequence + ttl`. `None` means "no live entry": an absent
+    /// key (pre-checked with `has`, because the sdk's `get_ttl` panics on one)
+    /// or an expired one (`ttl_or_none`). A fault that is NOT the absence of an
+    /// entry -- an undeployed contract address, say -- stays kind "panic", the
+    /// same answer `storage_get` gives for it. The instance form takes NO key,
+    /// so a non-empty key there is a caller bug.
     fn storage_ttl(
         &self,
         contract: &str,
@@ -492,9 +524,9 @@ impl RealEnv {
                             .to_string(),
                     ));
                 }
-                return Ok(unwind_to_none(|| {
+                return ttl_or_none(|| {
                     env.as_contract(&addr, || env.storage().instance().get_ttl())
-                }));
+                });
             }
             let key = to_val(env, key_xdr, "key")?;
             let present = env.as_contract(&addr, || match dur {
@@ -504,12 +536,12 @@ impl RealEnv {
             if !present {
                 return Ok(None);
             }
-            Ok(unwind_to_none(|| {
+            ttl_or_none(|| {
                 env.as_contract(&addr, || match dur {
                     Durability::Persistent => env.storage().persistent().get_ttl(&key),
                     _ => env.storage().temporary().get_ttl(&key),
                 })
-            }))
+            })
         })
     }
 

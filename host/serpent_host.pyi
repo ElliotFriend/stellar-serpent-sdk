@@ -95,7 +95,9 @@ class RealEnv:
         """RELATIVE: ledgers remaining EXCLUDING the current ledger
         (`testutils::storage`, review B10), so `live_until = sequence + ttl`.
         `None` when the entry is absent or expired (the sdk method panics
-        there; contained and mapped). Durability "instance" takes NO key: pass
+        there; contained and mapped). A missing CONTRACT is NOT absence: an
+        undeployed address raises `HostFailure(kind="panic")` here, the same
+        answer `storage_get` gives it. Durability "instance" takes NO key: pass
         `b""` or get `invalid_input`."""
 
     def budget(self) -> tuple[int, int]:

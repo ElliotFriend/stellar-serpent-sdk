@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from stellar_sdk import scval
-from stellar_sdk.xdr import ContractEvent, SCVal
+from stellar_sdk.xdr import ContractEvent, DiagnosticEvent, SCVal, SCValType
 
 from serpent.emitter import build_file
 from serpent.env import DEFAULT_LEDGER_SEQUENCE, DEFAULT_LEDGER_TIMESTAMP
@@ -27,9 +27,38 @@ _ROOT = Path(__file__).resolve().parents[2]
 COUNTER = _ROOT / "examples" / "counter.py"
 ERRORS = _ROOT / "examples" / "errors.py"
 EVENTS = _ROOT / "examples" / "events.py"
+# `guard(who: Address)` calls `who.require_auth()`, which is what `auths()` and
+# `mock_auths()` need; no example contract calls it.
+ENV_SURFACE = _ROOT / "tests" / "fixtures" / "env_surface.py"
 ACCOUNT = "GCUNZ4XXN2LPHSGWPGCVZAZ4GUWL6HMXLJ7NCHCPB3I23EPY6JCVISSY"
-# Any valid contract strkey that is NOT the deployed contract's own address.
+# Two valid contract strkeys that are never the deployed contract's own address:
+# `StrKey.encode_contract(bytes([n]) * 32)` for n = 0xC3 and n = 1.
 OTHER_CONTRACT = "CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW"
+UNRELATED_CONTRACT = "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+
+
+def _topics(event: ContractEvent) -> list[SCVal]:
+    """An event's topic list. `body.v0` is Optional in the generated XDR."""
+    v0 = event.body.v0
+    assert v0 is not None
+    return list(v0.topics)
+
+
+def _innermost_error(env: Any) -> tuple[str, str] | None:
+    """The LAST diagnostic whose topics are `[Symbol("error"), Error(...)]`, as
+    `(ScErrorType, ScErrorCode)` names -- the shape `serpent.testing` (Task 3)
+    reads to recover what the frame-level error hides (B5)."""
+    found = None
+    for raw in env.diagnostics():
+        topics = _topics(DiagnosticEvent.from_xdr_bytes(raw).event)
+        if not topics or scval.from_symbol(topics[0]) != "error":
+            continue
+        for topic in topics[1:]:
+            if topic.type == SCValType.SCV_ERROR and topic.error is not None:
+                error = topic.error
+                if error.code is not None:
+                    found = (error.type.name, error.code.name)
+    return found
 
 
 def _env() -> Any:
@@ -77,9 +106,21 @@ def test_a_missing_function_carries_an_underlying_diagnostic() -> None:
     the real classification is in the diagnostics."""
     env = _env()
     cid = env.register(build_file(COUNTER).wasm, [])
-    with pytest.raises(serpent_host.HostFailure):
+    with pytest.raises(serpent_host.HostFailure) as info:
         env.invoke(cid, "no_such_export", [])
-    assert env.diagnostics(), "the host emitted no diagnostic events (diagnostic level not Debug?)"
+    raw = env.diagnostics()
+    assert raw, "the host emitted no diagnostic events (diagnostic level not Debug?)"
+    # Every item decodes as a DiagnosticEvent, and the error ones are topic'd
+    # `[Symbol("error"), Error(Type(Code))]` exactly as review B5 describes.
+    events = [DiagnosticEvent.from_xdr_bytes(b) for b in raw]
+    topic_names = [scval.from_symbol(_topics(e.event)[0]) for e in events]
+    assert topic_names[0] == "fn_call"
+    assert "error" in topic_names
+    # Observed: the frame says Context/InvalidAction (code 6) while the
+    # innermost diagnostic says what actually happened -- a missing export is
+    # SCE_WASM_VM / SCEC_MISSING_VALUE.
+    assert info.value.args[:3] == ("host", "Context", 6)
+    assert _innermost_error(env) == ("SCE_WASM_VM", "SCEC_MISSING_VALUE")
 
 
 def test_compare_orders_two_small_symbols_where_obj_cmp_refuses() -> None:
@@ -144,7 +185,11 @@ def test_register_of_garbage_is_a_host_failure_not_a_panic() -> None:
     with pytest.raises(Exception) as info:
         env.register(b"\0asm\x01\0\0\0" + b"\xff" * 16, [])
     assert isinstance(info.value, serpent_host.HostFailure)
-    assert info.value.args[0] in {"host", "panic"}
+    # Measured at soroban-sdk 28.0.0-rc.1: the sdk escalates the module's
+    # rejection to a panic, so this is kind "panic" and the classification
+    # (WasmVm, InvalidAction) survives only in the message text.
+    assert info.value.args[0] == "panic"
+    assert "Error(WasmVm, InvalidAction)" in info.value.args[3]
     # Not BaseException-only: `except Exception` must catch it. (The brief's
     # `__mro__[-2] is Exception` indexes BaseException -- the MRO of a plain
     # Exception subclass is (cls, Exception, BaseException, object).)
@@ -298,9 +343,7 @@ def test_events_are_the_last_invocations_contract_events() -> None:
         [scval.to_uint32(2).to_xdr_bytes(), scval.to_uint32(1).to_xdr_bytes()],
     )
     (event,) = [ContractEvent.from_xdr_bytes(b) for b in env.events()]
-    v0 = event.body.v0
-    assert v0 is not None
-    assert [scval.from_symbol(t) for t in v0.topics] == ["round_closed"]
+    assert [scval.from_symbol(t) for t in _topics(event)] == ["round_closed"]
 
 
 def test_mock_auths_refuses_an_account_authorizer() -> None:
@@ -340,3 +383,114 @@ def test_a_contained_panic_leaves_the_env_usable() -> None:
         env.storage_get(OTHER_CONTRACT, "persistent", scval.to_symbol("X").to_xdr_bytes())
     assert info.value.args[0] == "panic"
     assert _u32(env.invoke(cid, "increment", [scval.to_uint32(3).to_xdr_bytes()])) == 3
+
+
+# --- auth: the positive paths (`auths()` and `mock_auths()` accepting) -------
+
+
+def test_auths_records_the_require_auth_call() -> None:
+    """The `auths()` positive path: `tests/fixtures/env_surface.py`'s
+    `guard(who)` is one `who.require_auth()`, and with `mock_all_auths()` the
+    host records it as the invocation's one root contract auth."""
+    env = _env()
+    env.mock_all_auths()
+    cid = env.register(build_file(ENV_SURFACE).wasm, [])
+    who = scval.to_address(OTHER_CONTRACT).to_xdr_bytes()
+    env.invoke(cid, "guard", [who])
+    (row,) = env.auths()
+    address, contract, function, args = row
+    assert address == OTHER_CONTRACT
+    assert contract == cid
+    assert function == "guard"
+    # The host records the `require_auth` ARGS, which for the bare form is the
+    # invocation's own argument list.
+    assert [SCVal.from_xdr_bytes(a) for a in args] == [SCVal.from_xdr_bytes(who)]
+
+
+def test_mock_auths_authorizes_the_named_address_and_no_other() -> None:
+    """The `mock_auths()` accept path, and its refusal.
+
+    B5 again, from the auth side: an unauthorized `require_auth` reports the
+    same frame-level `Context(InvalidAction)` code 6 as every other guest-side
+    failure, and only the diagnostics say it was an AUTH failure.
+    """
+    env = _env()
+    cid = env.register(build_file(ENV_SURFACE).wasm, [])
+    allowed = scval.to_address(OTHER_CONTRACT).to_xdr_bytes()
+    env.mock_auths([(OTHER_CONTRACT, cid, "guard", [allowed])])
+
+    env.invoke(cid, "guard", [allowed])  # authorized: no HostFailure
+    assert [(a, c, f) for a, c, f, _args in env.auths()] == [(OTHER_CONTRACT, cid, "guard")]
+
+    with pytest.raises(serpent_host.HostFailure) as info:
+        env.invoke(cid, "guard", [scval.to_address(UNRELATED_CONTRACT).to_xdr_bytes()])
+    assert info.value.args[:3] == ("host", "Context", 6)
+    assert _innermost_error(env) == ("SCE_AUTH", "SCEC_INVALID_ACTION")
+
+
+def test_a_second_invocation_replaces_events_and_auths() -> None:
+    """Both are the LAST invocation's, not an accumulation (Task 3 and Task 5
+    build the per-sequence views on top of that)."""
+    env = _env()
+    env.mock_all_auths()
+    cid = env.register(build_file(ENV_SURFACE).wasm, [])
+    first = scval.to_address(OTHER_CONTRACT).to_xdr_bytes()
+    second = scval.to_address(UNRELATED_CONTRACT).to_xdr_bytes()
+
+    env.invoke(cid, "guard", [first])
+    assert [a for a, _c, _f, _args in env.auths()] == [OTHER_CONTRACT]
+    env.invoke(cid, "guard", [second])
+    assert [a for a, _c, _f, _args in env.auths()] == [UNRELATED_CONTRACT]
+
+    amount = scval.to_uint32(1).to_xdr_bytes()
+    env.invoke(cid, "log_declared", [first, amount])
+    assert len(env.events()) == 1
+    env.invoke(cid, "log_declared", [second, amount])
+    assert len(env.events()) == 1, "events() accumulated instead of replacing"
+    # ... and the last one is the one that survived.
+    (event,) = [ContractEvent.from_xdr_bytes(b) for b in env.events()]
+    assert _topics(event)[1] == SCVal.from_xdr_bytes(second)
+
+
+def test_storage_ttl_of_an_undeployed_contract_panics_like_storage_get() -> None:
+    """The two accessors must agree. A missing entry is `None`; a missing
+    CONTRACT is a fault, and `Error(Storage, MissingValue)` out of
+    `as_contract`'s frame push is the same fault in both -- so `storage_ttl`
+    maps only the expired-arithmetic panic to `None`, never this one."""
+    env = _env()
+    cid = env.register(build_file(COUNTER).wasm, [])
+    key = scval.to_symbol("TOTAL").to_xdr_bytes()
+    for method, durability, probe_key in (
+        ("storage_get", "persistent", key),
+        ("storage_ttl", "persistent", key),
+        ("storage_ttl", "instance", b""),
+    ):
+        with pytest.raises(serpent_host.HostFailure) as info:
+            getattr(env, method)(UNRELATED_CONTRACT, durability, probe_key)
+        assert info.value.args[0] == "panic"
+        assert "Error(Storage, MissingValue)" in info.value.args[3]
+    # The deployed contract still answers, and the env is unharmed.
+    assert env.storage_ttl(cid, "instance", b"") == 4095
+    assert _u32(env.invoke(cid, "increment", [scval.to_uint32(1).to_xdr_bytes()])) == 1
+
+
+def test_a_persistent_entry_is_restored_rather_than_expiring() -> None:
+    """Why only a TEMPORARY entry ever reads as absent: measured on this host, a
+    persistent entry counts down to 0 at its live-until ledger and is then
+    RESTORED on the next access with a fresh 4095, so `storage_ttl` never has an
+    expired persistent entry to report. Recorded because a test that expects a
+    persistent entry to disappear would be testing a fiction."""
+    key = scval.to_symbol("TOTAL").to_xdr_bytes()
+
+    def ttl_after(delta: int) -> int | None:
+        env = _env()
+        cid = env.register(build_file(COUNTER).wasm, [])
+        env.invoke(cid, "increment", [scval.to_uint32(1).to_xdr_bytes()])
+        env.set_ledger(sequence_number=DEFAULT_LEDGER_SEQUENCE + delta)
+        assert env.storage_has(cid, "persistent", key) is True
+        ttl: int | None = env.storage_ttl(cid, "persistent", key)
+        return ttl
+
+    assert ttl_after(4094) == 1
+    assert ttl_after(4095) == 0  # the last live ledger
+    assert ttl_after(4096) == 4095  # restored, not gone
