@@ -628,7 +628,7 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "the widest variant's payload, or a `ty` no variant declares at that index -- "
         "`s.payload(U32(9), U32)`, `s.payload(U32(0), Bool)`",
         "this payload() read matches no variant of the union",
-        "Task 4 (M1-E2)",
+        "M1-E2 Task 4",
     ),
     # Added in M1-E2 (tagged unions and int enums), for the mistake the
     # sub-plan's own risk table (F.1.7) calls the single highest-value NEW
@@ -648,7 +648,7 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "Compare -- a tag() comparison against a Symbol literal naming no variant of the "
         'union (`s.tag() == Symbol("Cirlce")`), in either operand order',
         "this tag() comparison names no variant of the union",
-        "Task 4 (M1-E2)",
+        "M1-E2 Task 4",
     ),
 )
 

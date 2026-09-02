@@ -376,6 +376,25 @@ _ROWS: tuple[tuple[str, str, str, str], ...] = (
             "        return U32(0)"
         ),
     ),
+    # --- M1-E2 Task 10: `_split_topic`'s NESTED-marker refusal --------------
+    # The third SPT4026 needle, and the one raise in the whole `topic` seam
+    # that had no rule at all until this task (it fell to the SPT1037
+    # catch-all, which says the construct is unsupported -- false for an
+    # annotation that is merely mismarked). One row per needle (P8): the
+    # needle is shared by all three positions the helper is reached from, so
+    # the method-parameter spelling proves it here and the struct-field
+    # spelling is `test_the_struct_field_nested_marker_lands_on_spt4026`'s
+    # job below.
+    (
+        "method_parameter_nested_topic_marker",
+        "SPT4026",
+        "`topic` must mark the whole annotation",
+        (
+            "@contract\nclass D:\n"
+            "    def go(self, env: Env, x: Annotated[U32, topic] | None) -> U32:  # HERE\n"
+            "        return U32(0)"
+        ),
+    ),
 )
 
 
@@ -396,6 +415,27 @@ def test_every_b3_row_is_a_located_diagnostic(row_id: str, code: str, body: str)
     diagnostic = found[0]
     assert diagnostic.loc.kind is LocKind.NODE
     assert diagnostic.loc.line == _here_line(src)
+
+
+def test_the_struct_field_nested_marker_lands_on_spt4026() -> None:
+    """The nested-marker needle's OTHER position (M1-E2 Task 10).
+
+    `_split_topic` is one helper reached from three positions, and its refusal
+    is worded for all of them, so the struct-field spelling has to arrive at
+    the same code as the method-parameter row above -- not at the SPT1037
+    catch-all it fell to before this task. Asserted here rather than as a
+    second `must_reject/` fixture: the fixture tree already carries the
+    method-parameter spelling, and one fixture per POSITION of one shared
+    needle is the duplication `_ROWS`'s own one-row-per-needle rule avoids.
+    """
+    src = _source("@contracttype\nclass S:\n    a: Annotated[U32, topic] | None  # HERE")
+    with pytest.raises(CompileError) as exc_info:
+        compile_module(src, PATH)
+    (diagnostic,) = exc_info.value.diagnostics
+    assert diagnostic.code == "SPT4026"
+    assert diagnostic.loc.kind is LocKind.NODE
+    assert diagnostic.loc.line == _here_line(src)
+    assert "must mark the whole annotation" in "\n".join(diagnostic.notes)
 
 
 #: Needles `test_every_b3_row_is_a_located_diagnostic` cannot exercise
@@ -460,6 +500,7 @@ _BRIDGED_RAISE_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "_reject_empty_udt",
             "_check_method",
             "_build_record",
+            "_split_topic",
         ),
     ),
     ("serpent.types._udt", ("variant", "enumvalue", "_bind_variant", "_reject_wide_payload")),

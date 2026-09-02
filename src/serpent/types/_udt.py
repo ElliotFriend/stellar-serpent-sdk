@@ -120,8 +120,16 @@ class ContractUnion:
 
     An instance holds the `ScVec` it is on chain -- `[Symbol(case), *payload]`
     -- and nothing else. It is immutable: the `Vec` is built once, never handed
-    out, and every attribute rebinding is refused, which is what makes the
-    value hashable (and therefore a storage key) safely.
+    out, and every attribute rebinding is refused, so `__hash__` over that vec
+    can never go stale under the instance's own lifetime.
+
+    Hashable exactly as far as its PAYLOAD is, though: `__hash__` hashes
+    `tuple(self._vec)`, so a unit case, or one whose payload is itself hashable
+    (a scalar, a `@contracttype` struct), is a usable storage key, while a case
+    carrying a `Vec` or a `Map` raises `unhashable type` from the payload
+    itself -- neither container defines `__hash__`, both being mutable.
+    `_storage_key.storage_key` is the way to key on such a value, and it is
+    what `env`'s store uses.
 
     Not a dataclass, deliberately: see the module docstring's E9 paragraph.
     """

@@ -550,19 +550,23 @@ def _build_record(
 
 
 def _split_topic(cls: type[Any], name: str, annotation: object) -> tuple[object, bool]:
-    """One field's `(stripped annotation, is a topic)`.
+    """One annotation's `(stripped annotation, is a topic)`.
+
+    Three positions reach this since M1-E2 Task 5, not just `_build_record`'s
+    field: a method parameter and a method return type too -- which is why the
+    refusal below says "annotation" rather than "field".
 
     Only a marker on the WHOLE annotation counts. `Annotated[U32, topic] | None`
     hides it inside a union, where stripping the outer layer would not find it
-    and the field would quietly become data -- so that spelling is refused
-    rather than misread.
+    and the marker would quietly become invisible -- so that spelling is
+    refused rather than misread.
     """
     if typing.get_origin(annotation) is typing.Annotated:
         args = typing.get_args(annotation)
         return args[0], any(isinstance(extra, _Topic) for extra in args[1:])
     if _mentions_topic(annotation):
         raise ValueError(
-            f"{cls.__name__}.{name}: `topic` must mark the whole field annotation "
+            f"{cls.__name__}.{name}: `topic` must mark the whole annotation "
             f"(`Annotated[T, topic]`), not a type nested inside it -- got "
             f"{_render(annotation)}"
         )

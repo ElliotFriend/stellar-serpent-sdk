@@ -2491,13 +2491,22 @@ def _recognize_union_read(
         # Ruling E2: the VARIANT is not known at the call site, but the union's
         # maximum arity is -- so an index no variant could have is a compile
         # reject rather than a `vec_get` that traps on chain.
+        #
+        # An all-unit union has `widest == 0`, where the range wording below
+        # would say "run 0 to -1": a legal-looking span with no members, and
+        # the only shape whose fix is not "pick a smaller index" but "there is
+        # nothing here to read".
+        if widest == 0:
+            hint = f"`{name}` has no variant with a payload"
+        else:
+            hint = f"payload indices for `{name}` run 0 to {widest - 1}"
         _error(
             ctx,
             "SPT3021",
             loc,
             f"index {slot} is at or above `{name}`'s widest variant, which carries "
             f"{widest} payload value(s)",
-            help=f"payload indices for `{name}` run 0 to {widest - 1}",
+            help=hint,
         )
         return _invalid(loc)
     declared_at_slot = _payload_slot_types(ctx, cases, slot, loc)

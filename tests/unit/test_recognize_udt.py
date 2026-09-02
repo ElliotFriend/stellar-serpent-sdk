@@ -63,6 +63,14 @@ class Shape(ContractUnion):
     Named = variant(Symbol)
 
 
+# Every variant unit, so the union's widest payload arity is ZERO -- the shape
+# that made SPT3021's help read "indices run 0 to -1" until Task 10.
+@contractunion
+class Flag(ContractUnion):
+    On = variant()
+    Off = variant()
+
+
 @contractenum
 class Color(ContractEnum):
     Red = enumvalue(0)
@@ -75,6 +83,7 @@ class Go:
         self,
         env: Env,
         s: Shape,
+        f: Flag,
         c: Color,
         amt: U32,
         sym: Symbol,
@@ -86,6 +95,7 @@ class Go:
 #: `(name, Ty)` in declaration order, `self`/`env` already dropped (§C.3).
 _PARAMS: list[tuple[str, Ty]] = [
     ("s", Ty.Union("Shape")),
+    ("f", Ty.Union("Flag")),
     ("c", Ty.Enum("Color")),
     ("amt", Ty.U32),
     ("sym", Ty.Symbol),
@@ -307,6 +317,16 @@ def test_a_payload_index_at_or_above_the_widest_variant_is_SPT3021() -> None:
     payload arity is (ruling E2), so an index no variant could have is a
     compile reject rather than a `vec_get` that traps on chain."""
     _assert_reject(_reject("s.payload(U32(2), U32)"), "SPT3021", "widest variant")
+
+
+def test_an_all_unit_unions_payload_help_names_the_absent_payload() -> None:
+    """`Flag`'s widest variant carries nothing, so `widest - 1` is -1 and the
+    generic help used to read "indices run 0 to -1" -- a range no author can
+    act on. The zero arm says what is actually true instead: there is no
+    payload to index at all."""
+    diagnostic = _reject("f.payload(U32(0), U32)")
+    _assert_reject(diagnostic, "SPT3021", "widest variant")
+    assert diagnostic.help == "`Flag` has no variant with a payload"
 
 
 def test_a_payload_ty_no_variant_declares_at_that_index_is_SPT3021() -> None:

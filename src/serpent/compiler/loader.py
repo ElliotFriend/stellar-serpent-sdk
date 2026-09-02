@@ -74,9 +74,11 @@ contains its code's registry intent; the uses worth naming are:
   module-level redeclaration and a duplicate member inside one class body.
 * `SPT4026` (M1-E2 Task 5, fed item X2/E10) bridges the `topic` marker in a
   position that has no topics: a @contracttype field (previously the SPT1037
-  catch-all, now recoded with its message unchanged) and, new in this task, a
-  contract method's parameter or return type -- both of which used to compile
-  the marker away in silence rather than raise at all.
+  catch-all, now recoded with its message unchanged) and a contract method's
+  parameter or return type -- both of which used to compile the marker away in
+  silence rather than raise at all. Its third needle (Task 10) is the marker
+  NESTED inside an annotation (`Annotated[T, topic] | None`), which no position
+  reads and every one of the three refuses.
 * `SPT1037` -- MJ-11's explicit exhaustive-dispatch catch-all -- is the
   last resort: a Python `SyntaxError` (from `ast.parse` OR from `compile`,
   which rejects a whole class of source that parses fine), and any exec-time
@@ -285,12 +287,12 @@ _HELP: dict[str, str] = {
         "declare the union as `class Name(ContractUnion):` and the int enum as "
         "`class Name(ContractEnum):` -- one base, and never a declared type"
     ),
-    "SPT5001": "use at most 30 characters from [a-zA-Z0-9_]",
-    "SPT5006": "carry at most 12 payload values in one variant (S4's tuple arity)",
     "SPT4026": (
         "drop `Annotated[T, topic]` down to plain `T` here -- `topic` only means "
         "something on a @contractevent field"
     ),
+    "SPT5001": "use at most 30 characters from [a-zA-Z0-9_]",
+    "SPT5006": "carry at most 12 payload values in one variant (S4's tuple arity)",
 }
 
 
@@ -402,6 +404,13 @@ _BRIDGE_RULES: tuple[_BridgeRule, ...] = (
     # two kinds.
     _BridgeRule(_VALUE_ERROR, "a @contracttype struct has no topics", "SPT4026"),
     _BridgeRule(_VALUE_ERROR, "of a contract method has no topics, so the marker", "SPT4026"),
+    # The THIRD SPT4026 needle (M1-E2 Task 10): `_split_topic`'s nested-marker
+    # refusal, shared by all three positions it is reached from (a struct/event
+    # field, a method parameter, a method return type). `Annotated[T, topic] |
+    # None` puts the marker somewhere no position reads it, which is exactly
+    # SPT4026's intent -- the marker in a position that has no topics -- so it
+    # is the same code rather than a new one.
+    _BridgeRule(_VALUE_ERROR, "`topic` must mark the whole annotation", "SPT4026"),
     _BridgeRule(_VALUE_ERROR, "names are capped at", "SPT5001"),
     _BridgeRule(_VALUE_ERROR, "names must be valid Symbols", "SPT5001"),
     _BridgeRule(_VALUE_ERROR, "cannot resolve annotations", "SPT2003"),

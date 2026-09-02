@@ -342,8 +342,11 @@ def _is_chain_value(value: object) -> bool:
 
     The two M1-E2 arms are here for the same reason as the other four rather
     than for a new one: a union or int-enum `default=` is ALREADY a chain
-    value, so adopting it through `ty` (`ty(default)`) would rebuild it from
-    itself.
+    value, and adopting it through `ty` would not merely be redundant -- it
+    would fail. Neither base takes a constructor argument (both are slotted,
+    and a case is built through its descriptor), so `ty(default)` raises
+    `TypeError: Shape() takes no arguments`. Missing an arm here is a crash,
+    not a wasted rebuild.
     """
     return isinstance(value, (_ChainValue, Vec, Map, Struct, ContractUnion, ContractEnum))
 

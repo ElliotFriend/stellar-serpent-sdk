@@ -11,7 +11,7 @@ ever disagree; the failure message names the regeneration command.
 
 serpent compiles a restricted subset of Python to a Soroban contract.
 This document is generated, in full, from the compiler's own registry
-of diagnostic codes, its `tests/must_reject/` fixture suite (111 minimal counter-examples, one per rejected
+of diagnostic codes, its `tests/must_reject/` fixture suite (112 minimal counter-examples, one per rejected
 construct), and its recognized-surface tables -- never hand-authored,
 so it cannot say something the compiler does not actually do.
 
@@ -2326,6 +2326,24 @@ class Contract:
 **Construct:** `Annotated[T, topic]` on a @contracttype field, a contract method parameter, or a contract method's return type -- none of the three has topics, so the marker would be silently ignored
 
 **Intent:** the `topic` marker only means something on a @contractevent field
+
+#### topic marker nested inside a contract method parameter annotation (`shape/topic_nested_in_method_parameter.py`)
+
+```python
+from serpent import Annotated, Env, U32, contract, topic
+
+
+@contract
+class Contract:
+    # The marker is not on the WHOLE annotation: stripping the outer `| None`
+    # would never find it, so it is refused rather than silently read as data.
+    def compute(self, env: Env, x: Annotated[U32, topic] | None) -> U32:  # HERE
+        return U32(0)
+```
+
+- **message:** Contract.compute: the `topic` marker only means something on a @contractevent field
+- **help:** drop `Annotated[T, topic]` down to plain `T` here -- `topic` only means something on a @contractevent field
+- **note:** ValueError: Contract.compute: `topic` must mark the whole annotation (`Annotated[T, topic]`), not a type nested inside it -- got typing.Optional[typing.Annotated[serpent.types.numeric.U32, topic]]
 
 #### topic marker on a contract method parameter (`shape/topic_on_method_parameter.py`)
 
