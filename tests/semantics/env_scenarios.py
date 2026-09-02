@@ -29,7 +29,7 @@ against the tier-1 model AND against the compiled WASM under the mini host, and
 sub-plan F's tier 2b re-runs the same corpus against a real host -- which is
 where the comparison stops being two models agreeing and starts being evidence.
 
-**Why a row is ever marked `tier1_only_reason`.**
+**Why a row is ever marked `mini_host_gap`.**
 
 * **TTL.** `tests/harness`'s mini host has no TTL model at all
   (`extend_contract_data_ttl` is a recorded no-op), so an expiry-sensitive
@@ -39,9 +39,18 @@ where the comparison stops being two models agreeing and starts being evidence.
   address (review M11) -- and it has no allow-set at all: its `require_auth`
   records and always succeeds.
 
-Both are the harness's limits, not the scenarios': `test_env_differential.py`
-asserts the biconditional (a row carries a reason if and only if it reaches one
-of those surfaces), so a row cannot quietly opt out of the WASM leg.
+Both are the MINI HOST's limits, not the scenarios' and not every host's --
+which is why ruling E8 renamed the field from `tier1_only_reason`:
+`tests/real_host/test_env_scenarios_real.py` replays all 62 rows on the real
+host, the marked ones included. `test_env_differential.py` asserts the
+biconditional (a row carries a reason if and only if it reaches one of those
+surfaces), so a row cannot quietly opt out of the WASM leg.
+
+**Why a row ever carries `host_diverges`.** Ruling E9: where the tier-1 model
+is known wrong-by-omission, the row DECLARES the difference rather than the
+real leg discovering it, and the real-host runner asserts the difference still
+EXISTS -- so the day the model is fixed (an M2 oracle edit) the declaration
+fails loudly instead of rotting.
 
 **The contracts.** `env_surface.py` is the fixture written for this table -- one
 narrow method per Env surface, including the two shapes no shipped contract can
@@ -86,7 +95,21 @@ CONTRACT = "CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI"
 OWNER = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
 SPENDER = "GAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPSABOV"
 
-_ADMIN = Address(ACCOUNT)
+#: The deployed shapes contract's id -- a real, decodable CONTRACT strkey.
+#: `_ADMIN` is built from THIS rather than from `ACCOUNT`, and that is the one
+#: value-level edit ruled into this frozen table (B2, 2026-09-02): the test
+#: host mocks an authorization by registering a `MockAuthContract` AT the
+#: authorizer's address, which a `G...` account cannot host (account
+#: authorization needs real ed25519 signatures, which is M2). Every row here
+#: treats the authorizer as OPAQUE -- it is passed in, recorded, and compared,
+#: never parsed -- so the rows' meaning is unchanged and the allow-set rows
+#: become replayable at tier 2b. Safe against the `MockAuthContract`
+#: registration too: the deployed contract's own address is freshly generated
+#: by `register`, so it can never equal this constant (the one collision
+#: `serpent_host.mock_auths` warns about).
+SHAPES_CONTRACT = "CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW"
+
+_ADMIN = Address(SHAPES_CONTRACT)
 _OTHER = Address(CONTRACT)
 _OWNER = Address(OWNER)
 _SPENDER = Address(SPENDER)
@@ -97,30 +120,36 @@ _SPENDER = Address(SPENDER)
 _K = Symbol("K")
 _OTHER_KEY = Symbol("Z")
 
-#: The three tier-1-only reasons, written once and shared, so every row that
-#: opts out of the WASM leg opts out for a reason this module states.
+#: The three MINI-HOST gaps, written once and shared, so every row that opts
+#: out of the WASM leg opts out for a reason this module states. Each one names
+#: the mini host and says what the real host does with the row instead (O18,
+#: ruling E8): the old `TTL_REASON` also claimed a missing ledger sequence,
+#: which was never true of `FullHost` -- it tracks one, it just has no
+#: per-entry live-until to compare it against.
 TTL_REASON = (
-    "the mini host has no TTL model at all -- `extend_contract_data_ttl` is a "
-    "recorded no-op, and FullHost tracks a ledger sequence but no per-entry "
-    "live-until state and applies no expiry on reads -- so an expiry-sensitive "
-    "answer has no WASM leg to be compared with"
+    "the MINI HOST has no TTL model at all -- `extend_contract_data_ttl` is a "
+    "recorded no-op and no read applies expiry, so an expiry-sensitive answer "
+    "has no WASM leg to be compared with; the real host at tier 2b runs this "
+    "row"
 )
 AUTH_ARGS_REASON = (
-    "the mini host DISCARDS `require_auth_for_args`' args (it shape-checks the "
+    "the MINI HOST DISCARDS `require_auth_for_args`' args (it shape-checks the "
     "vec and records only the address, review M11), so an args-sensitive "
-    "assertion has no WASM leg"
+    "assertion has no WASM leg; the real host at tier 2b runs this row"
 )
 ALLOW_SET_REASON = (
-    "the mini host has no authorization state to consult: its `require_auth` "
+    "the MINI HOST has no authorization state to consult: its `require_auth` "
     "records and always succeeds, so an `Env(auths=...)` allow-set -- and the "
-    "refusal it produces -- does not exist on the WASM leg"
+    "refusal it produces -- does not exist on the WASM leg; the real host at "
+    "tier 2b runs this row"
 )
 
 # `TTL_METHODS`/`AUTH_ARGS_METHODS` -- which method names in a row FORCE
-# `tier1_only_reason` -- are RUNNER knowledge (how `test_env_differential.py`'s
-# biconditional test derives "is this row tier-1-only" from the surfaces a row
-# reaches), not table data any row here reads, so they live next to that test
-# in `tests/unit/test_env_differential.py` rather than in this module.
+# `mini_host_gap` -- are RUNNER knowledge (how `test_env_differential.py`'s
+# biconditional test derives "does this row have a mini-host leg" from the
+# surfaces a row reaches), not table data any row here reads, so they live
+# next to that test in `tests/unit/test_env_differential.py` rather than in
+# this module.
 
 
 @dataclass(frozen=True)
@@ -143,15 +172,44 @@ class Call:
 class Advance:
     """Move the ledger sequence on by `ledgers`, so a TTL can lapse.
 
-    Tier-1 only by construction: `Env.advance` is a test hook with no analogue
-    on either the mini host or the chain (a real ledger closes; nothing
-    "advances" it from inside a test).
+    Tier-1 and real-host: `Env.advance` moves the model's sequence;
+    `RealEnv.advance` moves the embedded host's ledger sequence. The MINI host
+    has no per-entry live-until state, so an `Advance` forces `mini_host_gap`.
+    Nothing "advances" the chain from inside a test -- tier 3 never replays
+    this step.
     """
 
     ledgers: int
 
 
 Step: TypeAlias = Call | Advance
+
+
+@dataclass(frozen=True)
+class HostDivergence:
+    """A declared, EXPECTED difference between the tier-1 model and the real host.
+
+    Ruling E9: where the tier-1 model is known wrong-by-omission, the row says
+    so HERE and `tests/real_host/test_env_scenarios_real.py` asserts the
+    difference still exists. A divergence the runner cannot find is a
+    declaration to retire, which is the point -- the alternative is a comment
+    that quietly stops being true the day the model is fixed (an M2 oracle
+    edit, once the evidence is in).
+
+    * `reason` cites the dossier/review fact, so the row does not have to be
+      read alongside a plan to be understood;
+    * `events` is what the REAL host records for the WHOLE sequence. The
+      model's `events` field stays the MODEL's -- neither is edited to match
+      the other;
+    * `answer` is the real leg's expected answer where it differs too, and
+      `None` where the answer agrees and only the events diverge. It exists
+      because the archival divergence (M3) is an ANSWER difference with no
+      event in sight.
+    """
+
+    reason: str
+    events: tuple[PublishedEvent, ...]
+    answer: ChainValue | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -192,15 +250,38 @@ class EnvScenario:
     #: passing unnoticed.
     events: tuple[PublishedEvent, ...] = ()
     auths: tuple[RecordedAuth, ...] = ()
-    #: Set exactly when the row reaches a surface THIS mini host does not
-    #: model (TTL, auth args, the allow-set) -- i.e. it has no SECOND LEG to
-    #: compare against in this differential today. The name overstates the
-    #: reach: a real host at sub-plan F's tier 2b CAN replay the allow-set and
-    #: auth-args rows (the mini host's limits are its own, not every host's),
-    #: so "tier1_only" means "no mini-host leg here," not "no host can ever
-    #: run this."
-    tier1_only_reason: str | None = None
+    #: Set exactly when the row reaches a surface THIS MINI HOST does not model
+    #: (TTL, auth args, the allow-set) -- i.e. it has no WASM leg to compare
+    #: against in `test_env_differential.py` today, and nothing more than that.
+    #: Named `mini_host_gap` rather than `tier1_only_reason` (ruling E8)
+    #: because the old name overstated the reach: the REAL host at tier 2b has
+    #: a settable ledger sequence, honours `require_auth_for_args`' args and
+    #: has a real allow-set, so `tests/real_host/test_env_scenarios_real.py`
+    #: runs every row marked here. The gap is one harness's, not the corpus's.
+    mini_host_gap: str | None = None
+    #: A declared, expected real-host-vs-tier-1 difference (ruling E9), or
+    #: `None` when the two are expected to agree. Set BEFORE the real leg is
+    #: ever run, from a fact already on record -- a first run that "discovers"
+    #: what to declare here is a differential fitted to its host.
+    host_diverges: HostDivergence | None = None
 
+
+#: The M3 archival divergence, written once and shared by every row whose
+#: `Advance` lapses a PERSISTENT or INSTANCE entry and then reads it. Declared
+#: before the real leg was ever run, from Task 1's measurement -- so no row
+#: below spends an E10 escalation cycle on a known harness limit.
+ARCHIVAL_REASON = (
+    "review M3, and the host fact Task 1 measured on this test host: the sdk "
+    "test `Env` does not model archival. A PERSISTENT entry here never expires "
+    "-- its TTL counts down to 0 and the next access RESTORES it with a fresh "
+    "TTL (4095 at these ledger defaults) -- and Task 1's probe table records "
+    "instance storage behaving the same way. So the three legs give three "
+    "answers: tier 1 reads absent and answers the default, the test host "
+    "answers the STORED value, and the CHAIN archives the entry. The archival "
+    "half is proven only at tier 3 and is carried to M2; neither the tier-1 "
+    "model nor this row is edited to match the test host, because writing its "
+    "answer down as a host fact is the inversion M3 forbids."
+)
 
 #: The event both spellings publish, pinned ONCE and shared by the two rows
 #: that reach it through different source spellings -- which is what makes
@@ -442,6 +523,16 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         kind="contract_error",
         code=1,
         events=(LOGGED_EVENT,),
+        host_diverges=HostDivergence(
+            reason=(
+                "S9: events roll back with a failed frame on chain. Both MODELS keep the "
+                "event (the mini host mirrors tier 1 by construction, E1); the real host "
+                "records it with `failed_call: true` and the sdk's Events::all() drops it "
+                "(review m7). Pinned as a declared divergence (ruling E9) until the tier-1 "
+                "model gains frame rollback (an M2 oracle edit)."
+            ),
+            events=(),  # the real host: nothing survives the refused frame
+        ),
     ),
     # === auth ===============================================================
     EnvScenario(
@@ -465,7 +556,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("guard_args", (_ADMIN, U32(9))),
         kind="void",
         auths=((_ADMIN, Vec(U32, [U32(9)])),),
-        tier1_only_reason=AUTH_ARGS_REASON,
+        mini_host_gap=AUTH_ARGS_REASON,
     ),
     EnvScenario(
         name="an_address_in_the_allow_set_is_recorded_and_allowed",
@@ -474,7 +565,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("guard", (_ADMIN,)),
         kind="void",
         auths=((_ADMIN, None),),
-        tier1_only_reason=ALLOW_SET_REASON,
+        mini_host_gap=ALLOW_SET_REASON,
     ),
     EnvScenario(
         # The refusal is NOT recorded: the host traps, so there is no
@@ -484,7 +575,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         auth_allow_set=(_OTHER,),
         invoke=Call("guard", (_ADMIN,)),
         kind="auth_failed",
-        tier1_only_reason=ALLOW_SET_REASON,
+        mini_host_gap=ALLOW_SET_REASON,
     ),
     # === ledger reads =======================================================
     EnvScenario(
@@ -534,7 +625,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(7),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         name="a_temporary_entry_reads_absent_one_ledger_past_its_live_until",
@@ -547,7 +638,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(0),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         name="an_expired_entry_reads_absent_through_has_too",
@@ -560,7 +651,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("has_temp", (_K,)),
         kind="value",
         expect=Bool(False),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         # NEVER-REDUCE: the second extension asks for 10 ledgers where 1000 are
@@ -576,7 +667,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(7),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         # THE THRESHOLD BOUNDARY, at exact equality (Task 3's carried
@@ -595,7 +686,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(0),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         # One ledger later the SAME two calls fall BELOW the threshold (999 <
@@ -613,7 +704,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(7),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         # A keyed WRITE clears the entry's live-until (Task 8's empirical
@@ -630,7 +721,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(8),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         # The INSTANCE bucket's live-until is bucket-wide, so a write does NOT
@@ -647,7 +738,13 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_instance_or", (_K, U32(0))),
         kind="value",
         expect=U32(0),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
+        # The lapse-and-read half of this row is the M3 divergence: the
+        # instance entry is still there on the real host, holding the value the
+        # second write left, so the real leg answers 8 where tier 1 answers the
+        # default. What the row is ABOUT -- that an instance write does not
+        # clear the bucket-wide live-until -- is a tier-1 claim either way.
+        host_diverges=HostDivergence(reason=ARCHIVAL_REASON, events=(), answer=U32(8)),
     ),
     EnvScenario(
         # Task 3's other carried obligation: `del_` of ONE instance key does
@@ -665,7 +762,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_instance_or", (_OTHER_KEY, U32(0))),
         kind="value",
         expect=U32(2),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         name="the_instance_live_until_still_governs_the_keys_a_del_left_behind",
@@ -680,7 +777,12 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_instance_or", (_OTHER_KEY, U32(0))),
         kind="value",
         expect=U32(0),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
+        # M3 again, on the key the `del_` left behind: the real host still has
+        # it, so the real leg answers 2. The row above it -- the same setup one
+        # ledger earlier, where tier 1 also answers 2 -- needs no declaration,
+        # which is what makes this pair worth keeping side by side.
+        host_diverges=HostDivergence(reason=ARCHIVAL_REASON, events=(), answer=U32(2)),
     ),
     EnvScenario(
         name="a_persistent_struct_keyed_entry_expires_the_same_way",
@@ -693,7 +795,11 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_slot_or", (_OWNER, U32(0))),
         kind="value",
         expect=U32(0),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
+        # THE M3 row: a lapsed PERSISTENT entry. Tier 1 expires it and answers
+        # the default; the real host restores it and answers the 5 the setup
+        # wrote.
+        host_diverges=HostDivergence(reason=ARCHIVAL_REASON, events=(), answer=U32(5)),
     ),
     EnvScenario(
         # S8's dead-entry rule, for the never-written death.
@@ -702,7 +808,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("bump_temp", (_K, U32(1000), U32(1000))),
         kind="contract_error",
         code=CODE_MISSING_VALUE,
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         # And for the expired death, which is the same answer from outside.
@@ -716,7 +822,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("bump_temp", (_K, U32(1000), U32(1000))),
         kind="contract_error",
         code=CODE_MISSING_VALUE,
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         # Task 3's third carried obligation: the rough edge of the U32 range.
@@ -733,7 +839,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(7),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
         # One ledger further the sequence leaves the U32 range entirely. The
@@ -752,7 +858,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(0),
-        tier1_only_reason=TTL_REASON,
+        mini_host_gap=TTL_REASON,
     ),
     # === token_style: a real contract shape, and the authoring spelling =====
     EnvScenario(

@@ -46,35 +46,65 @@ _NEEDLE = "sub-plan e"
 #: none of that is the promise the walk is checking for.
 _SELF = Path(__file__).resolve()
 
-#: `(path relative to the repo root, 1-based line number)` for every mention
-#: the sweep audited and chose to KEEP, with why in a trailing comment. A
-#: mention landing here is never a live promise: it is either an append-only
-#: registry's own history (D9 -- the row cannot be reworded away) or a test's
-#: own past-tense account of what it used to pin.
-_ALLOWLIST: frozenset[tuple[str, int]] = frozenset(
+#: `(path relative to the repo root, the mention's STRIPPED LINE TEXT)` for
+#: every mention the sweep audited and chose to KEEP, with why in a trailing
+#: comment. A mention landing here is never a live promise: it is either an
+#: append-only registry's own history (D9 -- the row cannot be reworded away)
+#: or a test's own past-tense account of what it used to pin.
+#:
+#: **Keyed on the TEXT, not the line number** (review m15, the G-item B2 this
+#: migration pays off). A line-numbered allowlist has to be renumbered by every
+#: edit ABOVE it, in files nobody was otherwise touching: M1-F's own metadata
+#: edit to `env_scenarios.py` would have moved its entry, and the second test
+#: below would have failed for a reason that has nothing to do with a stale
+#: promise. The text key moves with the line for free and is STRICTER about
+#: what it exempts -- an entry stops matching the moment the sentence itself is
+#: reworded, which is exactly when it should be re-audited.
+_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     {
         # NO_FIXTURE_REASONS["SPT1032"]: the append-only registry's (D9) own
         # record of WHEN and WHY the code was retired -- not a promise.
-        ("src/serpent/compiler/codes.py", 1107),
+        (
+            "src/serpent/compiler/codes.py",
+            '"retired by M1-E (sub-plan E): the form it rejected is now supported -- "',
+        ),
         # "the runtime half used to pin that the widened signatures reached
         # the sub-plan E stub" -- past tense, about a test's own history.
-        ("tests/unit/test_decorators.py", 846),
+        (
+            "tests/unit/test_decorators.py",
+            "that the widened signatures reached the sub-plan E stub, and now pins that",
+        ),
         # "Rewritten (never deleted) from the assertion that both bodies
         # raised NotImplementedError("sub-plan E")." -- past tense.
-        ("tests/unit/test_address.py", 139),
+        (
+            "tests/unit/test_address.py",
+            '`NotImplementedError("sub-plan E")`. `require_auth()` takes no `Env` -- the',
+        ),
         # "was SPT1032 ... for the whole of M1-C" -- past tense, module intro.
-        ("tests/unit/test_frontend_events.py", 3),
+        (
+            "tests/unit/test_frontend_events.py",
+            '`<Event instance>.publish(env)` was `SPT1032` ("deferred to sub-plan E") for',
+        ),
         # Pins the (deliberately kept) NO_FIXTURE_REASONS string above --
         # itself a fact about the frozen registry, not a promise.
-        ("tests/unit/test_frontend_events.py", 138),
+        (
+            "tests/unit/test_frontend_events.py",
+            'assert "sub-plan E" in codes.NO_FIXTURE_REASONS["SPT1032"]',
+        ),
         # This table's own provenance note: "ruling E9 called for a SECOND
         # table, owned by sub-plan E, of STATEFUL scenarios" -- states which
         # sub-plan built the module, not what it will do later.
-        ("tests/semantics/env_scenarios.py", 8),
+        (
+            "tests/semantics/env_scenarios.py",
+            "called for a SECOND table, owned by sub-plan E, of STATEFUL scenarios. This is",
+        ),
         # Sentence-initial capitalization: "Sub-plan E gave every method here
         # an in-memory body" -- past tense, the module's own honest-boundary
         # disclaimer about what already happened, not a forward promise.
-        ("src/serpent/env.py", 8),
+        (
+            "src/serpent/env.py",
+            "**This module is also a model, and a model is not an oracle.** Sub-plan E gave",
+        ),
     }
 )
 
@@ -100,10 +130,22 @@ def _all_mentions() -> list[tuple[str, int, str]]:
     return mentions
 
 
+def _keyed() -> set[tuple[str, str]]:
+    """Every mention as its allowlist key: `(relative path, stripped text)`.
+
+    The LINE NUMBER stays in `_mentions`' answer -- a failure message that
+    cannot say where the line is would be a worse gate -- and is dropped only
+    here, where the comparison happens.
+    """
+    return {(path, line) for path, _lineno, line in _all_mentions()}
+
+
 def test_every_sub_plan_e_mention_is_an_allowlisted_historical_record() -> None:
-    mentions = _all_mentions()
-    found = {(path, lineno) for path, lineno, _line in mentions}
-    unexpected = sorted(found - set(_ALLOWLIST))
+    unexpected = sorted(
+        (path, lineno, line)
+        for path, lineno, line in _all_mentions()
+        if (path, line) not in _ALLOWLIST
+    )
     assert not unexpected, (
         'unexpected "sub-plan E" mention(s) outside the allowlist -- each one has to '
         "be IMPLEMENTED, REPOINTED at M2/F, REMOVED, or (only if it is a genuine "
@@ -112,15 +154,20 @@ def test_every_sub_plan_e_mention_is_an_allowlisted_historical_record() -> None:
 
 
 def test_the_allowlist_names_no_line_that_has_moved_or_changed() -> None:
-    """The other direction: an allowlisted line that drifted (moved, or lost
-    its "sub-plan E" text) would silently stop exempting anything, which is
-    harmless, but ALSO stop being verified -- so a stale entry is a bug in
-    this test, not a pass."""
-    found = {(path, lineno) for path, lineno, _line in _all_mentions()}
-    missing = sorted(set(_ALLOWLIST) - found)
+    """The other direction: an allowlisted line that lost its "sub-plan E" text
+    -- or was reworded, or deleted -- would silently stop exempting anything,
+    which is harmless, but ALSO stop being verified, so a stale entry is a bug
+    in this test rather than a pass.
+
+    Keyed on the TEXT (review m15), so this no longer fires for the one
+    non-reason a line-numbered allowlist fires for: an unrelated edit higher up
+    the same file.
+    """
+    missing = sorted(set(_ALLOWLIST) - _keyed())
     assert not missing, (
-        f'allowlisted location(s) no longer contain "sub-plan E" -- the text moved or '
-        f"changed; update the allowlist to match: {missing}"
+        f'allowlisted line(s) no longer appear with their "sub-plan E" text -- the '
+        f"sentence was reworded or removed; re-audit it and update the allowlist: "
+        f"{missing}"
     )
 
 

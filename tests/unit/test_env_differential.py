@@ -26,11 +26,14 @@ the chain. `ENV_SCENARIOS` is importable precisely so sub-plan F's tier 2b can
 re-run this corpus against a real host; a green run here is self-consistency.
 
 **What the WASM leg cannot do, and how a row says so.** A row carrying
-`tier1_only_reason` runs at tier 1 only, and the reason names the harness limit
-that rules the second leg out -- no TTL model at all, discarded
+`mini_host_gap` runs at tier 1 only HERE, and the reason names the harness
+limit that rules the second leg out -- no TTL model at all, discarded
 `require_auth_for_args` args (review M11), no authorization state to refuse
 with. `test_a_row_is_tier_1_only_exactly_when_it_reaches_a_harness_limit`
-asserts the biconditional, so a row cannot quietly opt out.
+asserts the biconditional, so a row cannot quietly opt out. The field is
+`mini_host_gap` and not `tier1_only_reason` (ruling E8) because the gap is THIS
+harness's: `tests/real_host/test_env_scenarios_real.py` replays every one of
+those rows on the real host.
 
 **The ledger defaults are shared, not matched.** Both models read
 `DEFAULT_LEDGER_TIMESTAMP`/`DEFAULT_LEDGER_SEQUENCE` from `serpent.env` (the
@@ -244,7 +247,7 @@ def _wasm(scenario: EnvScenario) -> Outcome:
     if scenario.constructor:
         assert mini.invoke("__constructor", *_words(host, scenario.constructor)) == val.VOID_VAL
     for step in scenario.setup:
-        # Unreachable: an `Advance` forces `tier1_only_reason` (the
+        # Unreachable: an `Advance` forces `mini_host_gap` (the
         # biconditional test below), and this leg only runs without one.
         assert isinstance(step, Call), f"{scenario.name}: {step!r} has no WASM leg"
         mini.invoke(step.method, *_words(host, step.args))
@@ -308,7 +311,7 @@ def _address(host: FullHost, word: int) -> Address:
 def test_env_scenario(scenario: EnvScenario) -> None:
     """One row: both legs, compared to each other, then pinned to the table."""
     tier_1 = _tier_1(scenario)
-    if scenario.tier1_only_reason is None:
+    if scenario.mini_host_gap is None:
         from_wasm = _wasm(scenario)
         assert _comparable(from_wasm) == _comparable(tier_1), (
             f"{scenario.name}: the two models disagree -- tier 1 said {tier_1}, "
@@ -350,13 +353,22 @@ def test_a_row_carries_expect_or_code_exactly_when_its_kind_calls_for_it() -> No
         assert (scenario.code is not None) == (scenario.kind == "contract_error"), (
             f"{scenario.name}: code={scenario.code!r} but kind={scenario.kind!r}"
         )
+        # A declared divergence (E9) that declares the model's OWN events and
+        # no differing answer is not a divergence at all -- it would make the
+        # real-host runner assert a difference it can never find, which is a
+        # green test about nothing. One of the two halves has to differ.
+        assert (
+            scenario.host_diverges is None
+            or scenario.host_diverges.events != scenario.events
+            or scenario.host_diverges.answer is not None
+        ), f"{scenario.name}: host_diverges declares no difference from the model"
 
 
-#: The method names whose presence in a row FORCES `tier1_only_reason`, and
+#: The method names whose presence in a row FORCES `mini_host_gap`, and
 #: which reason each forces. RUNNER knowledge, not table data (`env_scenarios.
 #: py` states why it lives here): the biconditional test below derives "which
-#: rows are tier-1-only" from the surfaces they reach rather than trusting a
-#: hand-set flag.
+#: rows have no mini-host leg" from the surfaces they reach rather than
+#: trusting a hand-set flag.
 TTL_METHODS = frozenset({"bump_instance", "bump_slot", "bump_temp"})
 AUTH_ARGS_METHODS = frozenset({"guard_args"})
 
@@ -378,9 +390,9 @@ def test_a_row_is_tier_1_only_exactly_when_it_reaches_a_harness_limit() -> None:
             or bool(methods & AUTH_ARGS_METHODS)
             or scenario.auth_allow_set is not None
         )
-        assert (scenario.tier1_only_reason is not None) == limited, (
-            f"{scenario.name}: tier1_only_reason="
-            f"{scenario.tier1_only_reason!r} but the row "
+        assert (scenario.mini_host_gap is not None) == limited, (
+            f"{scenario.name}: mini_host_gap="
+            f"{scenario.mini_host_gap!r} but the row "
             f"{'does' if limited else 'does not'} reach a harness limit"
         )
 
