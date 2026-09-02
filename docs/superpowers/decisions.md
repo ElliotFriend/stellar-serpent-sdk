@@ -725,3 +725,41 @@ entry.
   `Literal` per scalar family) could recover the static catch without
   touching the other three arms; nothing downstream depends on today's
   silence.
+
+## 2026-09-01 M1-E2 final-review rulings (fix wave)
+- Context: the Fable whole-branch review of m1e2-unions returned 1
+  Critical / 6 Important on 36 two-leg probes; three of its findings are
+  corrections to earlier rulings, so the calls are recorded here.
+- Tier-1 `get`/`payload` RE-TYPE across the family (amends the E9 x D6
+  interplay): D6's tag-level acceptance let `get(K, U32)` hand back a
+  stored `Color` object unchanged, and E9's no-coercion `ContractEnum !=
+  U32` then made `== U32(2)` False at tier 1 while the chain (where the
+  u32 word IS the value) says True — the branch's one SILENT cross-tier
+  divergence. Decision: after the tag-level check passes, tier 1 re-types
+  the stored value to the requested `ty` exactly as the host hands back a
+  bare word (enum <-> U32 by discriminant; union <-> plain Vec by rebuild),
+  in both `get` and `payload`. E9's equality rule is untouched; D6's
+  coarseness now fails nowhere silently. Pinned two-leg in both directions.
+- Raw literals in variant payload slots and the `payload()` index are
+  ADOPTED at tier 1 (M1-C's literal-adoption precedent; `Point(x=1)`
+  already runs at both tiers), so every compiler accept on the new surface
+  is runnable at tier 1.
+- Option payload annotations (`variant(X | None)`) are REFUSED at
+  declaration in M1 (tier-1 `Vec` cannot hold None; the idiomatic union
+  answer is a unit variant for the absent case); additive to relax.
+- Variant names that shadow a base reader (`tag`, `payload`, any public
+  attribute of `ContractUnion`) are REFUSED at declaration (bridged to
+  SPT2004).
+- Dossier F.1.8 CORRECTED: a `Map` keyed by a union is not modelled at
+  tier 1 at ANY entry count (construct and `set` succeed, `get`/`has`
+  raise the deferred container compare); the "single-entry Map" wording
+  is withdrawn everywhere; storage keyed by a union (hash-based) is
+  unaffected.
+- E2's "pass `ty` like `get`" inherits `get`'s container-`ty` refusal, so
+  a declarable container payload cannot be read back in compiled code in
+  M1: the SPT3013 container arm gets one honest message naming the
+  struct-field wrap-around, README fences it, typed container reads carry
+  to F/M2.
+- Reversal cost: the re-typing is a tier-1 behavior change on a two-day-
+  old surface, trivially revertable; the two declaration refusals only
+  shrink accepts that were already unrunnable; the rest is prose.
