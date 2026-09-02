@@ -931,3 +931,68 @@ entry.
   the real-host differential (reverting re-breaks every small-Symbol
   compare on chain); the `_ADMIN` strkey edit is one constant; the E14
   amendment is one default.
+
+## 2026-09-02 M1-F Task 5 rulings: the ENV_SCENARIOS TTL rows meet the real host
+- Context: the first real-host run of the 62-row ENV_SCENARIOS table (the
+  E-owned stateful differential) agreed with tier 1 on 46 rows and
+  disagreed on 16, in four classes, all host facts the tier-1 model and
+  the mini host never had (the TTL half of the table had never executed
+  against any host). The implementer stopped per ruling E10; these are the
+  controller's rulings on the frozen table and the tier-1 model.
+- F1 / class 1 (12 rows): the host's `extend_ttl` REFUSES `threshold >
+  extend_to` (Storage(InvalidInput), "threshold must be <= extend_to");
+  the threshold GUARD itself agrees with tier 1. Decision: (a) the tier-1
+  model gains the same precondition as a TRAP-class refusal (an
+  accepts-shrink oracle edit under Opus review -- a model that accepts
+  inputs the host refuses is the silent-false-green class F exists to
+  close); (b) the 12 rows' TTL PARAMETERS (threshold, extend_to, and where
+  necessary the Advance counts) are REWRITTEN to host-legal values that
+  preserve each row's stated claim, one ledgered line per row; a claim
+  that cannot survive host semantics (e.g. "extend to 10 ledgers", below
+  a fresh temporary entry's 15-ledger floor) is rewritten to the nearest
+  host-legal claim and named as such. This is a frozen-row VALUE edit,
+  ruled here because the rows were written against a model with no host
+  preconditions and are otherwise unrunnable on every host.
+- F2 / class 2 (1 row): `extend_ttl` on a never-written key is a HOST
+  trap (Storage(MissingValue)) on chain and in the compiled code (the
+  emitter's E13 has-then-get guard wraps `get` only); tier 1 laundered it
+  into the CODE_MISSING_VALUE contract error. Decision: the emitter stays
+  (E16; a language-surface change is not F's); tier 1 raises a TRAP-class
+  exception (not a ContractError) for extend_ttl on an absent key,
+  mirroring the host; ENV_SCENARIOS gains `kind="host_error"` with a
+  `host_error: tuple[str, str]` underlying expectation for the real leg
+  and the trap-class exception for the tier-1 leg. Amends the M1-E E4
+  wording "extending a dead entry errors": it errors as a TRAP.
+- F3 / class 3 (2 rows): a ledger sequence near u32::MAX panics the host
+  at register (live-until overflow); the rows pin the MODEL's rough edge.
+  Decision: `EnvScenario.real_unrunnable: str | None` names why the real
+  leg cannot host the row; the real leg skips it LOUDLY (counted, with the
+  reason) and a meta-test pins exactly which rows carry it.
+- F5 / class 4 (1 row): a frame that later fails records no auth on the
+  host (S9 rollback, the auth half); tier 1 keeps the recorded auth.
+  Decision: `HostDivergence` gains `auths: tuple[RecordedAuth, ...] |
+  None = None` (None = same as tier 1); the coherence rule becomes "a
+  declaration must differ from tier 1 in at least one facet"; the
+  token_style over-balance row declares it with the S9 reason. Tier-1
+  frame rollback (events AND auths) stays an M2 oracle edit (E9).
+- Also recorded (host facts for Task 6 / M2, not acted on here): a fresh
+  TEMPORARY entry on the host has a 15-ledger TTL floor (min_temp_entry_ttl
+  16) and expires without an extension, while tier 1's never-extended entry
+  lives forever (live_until=None); a PERSISTENT entry on the sdk test host
+  never expires (restored with a fresh TTL on access); events()/auths()
+  after a FAILED invocation report nothing.
+- Why: the host is the gate (S1); every edit above moves a model or a row
+  TOWARD the host, never the reverse, and each is pinned by the real leg.
+- Reversal cost: the two tier-1 refusals only shrink accepts; the row
+  rewrites are ledgered per row; the metadata fields are additive.
+- Addendum (same day, fix round 1's measurement): the threshold GUARD does
+  NOT fully agree with tier 1 -- the host extends when the remaining TTL is
+  <= threshold, tier 1 only when < threshold (999 and 1001 agree; equality
+  differs). Decision: tier 1 mirrors the host (a one-line boundary change
+  in the E4 model), the E9 declaration on
+  `the_threshold_guard_blocks_at_exact_equality` is retired, and the
+  test_env_ttl pin moves with it. Also recorded: never-reduce is
+  unreachable through any host-legal call (threshold <= extend_to <
+  remaining < threshold is impossible), so its row and tier-1 test are
+  narrowed and named; a keyed re-write does NOT clear a granted TTL on the
+  host (tier-1-only claim, declared divergence, M2).
