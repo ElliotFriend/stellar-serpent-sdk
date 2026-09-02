@@ -1842,9 +1842,8 @@ pytestmark_real = pytest.mark.real_host
 
 @pytestmark_real
 def test_counter_deploy_invoke_and_storage_read_back() -> None:
-    counter = load_example(EXAMPLE_COUNTER)
     env = RealEnv()
-    c = env.deploy(counter.Counter)
+    c = env.deploy_source(EXAMPLE_COUNTER)   # B3: path-loaded classes have no sys.modules entry
     assert c.invoke("increment", U32(2)) == U32(2)
     assert c.invoke("increment", U32(3)) == U32(5)
     assert c.invoke("total") == U32(5)
@@ -1861,18 +1860,19 @@ def test_counter_deploy_invoke_and_storage_read_back() -> None:
 def test_a_contract_error_maps_to_the_declared_member() -> None:
     errors = load_example(EXAMPLE_ERRORS)
     env = RealEnv()
-    vault = env.deploy(errors.Vault, Address(ACCOUNT), U32(10))
+    vault = env.deploy_source(EXAMPLE_ERRORS, Address(ACCOUNT), U32(10))
     with pytest.raises(RealContractError) as info:
         vault.invoke("deposit", U32(11))
     assert info.value.code == 3
     assert info.value.error_type == "Contract"
-    assert info.value.member is errors.VaultError.LimitExceeded
+    assert info.value.member is not None
+    assert info.value.member.__name__ == errors.VaultError.LimitExceeded.__name__
+    assert info.value.member.code == errors.VaultError.LimitExceeded.code  # a second by-path load is a distinct class object
 
 
 @pytestmark_real
 def test_a_host_error_is_not_a_contract_error() -> None:
-    counter = load_example(EXAMPLE_COUNTER)
-    c = RealEnv().deploy(counter.Counter)
+    c = RealEnv().deploy_source(EXAMPLE_COUNTER)
     with pytest.raises(RealHostError) as info:
         c.invoke("no_such_method")
     assert not isinstance(info.value, RealContractError)
