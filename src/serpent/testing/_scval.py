@@ -165,6 +165,11 @@ def _value_metadata(ty: type[Any], *kinds: str) -> dict[str, Any]:
 def decode(sc: SCVal, ty: object) -> object:
     """`sc` as the value of type `ty` -- D11's re-typing, applied at the XDR boundary.
 
+    The ScVal parameter is named `sc`, not `scval`: `scval` is the `stellar_sdk`
+    module this file imports, and shadowing it inside the function that
+    delegates to it is a bug waiting to happen. Callers passing it by keyword
+    (Tasks 3 and 9) want `decode(sc=..., ty=...)`.
+
     `ty` is a chain-type class, a `@contracttype` class, a `ContractUnion`/
     `ContractEnum` subclass, a `Vec[T]`/`Map[K, V]` generic alias, `X | None`,
     or `type(None)`. Any disagreement raises `ScValError` naming the ScVal kind
@@ -174,8 +179,10 @@ def decode(sc: SCVal, ty: object) -> object:
     exact failure mode tier 1 exists to avoid.
 
     A BARE `Vec` or `Map` is accepted as `ty` (and as a generic alias's element
-    or key/value type) and means "decode the elements with `decode_loose`"
-    (review M5). `CHAIN_VALUES` generates nested containers whose element type
+    or key/value type) and means "decode the ELEMENTS with `decode_loose`"
+    (review M5) -- the container kind itself is still checked, so
+    `decode(<ScU32>, Vec)` raises rather than answering the bare word.
+    `CHAIN_VALUES` generates nested containers whose element type
     IS the bare class -- `Vec(Vec[U32], ...)` is itself a `TypeError`, so
     `Vec(Vec, [...])` is the only spelling -- and loose elements are exact for
     such a container, because container equality is by CONTENT: `Vec(U32, []) ==
@@ -202,8 +209,9 @@ def decode(sc: SCVal, ty: object) -> object:
         raise ScValError(f"{ty!r} is not a type serpent can decode an ScVal as")
     if ty in _LOOSE_TYPES:
         # The permissive element types a container falls back to for
-        # heterogeneous contents, plus the bare containers themselves: none of
-        # them narrows anything, so the honest reading is the untyped one.
+        # heterogeneous contents: none of them narrows anything, so the honest
+        # reading is the untyped one. A bare `Vec`/`Map` is NOT in this set --
+        # it still names a CONTAINER KIND, and only its elements go loose.
         return decode_loose(sc)
     if issubclass(ty, Vec):
         return _decode_vec(sc, _LOOSE, ty)
@@ -272,17 +280,33 @@ def _require_kind(sc: SCVal, kind: SCValType, ty: object) -> SCVal:
 
 
 def _render(ty: object) -> str:
+    """`ty` for an error message: a class by name, anything else in full.
+
+    A parameterized alias goes through `repr`, not `__name__`: `Vec[U32 | None]`
+    answers `"Vec"` to `__name__`, which drops the very part of the requested
+    type a mismatch is usually about.
+    """
+    if isinstance(ty, type):
+        return ty.__name__
+    if typing.get_origin(ty) is not None:
+        return repr(ty)
     return getattr(ty, "__name__", None) or repr(ty)
 
 
 def _decode_option(sc: SCVal, ty: object) -> object:
-    """`X | None`: Void is `None`, anything else is decoded as `X`."""
-    args = [arg for arg in typing.get_args(ty) if arg is not types.NoneType]
+    """`X | None`: Void is `None`, anything else is decoded as `X`.
+
+    The SHAPE is checked before the Void arm answers, not after: `U32 | I32` is
+    not an Option, and reading Void as `None` for it would answer a value the
+    requested type never admitted (M1 has no union-of-two-chain-types).
+    """
+    args = typing.get_args(ty)
+    inner = [arg for arg in args if arg is not types.NoneType]
+    if len(inner) != 1 or len(inner) == len(args):
+        raise ScValError(f"{ty!r} is not `X | None` of one type serpent can decode")
     if sc.type is SCValType.SCV_VOID:
         return None
-    if len(args) != 1:
-        raise ScValError(f"{ty!r} is not `X | None` of one type serpent can decode")
-    return decode(sc, args[0])
+    return decode(sc, inner[0])
 
 
 class _Loose:
@@ -306,10 +330,31 @@ def _decode_element(sc: SCVal, ty: object) -> object:
 
 
 def _decode_vec(sc: SCVal, element_ty: object, ty: object) -> Vec[Any]:
+    """An ScVec as a `Vec`, its elements decoded by `element_ty`.
+
+    A Void element is REFUSED rather than represented. `Vec[U32 | None]` is a
+    spellable declared type (`spec/typemap` resolves `X | None` recursively), but
+    tier 1 has no `Vec` that admits `None`: the element bound is
+    `ContainerValue`, and `Vec(U32 | None, ...)` is itself a `TypeError` because
+    a union is not a class. Widening the element class to `object` WOULD accept
+    it -- and that is the trap: it would manufacture a `Vec` no author could
+    write, holding an element with no `_SCVAL_RANK`, so the next `val_cmp` or
+    `storage_key` on it would trap a long way from here. `Map` already refuses
+    the same thing structurally (`require_map_value`), so refusing it here keeps
+    the two containers agreeing.
+    """
     if sc.type is not SCValType.SCV_VEC or sc.vec is None:
         raise ScValError(f"expected {_render(ty)}, got ScVal {sc.type.name}")
     items = [_decode_element(element, element_ty) for element in sc.vec.sc_vec]
-    return Vec(_runtime_class(element_ty, items), items)
+    if any(item is None for item in items):
+        raise ScValError(
+            f"expected {_render(ty)}, got an ScVec holding Void -- tier 1 has no Vec "
+            "element type that admits None, so there is nothing to decode it as"
+        )
+    try:
+        return Vec(_runtime_class(element_ty, items), items)
+    except TypeError as exc:  # an element the declared element type refuses
+        raise ScValError(f"expected {_render(ty)}: {exc}") from exc
 
 
 def _decode_map(sc: SCVal, key_ty: object, value_ty: object, ty: object) -> Map[Any, Any]:
@@ -440,6 +485,12 @@ def _runtime_class(ty: object, items: list[Any]) -> type[Any]:
     if isinstance(ty, type) and ty not in _LOOSE_TYPES:
         return ty
     origin = typing.get_origin(ty)
+    if origin is typing.Union or origin is types.UnionType:
+        # `X | None` has no class: `typing.get_origin` answers `types.UnionType`,
+        # which IS an instance of `type` and would be handed to `Vec()` as the
+        # element class (`Vec element must be UnionType, not U32`). The contents
+        # are what say what the container holds.
+        return _class_of_items(items)
     if isinstance(origin, type):
         return origin
     return _class_of_items(items)
@@ -487,6 +538,9 @@ _SCALARS: dict[type[Any], Any] = {
     I128: lambda sc: I128(scval.from_int128(sc)),
     Symbol: lambda sc: Symbol(scval.from_symbol(sc)),
     String: _string,
+    # `decode` never reaches this row -- it takes the `issubclass(ty, Bytes)`
+    # branch first, so the whole fixed-length family is one kind. The row exists
+    # for `_LOOSE_BY_KIND`, which is built from this table.
     Bytes: lambda sc: Bytes(scval.from_bytes(sc)),
     Address: _address,
 }
@@ -511,10 +565,16 @@ _KINDS: dict[type[Any], SCValType] = {
 #: a scalar can never be encodable one way and not the other.
 _LOOSE_BY_KIND: dict[SCValType, Any] = {_KINDS[ty]: reader for ty, reader in _SCALARS.items()}
 
-#: Requested types that narrow NOTHING: the bare containers (review M5) and the
-#: permissive element types `Vec`/`Map` fall back to for heterogeneous contents.
-#: `decode` reads all of them as "no type guidance" and answers `decode_loose`.
-_LOOSE_TYPES: tuple[object, ...] = (Vec, Map, ChainValue, Struct, object)
+#: Requested types that narrow NOTHING: the permissive element types `Vec`/`Map`
+#: fall back to for heterogeneous contents (`containers._value_element_type_for`).
+#: `decode` reads them as "no type guidance" and answers `decode_loose`.
+#:
+#: A bare `Vec`/`Map` is deliberately NOT here. It narrows one thing -- the
+#: CONTAINER KIND -- and only its ELEMENTS go loose (review M5), so it goes
+#: through `_decode_vec`/`_decode_map` and an ScVal of the wrong kind is refused
+#: exactly as it is for `Vec[U32]`. Listing the bare classes here made those two
+#: branches dead code and let `decode(<ScU32>, Vec)` answer `U32(1)`.
+_LOOSE_TYPES: tuple[object, ...] = (ChainValue, Struct, object)
 
 
 def _scalar_kind(ty: type[Any]) -> SCValType:

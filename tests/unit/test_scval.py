@@ -54,6 +54,11 @@ from tests.unit.test_examples import OWNER
 VEC_OF_VEC: object = Vec[Vec]  # type: ignore[type-arg]
 VEC_OF_MAP: object = Vec[Map]  # type: ignore[type-arg]
 
+#: `Vec[U32 | None]` -- a declared type `spec/typemap` resolves (it recurses
+#: through `X | None`), bound here because tier-1 `Vec`'s element bound admits no
+#: union and `Vec(U32 | None, ...)` is itself a TypeError.
+VEC_OF_OPTION: object = Vec[U32 | None]  # type: ignore[type-var]
+
 ACCOUNT = "GCUNZ4XXN2LPHSGWPGCVZAZ4GUWL6HMXLJ7NCHCPB3I23EPY6JCVISSY"
 CONTRACT = "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE"
 
@@ -169,16 +174,64 @@ def test_a_bare_container_ty_decodes_its_elements_loosely() -> None:
 def test_a_struct_under_a_bare_container_ty_comes_back_as_the_map_it_is() -> None:
     """The one shape a bare element type cannot recover, pinned rather than hidden.
 
-    A struct IS an ScMap on chain (D6), so without a `ty` naming the struct there is
-    nothing to tell it apart from a `Map` -- and this is what `_ty_of` recurses to
-    avoid, since the caller who holds `Vec(Vec, [Vec(Point, ...)])` does know.
+    A struct IS an ScMap on chain (D6), so a `ty` that says no more than "a Map"
+    cannot tell the two apart -- and this is what `_ty_of` recurses to avoid, since
+    the caller who holds `Vec(Vec, [Vec(Point, ...)])` does know. A bare element
+    type is coarse, NOT blind: `Vec[Vec]` still refuses the ScMap outright, because
+    the container kind is checked even when the elements go loose.
     """
     structs = Vec(Point, [Point(x=U32(1), y=I64(2))])
-    loose = decode(encode(structs), VEC_OF_VEC)
-    assert isinstance(loose, Vec)
-    assert isinstance(loose.get(0), Map)
-    assert loose != structs
+    for coarse in (VEC_OF_MAP, Vec):  # the alias, and the bare class as the whole ty
+        loose = decode(encode(structs), coarse)
+        assert isinstance(loose, Vec)
+        assert isinstance(loose.get(0), Map)
+        assert loose != structs
+    with pytest.raises(ScValError):
+        decode(encode(structs), VEC_OF_VEC)  # an ScMap is not an ScVec
     assert decode(encode(structs), Vec[Point]) == structs
+
+
+def test_a_bare_container_ty_still_checks_the_container_kind() -> None:
+    """Review M5's rule is about the ELEMENTS, not the container: a bare `Vec`/`Map`
+    narrows one thing -- the kind -- and only what is inside it goes loose."""
+    assert decode(encode(Vec(U32, [U32(1)])), Vec) == Vec(U32, [U32(1)])
+    assert decode(encode(Map(Symbol, U32, [(Symbol("a"), U32(1))])), Map) == Map(
+        Symbol, U32, [(Symbol("a"), U32(1))]
+    )
+    for ty in (Vec, Map, VEC_OF_VEC):
+        with pytest.raises(ScValError):
+            decode(scval.to_uint32(1), ty)
+
+
+def test_a_vec_of_options_is_refused_rather_than_faked() -> None:
+    """`Vec[U32 | None]` is spellable as a DECLARED type but has no tier-1 value.
+
+    `Vec`'s element bound is `ContainerValue`, which admits no `None`, and
+    `Vec(U32 | None, ...)` is itself a `TypeError` because a union is not a class.
+    Widening the decoded element class to `object` would accept a `None` -- and
+    that is the trap this pins shut: it would build a `Vec` no author could write,
+    holding an element with no `_SCVAL_RANK`, which the next `val_cmp` or
+    `storage_key` would trap on far from the decode that made it. So the boundary
+    refuses it LOUDLY, with `ScValError` rather than a raw `TypeError` out of the
+    container, and `Map` already refuses the same thing structurally.
+    """
+    present = Vec(U32, [U32(1)])
+    assert decode(encode(present), VEC_OF_OPTION) == present  # every element present
+    with pytest.raises(ScValError):
+        decode(scval.to_vec([scval.to_uint32(1), scval.to_void()]), VEC_OF_OPTION)
+    with pytest.raises(ScValError):
+        decode_loose(scval.to_vec([scval.to_void()]))
+    with pytest.raises(ScValError):
+        decode_loose(scval.to_map({scval.to_symbol("k"): scval.to_void()}))
+
+
+def test_an_option_needs_a_none_arm_before_void_answers_none() -> None:
+    """`U32 | I32` is not an Option, and M1 has no union of two chain types -- so
+    reading Void as `None` for it would answer a value the `ty` never admitted."""
+    with pytest.raises(ScValError):
+        decode(scval.to_void(), U32 | I32)
+    with pytest.raises(ScValError):
+        decode(scval.to_uint32(1), U32 | I32)
 
 
 def test_the_whole_bytes_family_is_one_kind_and_the_class_checks_the_length() -> None:
@@ -264,6 +317,9 @@ def test_to_xdr_and_from_xdr_are_the_wire_forms_of_encode_and_decode() -> None:
         (scval.to_uint32(1), "U32"),  # not a type at all
         (scval.to_uint32(1), Vec[U32]),
         (scval.to_vec([]), Shape),  # no leading case Symbol
+        (scval.to_uint32(1), Vec),  # a bare container still checks the KIND
+        (scval.to_uint32(1), Map),
+        (scval.to_vec([scval.to_uint32(1)]), VEC_OF_VEC),  # element declared Vec, got a U32
     ],
 )
 def test_decode_refuses_a_kind_or_case_the_ty_does_not_name(sc: SCVal, ty: object) -> None:
