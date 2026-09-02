@@ -44,17 +44,29 @@ from serpent import (
     Address,
     Annotated,
     Bool,
+    ContractEnum,
+    ContractUnion,
     Env,
     Event,
     Symbol,
     Vec,
     contract,
+    contractenum,
     contracterror,
     contractevent,
     contracttype,
+    contractunion,
+    enumvalue,
     errorcode,
     topic,
+    variant,
 )
+
+#: The fixed keys the union/int-enum methods use, since their `Call`s (below)
+#: carry only the value -- `Call.args` is scalars only, so there is no room
+#: for a caller-supplied key on these rows.
+SHAPE_KEY = Symbol("SHAPE")
+COLOR_KEY = Symbol("COLOR")
 
 
 @contracterror
@@ -71,6 +83,25 @@ class Slot:
     the read rebuilds is a different object from the one the write used."""
 
     owner: Address
+
+
+@contractunion
+class Shape(ContractUnion):
+    """The E13 union kind on this table: a unit case (the "nothing yet"
+    value) and a one-payload case, which is every arity `read_shape_area`'s
+    `tag()`-branching read needs to demonstrate."""
+
+    Empty = variant()
+    Circle = variant(U32)
+
+
+@contractenum
+class Color(ContractEnum):
+    """The E13 int-enum kind on this table: a numbered choice with no
+    payload, read by `==` rather than by unwrapping anything."""
+
+    Red = enumvalue(0)
+    Green = enumvalue(1)
 
 
 @contractevent(topics=("logged",), data_format="single-value")
@@ -220,3 +251,46 @@ class EnvSurface:
 
     def ledger_seq(self, env: Env) -> U32:
         return env.ledger().sequence()
+
+    # --- unions and int enums (M1-E2 ruling E13) ----------------------------
+
+    def put_shape(self, env: Env, area: U32) -> None:
+        """Store a `Shape.Circle` in instance storage -- the union VALUE
+        round trip. The payload IS the area directly, not a radius the read
+        below would have to square: the point of this method is the
+        tag/payload round trip, not arithmetic.
+        """
+        env.storage().instance().set(SHAPE_KEY, Shape.Circle(area))
+
+    def read_shape_area(self, env: Env) -> U32:
+        """The `tag()`-branching read: `Circle`'s payload IS the answer, and
+        the unit case -- never written by `put_shape` -- answers zero."""
+        shape = env.storage().instance().get(SHAPE_KEY, Shape, default=Shape.Empty)
+        if shape.tag() == Symbol("Circle"):
+            return shape.payload(U32(0), U32)
+        else:
+            return U32(0)
+
+    def put_color(self, env: Env, n: U32) -> None:
+        """Map the argument onto an enum MEMBER and store that, not the bare
+        `U32` -- the round trip this method carries is the int-enum kind's,
+        not a scalar's. `n == U32(1)` picks green; anything else picks red."""
+        color = Color.Green if n == U32(1) else Color.Red
+        env.storage().persistent().set(COLOR_KEY, color)
+
+    def color_is_green(self, env: Env) -> Bool:
+        """The int-enum read pattern: an `==` comparison, never `<`."""
+        color = env.storage().persistent().get(COLOR_KEY, Color, default=Color.Red)
+        return Bool(color == Color.Green)
+
+    def put_by_shape_key(self, env: Env, value: U32) -> None:
+        """A union as a storage KEY: `Shape.Empty` is rebuilt fresh on every
+        access (a union has no identity on chain), so this is the union-KEY
+        round trip and not a handle round trip."""
+        env.storage().temporary().set(Shape.Empty, value)
+
+    def read_by_shape_key(self, env: Env) -> U32:
+        """The read rebuilds `Shape.Empty` again, independently of the write
+        above -- the host compares the key's VALUE, so a separately built
+        unit case still finds the entry the write used."""
+        return env.storage().temporary().get(Shape.Empty, U32)

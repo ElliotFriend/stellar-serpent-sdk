@@ -847,4 +847,39 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         events=(_SEND_EVENT,),
         auths=((_OWNER, None),),
     ),
+    # === unions and int enums (M1-E2 ruling E13) =============================
+    # A union or an int enum reaches these rows as a RESULT or through a
+    # setup-built store, never as a `Call` argument (`Call.args` is scalars
+    # only, above) -- so every row here writes the new kind from INSIDE the
+    # contract and reads a scalar back out.
+    EnvScenario(
+        # E13: a union's storage round trip exercises `storage_key`'s `Vec`
+        # branch and the `"vec"` tag family, which no existing scenario
+        # reaches with a UDT.
+        name="a stored union round-trips through persistent storage",
+        contract=ENV_SURFACE,
+        setup=(Call("put_shape", (U32(3),)),),
+        invoke=Call("read_shape_area", ()),
+        kind="value",
+        expect=U32(3),
+    ),
+    EnvScenario(
+        name="a stored int enum round-trips and compares",
+        contract=ENV_SURFACE,
+        setup=(Call("put_color", (U32(1),)),),
+        invoke=Call("color_is_green", ()),
+        kind="value",
+        expect=Bool(True),
+    ),
+    EnvScenario(
+        # S13's key round trip, over a UNION key rather than a struct key: the
+        # read rebuilds a fresh, value-equal key rather than remembering the
+        # one the write used.
+        name="a union-keyed entry is found by a rebuilt, value-equal key",
+        contract=ENV_SURFACE,
+        setup=(Call("put_by_shape_key", (U32(7),)),),
+        invoke=Call("read_by_shape_key", ()),
+        kind="value",
+        expect=U32(7),
+    ),
 )

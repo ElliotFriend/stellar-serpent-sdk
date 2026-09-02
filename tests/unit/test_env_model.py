@@ -632,6 +632,18 @@ def test_isolation_a_stored_container_is_not_the_local() -> None:
 
 
 def test_isolation_holds_for_maps_structs_and_nesting() -> None:
+    """M1-E2 ruling E13: the two new kinds join this property too, and
+    trivially -- a union's `__deepcopy__` rebuilds a fresh instance
+    (`_udt.py`'s `ContractUnion.__deepcopy__`) and an int enum's returns
+    `self` (it is immutable, so a copy would answer the same value either
+    way, `ContractEnum.__deepcopy__`), so there is no MUTATION surface left to
+    grow after the write the way `m`, `holder` and `nested` are grown below.
+    What is left to check is the ordinary round trip: a stored union or int
+    enum reads back equal, and two reads of the same entry are not the same
+    object where the model actually allocates one (the union case).
+    """
+    from tests.unit.test_udt_values import Color, Shape
+
     bucket = deployed_env().storage().temporary()
 
     m = Map(Symbol, U32, [(Symbol("a"), U32(1))])
@@ -648,6 +660,15 @@ def test_isolation_holds_for_maps_structs_and_nesting() -> None:
     bucket.set(Symbol("n"), nested)
     nested.get(0).items.push_back(U32(9))
     assert len(bucket.get(Symbol("n"), Vec).get(0).items) == 1
+
+    bucket.set(Symbol("shape"), Shape.Circle(U32(3)))
+    first_shape = bucket.get(Symbol("shape"), Shape)
+    second_shape = bucket.get(Symbol("shape"), Shape)
+    assert first_shape == Shape.Circle(U32(3))
+    assert first_shape is not second_shape
+
+    bucket.set(Symbol("color"), Color.Green)
+    assert bucket.get(Symbol("color"), Color) == Color.Green
 
 
 def test_isolation_two_reads_never_share_an_object() -> None:
