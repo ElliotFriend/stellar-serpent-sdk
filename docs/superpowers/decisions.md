@@ -763,3 +763,84 @@ entry.
 - Reversal cost: the re-typing is a tier-1 behavior change on a two-day-
   old surface, trivially revertable; the two declaration refusals only
   shrink accepts that were already unrunnable; the rest is prose.
+
+## 2026-09-02 M1-F rulings (dossier E1-E16, all recommendations adopted)
+- Context: the M1-F inputs dossier (specs/2026-09-02-m1f-inputs-dossier.md)
+  posed sixteen questions with recommendations; controller adopted all
+  sixteen. Chain facts verified live before ruling: testnet is on protocol
+  28 (core 28.0.1, embedding soroban-env-host v28.0.0 rev ba37ea5),
+  mainnet on 27; crates.io soroban-env-host 28.0.2 = the repo's env.json
+  pin; soroban-sdk 28.0.0-rc.1 pins env-host =28.0.2; the deployed
+  shapes contract's bytes are identical to build_file(examples/shapes.py)
+  at main tip.
+- E1 (embedding surface): the soroban-sdk test Env at =28.0.0-rc.1 with
+  testutils, env.host() exposing the raw Host for what the sdk lacks. An
+  rc pin is accepted because M1 is unpublished, Cargo.lock is committed,
+  the resolved env-host is exactly the env.json pin, and a drift test
+  asserts embedded protocol == PINNED_TAG major (28). The stable 28.0.0
+  bump is M3's wheel-time item.
+- E2 (marshalling): ScVal XDR bytes across PyO3, marshalled in ONE
+  Python module (serpent.testing._scval) over stellar_sdk, decoding driven
+  by the requested ty exactly like tier-1 get's re-typing. No native ScVal
+  codec (a third Val implementation, spec §10).
+- E3/E4 (errors and panics): a typed hierarchy (RealHostError with
+  error type + code; RealContractError mapped to the deployed class's
+  @contracterror member; HostPanic for contained panics), never
+  RuntimeError strings; boundary pre-validation AND catch_unwind at every
+  PyO3 method, negative-tested for the three known panic sources.
+- E5 (layout): host/ as a SEPARATE serpent-host distribution (import name
+  serpent_host); in M1 installed by VIRTUAL_ENV=<root>/.venv uvx maturin
+  develop --release, NOT a uv workspace member (a maturin member would make
+  uv sync require cargo, violating the Rust-less-gates input). The uv sync
+  prune trap is mitigated by the skip reason printing the rebuild command
+  and docs; wheels and workspace shape are M3's.
+- E6 (footprint tier, spec re-reading): spec §8's "mandatory footprint
+  recording" clause is READ ONTO TIER 2b, where the real host records
+  footprints; the mini-host is documented footprint-blind. Building a
+  footprint model into the mock would grow the very mock spec §8 warns
+  against.
+- E7 (tier 2a scope): the mini-host stays tests/harness/ (dev-only) and is
+  NOT shipped; productization is exactly three items (compiled-module
+  cache keyed by path + content hash, host fresh per row; a public typed
+  container decoder plus Vec argument encoding; docstring repointing).
+  The shipped user-facing test surface is serpent.testing over the real
+  host plus tier-1 Env.
+- E8 (metadata rename): tier1_only_reason becomes mini_host_gap with the
+  three reason constants and the Advance docstring corrected (the real
+  host has a settable ledger sequence); a licensed edit to the frozen
+  module's metadata, rows untouched, biconditional guard kept.
+- E9 (expected divergence): rows where the tier-1 model is known
+  wrong-by-omission (publish-then-raise rollback first) declare
+  host_diverges=<reason>; the runner asserts the divergence EXISTS.
+  Fixing the model is an M2 oracle edit once the evidence is in.
+- E10 (frozen-table disagreement): a real-vs-tier-1 mismatch on a CASES
+  row raises FrozenTableDisagreement; the implementer returns BLOCKED; the
+  controller rules here. Pre-registered candidates: Symbol "_" vs "A"
+  ordering, i256_div rounding.
+- E11 (pins): soroban-sdk =28.0.0-rc.1, pyo3 0.29, Cargo.lock committed;
+  DEFAULT_LEDGER_* fed from the M1-E shared home; tier-3 fixture headers
+  carry protocol and must match the embedded protocol.
+- E12 (container ordering): F RECORDS the host's observed Vec/Map/union
+  ordering as HOST_FACTS evidence; the tier-1 _cmp_payload implementation
+  goes to M2 unless the observed order is plain lexicographic-by-val_cmp,
+  in which case a <=20-line tier-1 implementation may land in F under a
+  scoped Opus review.
+- E13: the bridge-needle generalisation and parameter-shadowing items fed
+  by M1-E2 are RE-ROUTED to G's hygiene pass (frontend, not testing).
+- E14 (tier 3): simulation-only, against a CONFIGURED existing account's
+  public key supplied by Elliot in-session for recording; replay needs no
+  network; no friendbot call (an outward write); no signing or
+  sendTransaction code path exists in M1.
+- E15: the harness's DIV_ERROR_VAL convention is replaced by the real
+  (ScErrorType, ScErrorCode) observed from the host, pinned in one shared
+  constant home (a small licensed edit to tests/harness/i256.py).
+- E16 (scope fence): F ships no SPT codes, no language surface, no
+  emitter change; an emitter bug found by the real host is fixed in-branch
+  as an out-of-plan fix under Opus review and ledgered.
+- Why: each recommendation was evidence-cited in the dossier; the
+  controlling risk for F is a hollow differential, and E1/E2/E9/E10 are
+  the four that make the real host a genuine leg rather than a re-encoding
+  of the model.
+- Reversal cost: per-item low before the plan's tasks consume them; E6 is
+  a spec re-reading Elliot can overturn by striking it (footprint model
+  in the mock would then be a G/M2 task); E1's rc pin is a one-line bump.
