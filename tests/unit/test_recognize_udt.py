@@ -443,7 +443,7 @@ def test_a_dynamic_union_construction_needs_no_memory_of_its_own() -> None:
 
 _WASM_SOURCE = """
 from serpent import (
-    ContractEnum, ContractUnion, Env, Symbol, U32, contract, contractenum,
+    Bool, ContractEnum, ContractUnion, Env, Symbol, U32, contract, contractenum,
     contractunion, enumvalue, variant,
 )
 
@@ -477,6 +477,9 @@ class Shapes:
 
     def green(self, env: Env) -> Color:
         return Color.Green
+
+    def is_red(self, env: Env, c: Color) -> Bool:
+        return c == Color.Red
 """
 
 #: The host functions the whole union/int-enum surface reaches. `vec_get` is
@@ -621,3 +624,43 @@ def test_an_element_read_at_index_zero_of_a_real_vec_is_untouched() -> None:
         body='if syms.get(U32(0)) == Symbol("Cirlce"):\n            return U32(1)\n        return U32(0)',
     ).replace("sym: Symbol", "sym: Symbol, syms: Vec[Symbol]")
     assert compile_module(source, PATH) is not None
+
+
+def test_an_int_enum_equality_answers_the_same_on_both_legs(built: BuildResult) -> None:
+    """Fix round 2's WASM-level pin, and the differential one: an int-enum
+    comparison is the ONLY thing an enum can usefully do inside a contract
+    body, and it raised `CompilerBugError: Enum(Color) has no unboxing
+    lowering` out of `build_wasm` while passing the frontend and answering
+    correctly at tier 1 -- the exact shape of divergence the two-tier design
+    exists to catch, missed because nothing exercised an enum below the
+    frontend.
+
+    The tier-1 side is the DECLARED class from this module's own fixture
+    (A18: the oracle is the authoring surface's own Python), not a hand-written
+    expectation, so the two legs are really being compared and not restated.
+    """
+    from serpent import val
+
+    color_cls = load_module(_WASM_SOURCE, PATH).namespace["Color"]
+    host = FullHost()
+    mini = engine.MiniHost(built.wasm, imports=host.bindings())
+    host.attach(mini)
+
+    for case, discriminant in (("Red", 0), ("Green", 7)):
+        tier1 = getattr(color_cls, case) == color_cls.Red
+        wasm = _invoke(mini, "is_red", val.pack_u32val(discriminant))
+        assert wasm == val.pack_bool(bool(tier1)), case
+    # ...and the matching/non-matching pair really did differ, so the test
+    # cannot pass by both legs answering the same constant.
+    assert _invoke(mini, "is_red", val.pack_u32val(0)) != _invoke(
+        mini, "is_red", val.pack_u32val(7)
+    )
+
+
+def test_an_enum_compared_against_a_u32_never_reaches_the_emitter() -> None:
+    """The frontend keeps the representation coincidence from becoming a type
+    one: `Ty.Enum` and `Ty.U32` are not `_comparable`, and `ENUM` is not in
+    `_CHAIN_INT_TAGS`, so this is the generic type-mismatch row rather than the
+    chain-integer one -- reported before any lowering runs."""
+    _expect_module_reject("if c == U32(0):\n    return U32(1)\nreturn U32(0)", "SPT3018")
+    _expect_module_reject("if c < Color.Red:\n    return U32(1)\nreturn U32(0)", "SPT3005")

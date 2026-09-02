@@ -2140,8 +2140,19 @@ def unbox(fn: Fn, ctx: EmitCtx, ty: Ty) -> None:
     IMMEDIATE 32-bit types are inline (the payload is at bit 32 and the tag is
     fixed, so there is nothing to branch on); EITHER 64-bit types call their
     part, whose tag test picks the small shift or the host accessor.
+
+    ``Enum`` rides the ``U32`` arm because an int-enum value IS a bare ``u32``
+    on chain (M1-E2 SS B.1) -- same ``TAG_U32``, same payload at bit 32, which
+    is the fact ``lower._IMMEDIATE_ABI_WORD`` already states one layer up. It
+    is the ONE arm here an int enum reaches: ``lower_binary``, ``lower_neg``
+    and ``rebox`` deliberately have no ``ENUM`` row, because the frontend
+    refuses enum arithmetic and enum ordering outright (SPT3003/SPT3005) and a
+    lowering nothing can reach would be dead code that also quietly sanctions
+    the operation. Unboxing is different: ``==``/``!=`` on an enum IS
+    supported, tier 1 answers it, and ``_lower_compare``'s direct-relop arm
+    unboxes both sides first (F.1.1).
     """
-    if ty.tag is TyTag.U32:
+    if ty.tag in (TyTag.U32, TyTag.ENUM):
         fn.i64_const(_IMMEDIATE_SHIFT)
         fn.binop_i64(opcodes.I64_SHR_U)
         return

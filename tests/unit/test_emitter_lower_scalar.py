@@ -68,8 +68,8 @@ from serpent.compiler.ir import (
     Unary,
     UnaryOp,
 )
-from serpent.compiler.types_ import Ty
-from serpent.emitter import encode, lower, opcodes
+from serpent.compiler.types_ import Ty, TyTag
+from serpent.emitter import arith, encode, lower, opcodes
 from serpent.emitter.frame import CallImport, CodeItem, EmitError, Fn
 from serpent.emitter.layout import Memory
 from serpent.emitter.lower import LowerCtx
@@ -763,6 +763,58 @@ def test_bool_compare_is_a_direct_word_compare() -> None:
             node = compare(CompareOp.EQ, param(0, Ty.Bool), param(1, Ty.Bool))
             got = run(node, val.pack_bool(a), val.pack_bool(b))
             assert got == val.pack_bool(a == b)
+
+
+def test_int_enum_compare_is_a_u32_word_compare() -> None:
+    """M1-E2 SS B.1: an int-enum value IS a bare `u32` on chain, so equality
+    unboxes exactly as `U32` does and takes the direct relop.
+
+    This is the fix-round-2 regression pin. `_lower_compare` routes an
+    IMMEDIATE-repr type to the direct-relop arm, which unboxes both sides
+    first (F.1.1) -- and `arith.unbox` had rows for `U32`/`I32` and nothing
+    else 32-bit wide, so an enum comparison the FRONTEND accepts and tier 1
+    answers correctly raised `EmitError("Enum(Color) has no unboxing
+    lowering")` out of `build_wasm`. Both operand shapes are exercised: a
+    parameter (the `_lower_val` + `arith.unbox` path) and a literal (the
+    `_raw_const_word` shortcut).
+    """
+    color = Ty.Enum("Color")
+    for op in (CompareOp.EQ, CompareOp.NE):
+        for a, b in ((0, 0), (0, 7), (7, 0), (U32_MAX, U32_MAX), (1 << 31, 1)):
+            got = run(
+                compare(op, param(0, color), param(1, color)),
+                val.pack_u32val(a),
+                val.pack_u32val(b),
+            )
+            assert got == val.pack_bool(ORACLE_OP[op](a, b)), f"{a} {op.value} {b}"
+            literal = run(compare(op, param(0, color), const(color, b)), val.pack_u32val(a))
+            assert literal == val.pack_bool(ORACLE_OP[op](a, b)), f"{a} {op.value} const {b}"
+
+
+def test_int_enum_ordering_and_arithmetic_stay_unlowered() -> None:
+    """The other half of the same decision, pinned so a later "consistency"
+    edit has to delete a test.
+
+    An int enum is a `u32` in REPRESENTATION only: the frontend refuses `<`
+    (SPT3005 -- `ENUM` is not in `expr._ORDERABLE_TAGS`) and refuses `+`
+    (SPT3003 -- it is not in `_CHAIN_INT_TAGS`, so it never shares a type with
+    a `U32`). So `arith.lower_binary`, `arith.lower_neg` and `arith.rebox`
+    deliberately have NO `ENUM` row: a lowering nothing can reach is dead code
+    that would also quietly sanction the operation if the frontend ever
+    slipped. `unbox` is the one that had to grow, because equality is real.
+    """
+    color = Ty.Enum("Color")
+    fn = Fn("probe", 0, 0, ("i64",))
+    ctx = LowerCtx(n_module_functions=1, memory=Memory())
+    with pytest.raises(EmitError, match="checked arithmetic"):
+        arith.lower_binary(fn, ctx, color, BinaryOp.ADD)
+    with pytest.raises(EmitError, match="checked negation"):
+        arith.lower_neg(fn, ctx, color)
+    with pytest.raises(EmitError, match="boxing lowering"):
+        arith.rebox(fn, ctx, color)
+    # ...and the relop it DOES reach is the unsigned table, which is what
+    # `_SIGNED_TAGS` excluding `ENUM` already says.
+    assert TyTag.ENUM not in lower._SIGNED_TAGS
 
 
 # --- the obj_cmp route (F.1.2/T5, B2) -------------------------------------------
