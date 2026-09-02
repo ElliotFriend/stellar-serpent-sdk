@@ -6,7 +6,7 @@
 ;;     SERPENT_REGEN_GOLDENS=1 uv run pytest tests/unit/test_emitter_printer.py
 ;; and READ THE DIFF: a change here is a behavioral change to what sub-plan D
 ;; emits, not noise.
-;; wasm module: 4171 byte(s), 10 section(s)
+;; wasm module: 4233 byte(s), 10 section(s)
 ;; type section: 4 entry(ies)
 ;; import section: 9 entry(ies)
 (import "v" "g" (func $vec_new_from_linear_memory (param i64 i64) (result i64)))
@@ -187,7 +187,7 @@ end
 
 ;; func[4] (combined index 13)
 (func $area (result i64)
-  (local i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64)
+  (local i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64)
   i64.const 130137116686
   local.set 2
   i64.const 2
@@ -220,16 +220,16 @@ end
   local.get 0
   i64.const 4
   call $vec_get
-  local.tee 5
-  local.get 5
+  local.tee 7
+  local.get 7
   i64.const 255
   i64.and
-  local.set 6
-  local.get 6
+  local.set 8
+  local.get 8
   i64.const 14
   i64.ne
   i64.extend_i32_u
-  local.get 6
+  local.get 8
   i64.const 74
   i64.ne
   i64.extend_i32_u
@@ -241,8 +241,26 @@ end
     call $fail_with_error
     drop
   end
+  local.set 5
   i64.const 1990867214
-  call $obj_cmp
+  local.set 6
+  local.get 5
+  local.get 6
+  i64.or
+  i64.const 255
+  i64.and
+  i64.const 64
+  i64.ge_u
+  if (result i64)
+    local.get 5
+    local.get 6
+    call $obj_cmp
+  else
+    local.get 5
+    local.get 6
+    i64.ne
+    i64.extend_i32_u
+  end
   i64.const 0
   i64.eq
   i64.extend_i32_u
@@ -251,8 +269,8 @@ end
     local.get 0
     i64.const 4294967300
     call $vec_get
-    local.tee 7
-    local.get 7
+    local.tee 9
+    local.get 9
     i64.const 4294967295
     i64.and
     i64.const 4
@@ -267,8 +285,8 @@ end
     local.get 0
     i64.const 8589934596
     call $vec_get
-    local.tee 8
-    local.get 8
+    local.tee 10
+    local.get 10
     i64.const 4294967295
     i64.and
     i64.const 4
@@ -281,7 +299,7 @@ end
     i64.const 32
     i64.shr_u
     i64.mul
-    local.tee 9
+    local.tee 11
     i64.const 4294967295
     i64.gt_u
     if
@@ -289,8 +307,8 @@ end
       call $fail_with_error
       drop
     end
-    local.get 9
-    local.tee 10
+    local.get 11
+    local.tee 12
     i64.const 4294967295
     i64.gt_u
     if
@@ -298,7 +316,7 @@ end
       call $fail_with_error
       drop
     end
-    local.get 10
+    local.get 12
     i64.const 32
     i64.shl
     i64.const 4
@@ -308,16 +326,16 @@ end
     local.get 0
     i64.const 4
     call $vec_get
-    local.tee 11
-    local.get 11
+    local.tee 15
+    local.get 15
     i64.const 255
     i64.and
-    local.set 12
-    local.get 12
+    local.set 16
+    local.get 16
     i64.const 14
     i64.ne
     i64.extend_i32_u
-    local.get 12
+    local.get 16
     i64.const 74
     i64.ne
     i64.extend_i32_u
@@ -329,8 +347,26 @@ end
       call $fail_with_error
       drop
     end
+    local.set 13
     i64.const 4049592936974
-    call $obj_cmp
+    local.set 14
+    local.get 13
+    local.get 14
+    i64.or
+    i64.const 255
+    i64.and
+    i64.const 64
+    i64.ge_u
+    if (result i64)
+      local.get 13
+      local.get 14
+      call $obj_cmp
+    else
+      local.get 13
+      local.get 14
+      i64.ne
+      i64.extend_i32_u
+    end
     i64.const 0
     i64.eq
     i64.extend_i32_u
@@ -339,8 +375,8 @@ end
       local.get 0
       i64.const 4294967300
       call $vec_get
-      local.tee 13
-      local.get 13
+      local.tee 17
+      local.get 17
       i64.const 4294967295
       i64.and
       i64.const 4
@@ -356,7 +392,7 @@ end
       i64.const 32
       i64.shr_u
       i64.mul
-      local.tee 14
+      local.tee 18
       i64.const 4294967295
       i64.gt_u
       if
@@ -364,8 +400,8 @@ end
         call $fail_with_error
         drop
       end
-      local.get 14
-      local.tee 15
+      local.get 18
+      local.tee 19
       i64.const 4294967295
       i64.gt_u
       if
@@ -373,7 +409,7 @@ end
         call $fail_with_error
         drop
       end
-      local.get 15
+      local.get 19
       i64.const 32
       i64.shl
       i64.const 4
@@ -384,7 +420,7 @@ end
       i64.const 32
       i64.shr_u
       i64.mul
-      local.tee 16
+      local.tee 20
       i64.const 4294967295
       i64.gt_u
       if
@@ -392,8 +428,8 @@ end
         call $fail_with_error
         drop
       end
-      local.get 16
-      local.tee 17
+      local.get 20
+      local.tee 21
       i64.const 4294967295
       i64.gt_u
       if
@@ -401,7 +437,7 @@ end
         call $fail_with_error
         drop
       end
-      local.get 17
+      local.get 21
       i64.const 32
       i64.shl
       i64.const 4

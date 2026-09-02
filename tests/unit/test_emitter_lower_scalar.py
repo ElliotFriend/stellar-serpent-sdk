@@ -107,13 +107,24 @@ def compare(op: CompareOp, lhs: IRExpr, rhs: IRExpr, *, via_obj_cmp: bool = Fals
     return Compare(loc=LOC, ty=Ty.Bool, op=op, lhs=lhs, rhs=rhs, via_obj_cmp=via_obj_cmp)
 
 
+#: The `Val` word a `probe_effect()` caller passes as `param(1)`: a `Symbol`
+#: OBJECT handle. It has to be an object for the probe to cost anything -- see
+#: `probe_effect`.
+PROBE_OBJECT = val.from_body_tag(0, val.TAG_SYMBOL_OBJECT)
+
+
 #: A Bool-typed expression that COSTS a host call, so its evaluation is
-#: observable from a recording callback. Used to prove short-circuiting: a
-#: `Symbol` comparison always routes through `obj_cmp` (F.1.2/T5).
+#: observable from a recording callback. Used to prove short-circuiting.
+#:
+#: A `Symbol` comparison, which is `via_obj_cmp` (F.1.2/T5) -- but since M1-F
+#: review finding B1 the emitter reaches `obj_cmp` only when an operand really
+#: IS an object (the real host refuses the call for two small words), so one
+#: side is `param(1)` and the caller passes `PROBE_OBJECT`. Two `Symbol`
+#: immediates would be compared in the guest and the probe would be silent.
 def probe_effect() -> Compare:
     return compare(
         CompareOp.EQ,
-        const(Ty.Symbol, "a"),
+        param(1, Ty.Symbol),
         const(Ty.Symbol, "b"),
         via_obj_cmp=True,
     )
@@ -827,10 +838,15 @@ def test_obj_cmp_route_passes_val_words_and_tests_the_answer_signed(op: CompareO
     The host's answer is a plain signed `i64` (`val_typed_ret` is `False`, B2),
     so the operator becomes a SIGNED comparison against zero. An unsigned test
     would call `-1 < 0` false and invert every `<` on every object type.
+
+    `Address` rather than `Symbol`: `Symbol` is `via_obj_cmp` too but has its
+    own guarded lowering since M1-F review finding B1 (small/small never
+    reaches the host), so it is the wrong probe for the UNCONDITIONAL route --
+    `tests/unit/test_emitter_symbol_compare.py` owns that one.
     """
     for a, b, three_way in ((1, 2, -1), (2, 1, 1), (2, 2, 0)):
         store = Store()
-        node = compare(op, param(0, Ty.Symbol), param(1, Ty.Symbol), via_obj_cmp=True)
+        node = compare(op, param(0, Ty.Address), param(1, Ty.Address), via_obj_cmp=True)
         # Words chosen so the toy `obj_cmp` reproduces `three_way` (it compares
         # the raw words) -- the point of the vector is the -1/0/1 handling.
         got = run(node, a, b, store=store)
@@ -839,11 +855,24 @@ def test_obj_cmp_route_passes_val_words_and_tests_the_answer_signed(op: CompareO
 
 
 def test_obj_cmp_route_never_unboxes_its_operands() -> None:
-    """Both sides go in as `Val` WORDS: that is what the host compares."""
+    """Both sides go in as `Val` WORDS: that is what the host compares.
+
+    `Symbol` still proves it, because its two immediates are the only object-
+    comparable operands with a compile-time word to look for -- but since M1-F
+    review finding B1 each is stored to a local FIRST, so that the object-tag
+    guard and both arms can read it. The two `i64.const`s are still the whole
+    of the operand lowering: no shift, no mask, no unbox.
+    """
     node = compare(CompareOp.LT, const(Ty.Symbol, "a"), const(Ty.Symbol, "b"), via_obj_cmp=True)
     body = items(node)
     assert import_calls(body) == ["obj_cmp"]
-    assert body[0] == i64c(val.symbol_small("a")) + i64c(val.symbol_small("b"))
+    assert isinstance(body[0], bytes)
+    assert body[0].startswith(
+        i64c(val.symbol_small("a"))
+        + bytes([opcodes.LOCAL_SET, 4])
+        + i64c(val.symbol_small("b"))
+        + bytes([opcodes.LOCAL_SET, 5])
+    )
 
 
 # ===========================================================================
@@ -876,9 +905,9 @@ def test_boolop_short_circuits(kind: BoolOpKind, first: bool, evaluates_second: 
         op=kind,
         operands=(param(0, Ty.Bool), probe_effect()),
     )
-    got = run(node, val.pack_bool(first), store=store)
+    got = run(node, val.pack_bool(first), PROBE_OBJECT, store=store)
     assert bool(store.cmp_calls) is evaluates_second
-    second = val.pack_bool(val.symbol_small("a") == val.symbol_small("b"))
+    second = val.pack_bool(PROBE_OBJECT == val.symbol_small("b"))
     want = second if evaluates_second else val.pack_bool(first)
     assert got == want
 
@@ -921,7 +950,7 @@ def test_if_exp_evaluates_only_the_taken_arm(cond: bool) -> None:
         then=const(Ty.Bool, True),
         orelse=probe_effect(),
     )
-    got = run(node, val.pack_bool(cond), store=store)
+    got = run(node, val.pack_bool(cond), PROBE_OBJECT, store=store)
     assert bool(store.cmp_calls) is (not cond)
     assert got == (val.TRUE_VAL if cond else val.pack_bool(False))
 
@@ -1012,7 +1041,14 @@ def test_pooled_const_ref_used_twice_builds_its_object_once() -> None:
 
 
 def test_immediate_const_ref_used_twice_is_not_memoised() -> None:
-    """An immediate is one `i64.const`; a hidden local would only cost more."""
+    """An immediate is one `i64.const`; a hidden local would only cost more.
+
+    The const bytes appearing TWICE is the whole claim: a memo would emit them
+    once and read the slot for the second use. The two hidden locals are the
+    `Symbol` route's OPERAND scratch (M1-F review finding B1: the object-tag
+    guard and both arms each read both words), not a memo of the constant --
+    which is exactly why the count, not `n_hidden`, is what is asserted.
+    """
     node = compare(
         CompareOp.EQ,
         ConstRef(loc=LOC, ty=Ty.Symbol, name="K"),
@@ -1024,8 +1060,9 @@ def test_immediate_const_ref_used_twice_is_not_memoised() -> None:
     lower.lower_expr(fn, ctx, node)
     fn.ret()
     body = fn.finish()
-    assert fn.n_hidden == 0
-    assert body[0] == i64c(val.symbol_small("k")) + i64c(val.symbol_small("k"))
+    assert isinstance(body[0], bytes)
+    assert body[0].count(i64c(val.symbol_small("k"))) == 2
+    assert fn.n_hidden == 2
 
 
 def test_pooled_const_ref_first_used_inside_a_branch_is_not_memoised() -> None:

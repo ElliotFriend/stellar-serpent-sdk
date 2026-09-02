@@ -1933,6 +1933,196 @@ def _build_tagcheck_bytes_n(ctx: EmitCtx) -> Fn:
     return fn
 
 
+# --- the SymbolSmall ordering part (review B1, ruling E16 as amended) ----------
+
+#: `SymbolSmall`'s alphabet is 6 bits per character (`CODE_BITS` in
+#: `soroban-env-common/src/symbol.rs` @ v28.0.2), nine characters at most
+#: (`MAX_SMALL_CHARS`), packed HIGH-ORDER-FIRST with the unused high groups
+#: left zero -- which is what makes those zero groups PADDING rather than
+#: characters, and what the host's own iterator skips.
+_SYMBOL_CODE_BITS = 6
+_SYMBOL_CODE_MASK = 0x3F
+
+#: `(MAX_SMALL_CHARS - 1) * CODE_BITS`: the shift the host's iterator uses to
+#: bring the next (highest-order) character code down to the low six bits.
+_SYMBOL_TOP_SHIFT = 48
+
+#: The 6-bit code -> ASCII byte map, as the affine segments the host's own
+#: `match` spells: `n @ (2..=11) => b'0' + n - 2`, `12..=37 => b'A' + n - 12`,
+#: `38..=63 => b'a' + n - 38`. `(code_floor, bias)`, HIGHEST floor first so the
+#: emitted chain is one monotone cascade of `>=` tests.
+_SYMBOL_ASCII_SEGMENTS: tuple[tuple[int, int], ...] = (
+    (38, ord("a") - 38),
+    (12, ord("A") - 12),
+    (2, ord("0") - 2),
+)
+
+#: Code 1 is `_`, whose ASCII is 95. The one character whose packed code and
+#: ASCII rank DISAGREE -- code 1 sorts first, ASCII 95 sorts after every digit
+#: and every capital -- and therefore the whole reason `symsmall_cmp` decodes
+#: instead of comparing the packed bodies.
+_SYMBOL_UNDERSCORE_ASCII = ord("_")
+
+#: Not a character: the padding code, and (because no ASCII byte here is zero)
+#: also the sentinel `_symbol_next_char` returns for an EXHAUSTED symbol. That
+#: coincidence is load-bearing -- see `_build_symsmall_cmp`.
+_SYMBOL_EXHAUSTED = 0
+
+
+def _symbol_ascii_of_code(fn: Fn, code: int) -> None:
+    """Push local ``code``'s ASCII byte as an i64. Precondition: ``code >= 1``.
+
+    Three nested `if (result i64)`s, one per affine segment, with the `_`
+    singleton as the innermost `else`. Code 0 never reaches here: the caller
+    treats it as padding and skips it, exactly as the host's iterator does.
+    """
+    for floor, bias in _SYMBOL_ASCII_SEGMENTS:
+        fn.local_get(code)
+        fn.i64_const(floor)
+        fn.relop_i64(opcodes.I64_GE_U)
+        fn.begin_if("i64")
+        fn.local_get(code)
+        fn.i64_const(bias)
+        fn.binop_i64(opcodes.I64_ADD)
+        fn.else_()
+    fn.i64_const(_SYMBOL_UNDERSCORE_ASCII)
+    for _floor, _bias in _SYMBOL_ASCII_SEGMENTS:
+        fn.end_if()
+
+
+def _symbol_next_char(fn: Fn, state: int, out: int, code: int) -> None:
+    """``out = next(state)``, advancing ``state`` -- ``SymbolSmallIter::next``.
+
+    A transcription of the host's iterator, whose shape is not incidental::
+
+        fn next(&mut self) -> Option<Self::Item> {
+            while self.0 != 0 {
+                let res = match ((self.0 >> ((MAX_SMALL_CHARS - 1) * CODE_BITS))
+                                 & CODE_MASK) as u8 { ... _ => b'\\0' };
+                self.0 <<= CODE_BITS;
+                if res != b'\\0' { return Some(res as char); }
+            }
+            None
+        }
+
+    Two details are the reason this is a LOOP and not one shift:
+
+    * the zero groups are SKIPPED, not compared. Canonical packing pads on the
+      HIGH side, so `Symbol("B")`'s top group is padding while `Symbol("AB")`'s
+      is `A` -- a position-wise compare of the two bodies would read a pad
+      against a real character and answer that `"B" < "AB"`. The host reads
+      characters, so this does too.
+    * the loop exits on ``state == 0``, not after nine iterations. That is
+      again the host: it keeps shifting until the word is empty, which for a
+      54-bit body it always becomes.
+
+    ``out`` is the ASCII byte, or `_SYMBOL_EXHAUSTED` (0) once the symbol is
+    spent -- the guest's spelling of the host's `Option::None`.
+    """
+    fn.i64_const(_SYMBOL_EXHAUSTED)
+    fn.local_set(out)
+    fn.begin_block(None, breakable=True)
+    fn.begin_loop()
+    fn.local_get(state)
+    _eqz(fn)
+    fn.br_if_break()
+    fn.local_get(state)
+    fn.i64_const(_SYMBOL_TOP_SHIFT)
+    fn.binop_i64(opcodes.I64_SHR_U)
+    fn.i64_const(_SYMBOL_CODE_MASK)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.local_set(code)
+    fn.local_get(state)
+    fn.i64_const(_SYMBOL_CODE_BITS)
+    fn.binop_i64(opcodes.I64_SHL)
+    fn.local_set(state)
+    fn.local_get(code)
+    fn.i64_const(_SYMBOL_EXHAUSTED)
+    fn.relop_i64(opcodes.I64_NE)
+    fn.begin_if(None)
+    _symbol_ascii_of_code(fn, code)
+    fn.local_set(out)
+    fn.br_break()
+    fn.end_if()
+    fn.br_continue()
+    fn.end()
+    fn.end()
+
+
+def _build_symsmall_cmp(_ctx: EmitCtx) -> Fn:
+    """``symsmall_cmp(a: Val, b: Val)`` -> raw ``-1``/``0``/``1`` (review B1).
+
+    **Why this part exists at all.** The shipped emitter lowered every
+    `Symbol` comparison to `obj_cmp`, and the real host REFUSES `obj_cmp` when
+    both operands are non-object `Val`s -- which two `SymbolSmall`s are -- with
+    `Error(Value, UnexpectedType)`, escalated by the VM to a trap. The host's
+    own `Compare<Val>` (`compare.rs` @ v28.0.2) never makes that call either:
+    it reaches `SymbolSmall`'s `Ord` when neither side is an object, and this
+    part is that `Ord`, in the guest.
+
+    **The order it reproduces** is `Iterator::cmp` over DECODED characters --
+    lexicographic ASCII over the symbol's text, not over the packed 6-bit
+    codes, which disagree at `_` (code 1, ASCII 95). Tier 1's `Symbol.__lt__`
+    compares the text, so the host and tier 1 agree; this part follows the
+    HOST, and it would still follow it if they did not.
+
+    **The `None` sentinel is free.** `Iterator::cmp` ends the shorter symbol
+    with `None`, which orders BEFORE every `Some(c)`. `_symbol_next_char`
+    reports exhaustion as 0, and every ASCII byte in this alphabet is at least
+    48, so the plain unsigned compare of the two reported bytes already gets
+    the prefix case right (`"A" < "AB"`): no separate end-of-string branch,
+    and no way for one to drift out of step with the ordering.
+
+    The two arguments are whole `Val` WORDS, so the tag byte is shifted off
+    first -- `Val::get_body()` is `payload >> 8`, and the body is what the
+    host's iterator walks.
+    """
+    fn = _part_fn("symsmall_cmp", 2)
+    state_a = fn.new_local()
+    state_b = fn.new_local()
+    char_a = fn.new_local()
+    char_b = fn.new_local()
+    code = fn.new_local()
+    for param, state in ((0, state_a), (1, state_b)):
+        fn.local_get(param)
+        fn.i64_const(_TAG_BITS)
+        fn.binop_i64(opcodes.I64_SHR_U)
+        fn.local_set(state)
+
+    fn.begin_loop()
+    _symbol_next_char(fn, state_a, char_a, code)
+    _symbol_next_char(fn, state_b, char_b, code)
+    fn.local_get(char_a)
+    fn.local_get(char_b)
+    fn.relop_i64(opcodes.I64_NE)
+    fn.begin_if(None)
+    fn.local_get(char_a)
+    fn.local_get(char_b)
+    fn.relop_i64(opcodes.I64_LT_U)
+    fn.begin_if("i64")
+    fn.i64_const(-1)
+    fn.else_()
+    fn.i64_const(1)
+    fn.end_if()
+    fn.ret()
+    fn.end_if()
+    # The two characters agree. If they are BOTH the exhaustion sentinel the
+    # symbols ran out together, which is `Iterator::cmp`'s `(None, None)`:
+    # equal. Otherwise take the next character.
+    fn.local_get(char_a)
+    _eqz(fn)
+    fn.begin_if(None)
+    fn.i64_const(0)
+    fn.ret()
+    fn.end_if()
+    fn.br_continue()
+    fn.end()
+    # Unreachable: every path out of the loop above is a `return`, and the loop
+    # itself has no exit edge. The tail exists so the body type-checks.
+    fn.unreachable_()
+    return fn
+
+
 #: Every part that returns TWO results and therefore reserves a scratch slot.
 #: Review B8's marker in static form: Task 10 must emit linear memory for a
 #: module linking any of these, whatever `compiled.needs_memory` says.
@@ -1952,7 +2142,8 @@ PARTS_NEEDING_MEMORY = frozenset(
 
 
 #: Every linkable runtime part, by name (ruling E3's ratified inventory for
-#: this task). Task 6 adds the ``{u,i}128_*`` family, Task 9 ``tagcheck_bytes_n``.
+#: this task). Task 6 adds the ``{u,i}128_*`` family, Task 9 ``tagcheck_bytes_n``,
+#: and M1-F's review finding B1 ``symsmall_cmp``.
 PART_BUILDERS: dict[str, Callable[[EmitCtx], Fn]] = {
     "u64_add": _build_u64_add,
     "u64_sub": _build_u64_sub,
@@ -1990,6 +2181,7 @@ PART_BUILDERS: dict[str, Callable[[EmitCtx], Fn]] = {
     "unbox_i128": _build_unbox_i128,
     "box_i128": _build_box_i128,
     "tagcheck_bytes_n": _build_tagcheck_bytes_n,
+    "symsmall_cmp": _build_symsmall_cmp,
 }
 
 
@@ -2240,6 +2432,16 @@ def wide_cmp(fn: Fn, ctx: EmitCtx, ty: Ty) -> None:
     """
     prefix = _wide_prefix(ty, "comparison")
     fn.call_defined(ctx.ensure_part(f"{prefix}_cmp"), 4, ("i64",))
+
+
+def symsmall_cmp(fn: Fn, ctx: EmitCtx) -> None:
+    """Order two SMALL `Symbol`s; two `Val` WORDS on the stack, raw -1/0/1 out.
+
+    The small/small arm of `lower._lower_symbol_compare` (review B1). Whole
+    words, not bodies: the part shifts the tag byte off itself, so the caller
+    hands over exactly what it would have handed `obj_cmp`.
+    """
+    fn.call_defined(ctx.ensure_part("symsmall_cmp"), 2, ("i64",))
 
 
 def unbox_wide(fn: Fn, ctx: EmitCtx, ty: Ty) -> tuple[int, int]:

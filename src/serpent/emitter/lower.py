@@ -831,14 +831,16 @@ def _lower_binary(fn: Fn, ctx: LowerCtx, e: Binary) -> None:
 def _lower_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
     """``lhs <op> rhs``, always producing a Bool ``Val``.
 
-    Three routes, and `Compare.via_obj_cmp` -- decided by the frontend (R4,
-    F.1.2/T5) and never re-derived here -- picks the first:
+    Four routes, and `Compare.via_obj_cmp` -- decided by the frontend (R4,
+    F.1.2/T5) and never re-derived here -- picks the first two:
 
-    * **`obj_cmp`** for every HOST_OBJECT-repr type AND for `Symbol`, whose
-      packed 6-bit alphabet orders differently from the ASCII bytes tier 1
-      pins. Both sides go in as `Val` WORDS (that is what the host compares),
-      the result is a raw signed -1/0/1 (`val_typed_ret` is `False`, B2), and
-      the operator becomes a SIGNED comparison of that against zero.
+    * **`Symbol`**, which is `via_obj_cmp` but must not call `obj_cmp`
+      unconditionally: the host refuses that call when both operands are small
+      (M1-F review B1). `_lower_symbol_compare` has the whole story.
+    * **`obj_cmp`** for every other HOST_OBJECT-repr type. Both sides go in as
+      `Val` WORDS (that is what the host compares), the result is a raw signed
+      -1/0/1 (`val_typed_ret` is `False`, B2), and the operator becomes a
+      SIGNED comparison of that against zero.
     * **`{u,i}128_cmp`** for the 128-bit widths, which have no single-word
       form; same -1/0/1 shape, same signed test against zero.
     * a **direct relop** otherwise -- and both sides are unboxed FIRST
@@ -846,6 +848,9 @@ def _lower_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
       (F.1.11), never off the representation.
     """
     if e.via_obj_cmp:
+        if e.lhs.ty.tag is TyTag.SYMBOL:
+            _lower_symbol_compare(fn, ctx, e)
+            return
         lower_expr(fn, ctx, e.lhs)
         lower_expr(fn, ctx, e.rhs)
         fn.call_import(ctx.host_import_name("obj_cmp"), 2, has_result=True)
@@ -869,6 +874,92 @@ def _lower_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
     table = _SIGNED_RELOP if ty.tag in _SIGNED_TAGS else _UNSIGNED_RELOP
     fn.relop_i64(table[e.op])
     _bool_from_flag(fn)
+
+
+#: The lowest object-handle tag. `val.is_object` is `63 < tag < 80`; the guard
+#: below tests only the lower bound, because a `Symbol` `Val` is tag 14 or tag
+#: 74 and nothing else, and a word carrying some OTHER high tag is exactly the
+#: case that should reach the host and be refused there rather than be decoded
+#: here as if it were a symbol.
+_FIRST_OBJECT_TAG = 64
+
+#: The two operators whose small/small answer is a WORD compare, no decode.
+_EQUALITY_OPS = frozenset({CompareOp.EQ, CompareOp.NE})
+
+
+def _lower_symbol_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
+    """A `Symbol` comparison: `obj_cmp` only when an operand IS an object.
+
+    **The bug this fixes (M1-F review finding B1).** Every `Symbol` comparison
+    used to be an unconditional `obj_cmp` call. The real host refuses
+    `obj_cmp` when BOTH arguments are non-object `Val`s -- and a `SymbolSmall`
+    (9 characters or fewer, tag 14) is non-object -- answering
+    `Error(Value, UnexpectedType)`, "two non-object args to obj_cmp", which
+    the VM escalates to `Error(Context, InvalidAction)`: a trap. That is why
+    the deployed `examples/shapes.py` traps on `area`, whose `tag() ==
+    Symbol("Rect")` is small on both sides. `tests/harness`'s mini host
+    accepted the call, so tier 2a never saw it (ruling E1, in the field).
+
+    **The shape is the host's own.** `Compare<Val> for E` in
+    `soroban-env-common/src/compare.rs` @ v28.0.2 delegates to `obj_cmp` iff
+    `a.is_object() || b.is_object()` and otherwise reaches `SymbolSmall`'s
+    `Ord` directly, so this lowering is not an optimization of the host's
+    behaviour, it is a transcription of it:
+
+    * **either side is an object** -> `obj_cmp`, unchanged. Required, not
+      merely permitted: only the host can decide that a `SymbolObject` and a
+      `SymbolSmall` spell the same text, and it answers `0` when they do.
+    * **both small, `==`/`!=`** -> `i64.ne` on the WORDS. Canonical
+      `SymbolSmall` packing (`val.symbol_small`: 6 bits per character,
+      high-order-first, zero-padded, one tag byte) makes word equality exact
+      for two small symbols.
+    * **both small, `<`/`<=`/`>`/`>=`** -> the `symsmall_cmp` part, which
+      decodes. The packed codes are NOT in ASCII order (`_` is code 1 and
+      ASCII 95) and the padding sits in the high groups, so no compare of the
+      raw bodies can answer an ordering.
+
+    The guard is one relop: `((a | b) & 0xFF) >= 64`. A tag byte is `>= 64`
+    iff bit 6 or bit 7 is set, and `or` sets a bit iff either operand had it,
+    so testing the OR-ed tags is exactly `is_object(a) or is_object(b)` --
+    without a second compare or an `i64.extend_i32_u` to widen a flag.
+
+    Both operands go into locals first because the guard and the arms each
+    need them; the evaluation ORDER is unchanged (lhs, then rhs), which
+    matters because either side can trap or spend budget.
+    """
+    lhs = fn.new_local()
+    rhs = fn.new_local()
+    lower_expr(fn, ctx, e.lhs)
+    fn.local_set(lhs)
+    lower_expr(fn, ctx, e.rhs)
+    fn.local_set(rhs)
+
+    fn.local_get(lhs)
+    fn.local_get(rhs)
+    fn.binop_i64(opcodes.I64_OR)
+    fn.i64_const(_TAG_MASK)
+    fn.binop_i64(opcodes.I64_AND)
+    fn.i64_const(_FIRST_OBJECT_TAG)
+    fn.relop_i64(opcodes.I64_GE_U)
+    fn.begin_if("i64")
+    fn.local_get(lhs)
+    fn.local_get(rhs)
+    fn.call_import(ctx.host_import_name("obj_cmp"), 2, has_result=True)
+    fn.else_()
+    fn.local_get(lhs)
+    fn.local_get(rhs)
+    if e.op in _EQUALITY_OPS:
+        # `0` for equal words and `1` for unequal ones -- a legal three-way
+        # answer for `==`/`!=`, which read only whether it is zero. The widen
+        # is the same `i64.extend_i32_u` a Bool takes; here the 0/1 it produces
+        # is the comparison VALUE, not the Bool, and `_compare_against_zero`
+        # below turns it into one.
+        fn.relop_i64(opcodes.I64_NE)
+        _bool_from_flag(fn)
+    else:
+        arith.symsmall_cmp(fn, ctx)
+    fn.end_if()
+    _compare_against_zero(fn, e.op)
 
 
 def _compare_against_zero(fn: Fn, op: CompareOp) -> None:

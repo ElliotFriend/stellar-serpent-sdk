@@ -6,7 +6,7 @@
 ;;     SERPENT_REGEN_GOLDENS=1 uv run pytest tests/unit/test_emitter_printer.py
 ;; and READ THE DIFF: a change here is a behavioral change to what sub-plan D
 ;; emits, not noise.
-;; wasm module: 917 byte(s), 8 section(s)
+;; wasm module: 950 byte(s), 8 section(s)
 ;; type section: 4 entry(ies)
 ;; import section: 7 entry(ies)
 (import "x" "5" (func $fail_with_error (param i64) (result i64)))
@@ -206,9 +206,28 @@ end
 
 ;; func[4] (combined index 11)
 (func $fn4 (param i64) (result i64)
+  (local i64 i64)
   local.get 0
+  local.set 1
   i64.const 84475147278
-  call $obj_cmp
+  local.set 2
+  local.get 1
+  local.get 2
+  i64.or
+  i64.const 255
+  i64.and
+  i64.const 64
+  i64.ge_u
+  if (result i64)
+    local.get 1
+    local.get 2
+    call $obj_cmp
+  else
+    local.get 1
+    local.get 2
+    i64.ne
+    i64.extend_i32_u
+  end
   i64.const 0
   i64.eq
   i64.extend_i32_u
