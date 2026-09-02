@@ -30,6 +30,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["real_host: runs against the embedded soroban-env-host (serpent_host); skipped loudly when the extension is not built, failed when SERPENT_REQUIRE_REAL_HOST=1 (ruling U2)"]
 
 [tool.ruff]
 line-length = 100

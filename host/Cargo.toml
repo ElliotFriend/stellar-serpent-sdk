@@ -1,0 +1,33 @@
+[package]
+name = "serpent-host"
+version = "0.0.1"
+edition = "2021"
+description = "serpent's tier-2b test host: the real soroban-env-host, embedded via PyO3"
+license = "Apache-2.0"
+
+[lib]
+name = "serpent_host"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# maturin enables this (pyproject.toml); `cargo test` runs WITHOUT it so the
+# test binary links libpython normally (pyo3's documented pattern).
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["abi3-py311"] }
+# Ruling E1/E11: the sdk test Env at the protocol-28 rc; it pins
+# soroban-env-host =28.0.2, the same release as src/serpent/_host/_codegen.py's
+# PINNED_TAG. Bumping either without the other is the drift Task 3 pins.
+soroban-sdk = { version = "=28.0.0-rc.1", features = ["testutils"] }
+# The sdk's `env` module is PRIVATE (review B6), so the raw Host API the
+# dossier's E1 escape hatch needs (`current_test_protocol`, diagnostics, the
+# `Compare` trait) comes from a direct dependency on the SAME release the sdk
+# pins -- nothing new enters the lock graph.
+soroban-env-host = { version = "=28.0.2", features = ["testutils"] }
+# The sdk pins the same version; a direct dep so `validate.rs` can call the
+# Result-returning strkey parser without going through Address::from_string.
+stellar-strkey = "=0.0.16"
+
+[profile.release]
+opt-level = 3

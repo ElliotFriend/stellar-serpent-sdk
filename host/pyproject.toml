@@ -1,0 +1,14 @@
+[project]
+name = "serpent-host"
+version = "0.0.1"
+description = "serpent's tier-2b test host (the real soroban-env-host, embedded via PyO3)"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "serpent_host"
+features = ["extension-module"]
