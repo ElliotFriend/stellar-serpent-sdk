@@ -37,7 +37,14 @@ from serpent.emitter import build_file
 from serpent.env import Env, deploy
 from serpent.testing import DEFAULT_PROTOCOL, RealContractError, RealEnv, RealHostError, testnet
 from serpent.testing._scval import decode_loose, from_xdr
-from serpent.testing.testnet import DEFAULT_SOURCE, Durability, Fixture, fixtures_under
+from serpent.testing.testnet import (
+    DEFAULT_SOURCE,
+    Durability,
+    Fixture,
+    _as_json,
+    fixtures_under,
+    load_fixture,
+)
 from tests.unit.test_emitter_end_to_end import EXAMPLE_SHAPES
 from tests.unit.test_examples import load_example
 
@@ -63,11 +70,32 @@ B1_DIVERGENCE: dict[str, object] = {"area": U32(10)}
 
 real = pytest.mark.real_host  # per-test (M12); only the replay leg needs the host, and it says so
 
-#: The names a simulation-only module must not so much as mention (E14, D1).
-#: `Keypair` is the sdk's signer, `sign` its verb, and `send_transaction` /
-#: `submit` the two spellings of submission across `SorobanServer` and the
-#: sdk's server façades.
-FORBIDDEN_SYMBOLS = frozenset({"Keypair", "sign", "send_transaction", "submit"})
+#: Two exact identifiers a simulation-only module must not so much as mention
+#: (E14, D1): `Keypair` is the sdk's signer and `send_transaction` is
+#: `SorobanServer`'s submission call.
+FORBIDDEN_EXACT = frozenset({"Keypair", "send_transaction"})
+
+#: ...and two PREFIXES, because the sdk spells both verbs several ways and an
+#: exact list is a list of the ones someone thought of. `Server` submits with
+#: `submit_transaction` and `submit_transaction_async`, neither of which is
+#: `submit`; a transaction signs with `sign`, `sign_hashx` and
+#: `sign_extra_signers_payload`. Any identifier STARTING with one of these
+#: fails the fence, so the next spelling the sdk grows is caught too.
+FORBIDDEN_PREFIXES = ("sign", "submit")
+
+
+def _forbidden(identifiers: set[str]) -> set[str]:
+    """The members of `identifiers` this fence refuses.
+
+    Prefix matching, deliberately over-broad: a tier-3 module has no business
+    spelling any word that starts with `sign` or `submit`, so the fence does
+    not have to keep up with the sdk's method names.
+    """
+    return {
+        name
+        for name in identifiers
+        if name in FORBIDDEN_EXACT or name.startswith(FORBIDDEN_PREFIXES)
+    }
 
 
 def _identifiers(tree: ast.AST) -> set[str]:
@@ -77,6 +105,12 @@ def _identifiers(tree: ast.AST) -> set[str]:
     is caught without the test having to know what `server` is -- which is the
     point: the fence is "this text cannot submit anything", and a name that is
     never spelled cannot be called.
+
+    **The known limit**: an attribute name BUILT AT RUNTIME is invisible here.
+    `getattr(server, "send_" + "transaction")` spells neither forbidden name in
+    the tree, and no AST walk can catch it. This fence is a guard against the
+    module quietly growing a submission path, not a proof that no such path can
+    be expressed in Python.
     """
     seen: set[str] = set()
     for node in ast.walk(tree):
@@ -100,7 +134,27 @@ def test_the_testnet_module_has_no_signing_or_submission_path() -> None:
     chain and writes nothing to it. A recorded simulation needs no key, so the
     module holds none, and this test is what keeps it that way."""
     source = Path(testnet.__file__).read_text(encoding="utf-8")
-    assert FORBIDDEN_SYMBOLS & _identifiers(ast.parse(source)) == frozenset()
+    assert _forbidden(_identifiers(ast.parse(source))) == set()
+
+
+def test_the_no_signing_fence_rejects_the_spellings_it_claims_to() -> None:
+    """The fence proven to have TEETH, not merely to be quiet.
+
+    A fence over a module that was written not to trip it passes whether or not
+    it works, so the two spellings the exact-match version let through are put
+    through the same predicate here and must be refused.
+    """
+    assert _forbidden(_identifiers(ast.parse("server.submit_transaction(tx)"))) == {
+        "submit_transaction"
+    }
+    assert _forbidden(_identifiers(ast.parse("tx.sign_hashx(x)"))) == {"sign_hashx"}
+    assert _forbidden(_identifiers(ast.parse("from stellar_sdk import Keypair"))) == {"Keypair"}
+    assert _forbidden(_identifiers(ast.parse("server.send_transaction(tx)"))) == {
+        "send_transaction"
+    }
+    # ...and the real module is clean by the SAME predicate, not a laxer one.
+    source = Path(testnet.__file__).read_text(encoding="utf-8")
+    assert _forbidden(_identifiers(ast.parse(source))) == set()
 
 
 def test_the_default_source_is_a_valid_public_key() -> None:
@@ -128,6 +182,20 @@ def test_this_trees_shapes_build_differs_from_the_deployed_bytes_until_the_next_
     M1-end deployment (G): flip the assertion then and retire this docstring."""
     built = build_file(EXAMPLE_SHAPES).wasm
     assert hashlib.sha256(built).hexdigest() != DEPLOYED_SHA256
+
+
+def test_every_committed_fixture_round_trips_through_the_recorded_json(tmp_path: Path) -> None:
+    """`Fixture`'s fields, `_as_json`'s keys and `load_fixture`'s readers are
+    three spellings of one field set, and nothing but this test stops them
+    drifting apart. Re-serializing also reproduces the committed file BYTE FOR
+    BYTE, which pins the recorded format itself."""
+    assert FIXTURES, "no fixtures recorded"
+    for fixture in FIXTURES:
+        rewritten = _as_json(fixture)
+        assert rewritten == (FIXTURE_DIR / f"{fixture.method}.json").read_text(encoding="utf-8")
+        path = tmp_path / f"{fixture.method}.json"
+        path.write_text(rewritten, encoding="utf-8")
+        assert load_fixture(path) == fixture
 
 
 def _loose(b64: str) -> Any:
@@ -234,12 +302,18 @@ def test_the_real_host_and_tier_1_agree_with_testnet(fixture: Fixture) -> None:
         for arg, ty in zip(fixture.args_xdr, _param_types(shapes.Drawing, fixture.method))
     ]
 
+    # ONE seeding sequence, replayed on both legs: the instance sub-map's pairs
+    # go to the instance bucket, every other entry to the bucket the chain had
+    # it in. Two loops over the same list would be two chances to seed the legs
+    # differently, which is the one thing a differential must not do.
+    seeding: list[tuple[Durability, str, str]] = [
+        ("instance", key_xdr, value_xdr) for key_xdr, value_xdr in fixture.instance
+    ] + [(entry.durability, entry.key_xdr, entry.value_xdr) for entry in fixture.seeded]
+
     real_env = RealEnv(sequence=fixture.ledger)
     contract = real_env.deploy_wasm(DEPLOYED.read_bytes())
-    for key_xdr, value_xdr in fixture.instance:
-        contract.storage("instance").set(_loose(key_xdr), _loose(value_xdr))
-    for entry in fixture.seeded:
-        contract.storage(entry.durability).set(_loose(entry.key_xdr), _loose(entry.value_xdr))
+    for durability, key_xdr, value_xdr in seeding:
+        contract.storage(durability).set(_loose(key_xdr), _loose(value_xdr))
     # `invoke_raw` + an explicit decode, not `invoke`: `deploy_wasm` has no
     # class behind it, so nothing there could know the declared return type.
     real_answer = _outcome(
@@ -251,10 +325,8 @@ def test_the_real_host_and_tier_1_agree_with_testnet(fixture: Fixture) -> None:
     env = Env(sequence=fixture.ledger)
     instance: Any = deploy(shapes.Drawing, env)
     with env.frame():
-        for key_xdr, value_xdr in fixture.instance:
-            env.storage().instance().set(_loose(key_xdr), _loose(value_xdr))
-        for entry in fixture.seeded:
-            _tier1_bucket(env, entry.durability).set(_loose(entry.key_xdr), _loose(entry.value_xdr))
+        for durability, key_xdr, value_xdr in seeding:
+            _tier1_bucket(env, durability).set(_loose(key_xdr), _loose(value_xdr))
         tier1_answer = _outcome(lambda: getattr(instance, fixture.method)(env, *args))
 
     testnet_answer = _testnet_outcome(fixture, return_ty)
