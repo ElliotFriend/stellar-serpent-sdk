@@ -43,7 +43,7 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   `.superpowers/sdd/2026-08-28-m1e-env-runtime/final-review-attention.md`
   (kept, like M1-C/D's) — F/G/M2 items plus the parked triage.
 - **M1-E2 (tagged unions + int enums): merged to main 2026-09-02**
-  (fast-forward, tip e827a1e; 31 commits). The value layer
+  (fast-forward; 31 commits, all re-signed 2026-09-02, tip 57668f9). The value layer
   (`ContractUnion`/`ContractEnum`, `variant()`/`enumvalue()`), the
   `@contractunion`/`@contractenum` declaration layer, UDT union/enum spec
   entries in the XDR kind order, `MakeUnion` + two `Ty` tags in the
