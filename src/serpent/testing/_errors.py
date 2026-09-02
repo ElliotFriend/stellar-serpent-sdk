@@ -150,6 +150,13 @@ def raise_from_failure(
     subclass: they are CALLER bugs -- a malformed strkey, an unrepresentable
     argument -- and never an answer the host gave about a contract, so they must
     not be catchable as one.
+
+    Every kind is matched EXPLICITLY and an unrecognised one raises a loud
+    `RuntimeError` naming it. The tempting default -- fold the leftovers into
+    the `ValueError` arm -- would mean that the day the Rust layer grows a sixth
+    kind, this façade silently reports it as a caller bug: a new host answer,
+    mislabelled as the test's own mistake, is the one failure mode that would
+    not show up as a test failure anywhere.
     """
     kind, error_type, code, message = (
         str(exc.args[0]),
@@ -166,7 +173,13 @@ def raise_from_failure(
         raise RealHostError(error_type, code, message, underlying) from exc
     if kind == "panic":
         raise HostPanic(error_type, code, message, underlying) from exc
-    raise ValueError(f"serpent_host rejected the call ({kind}): {message}") from exc
+    if kind in ("invalid_input", "conversion"):
+        raise ValueError(f"serpent_host rejected the call ({kind}): {message}") from exc
+    raise RuntimeError(
+        f"serpent_host reported an unknown failure kind {kind!r} ({message}). "
+        "host/serpent_host.pyi documents the five kinds serpent.testing maps; "
+        "a sixth means the Rust layer and this façade have drifted."
+    ) from exc
 
 
 def _innermost_error(diagnostics: Sequence[DiagnosticEvent]) -> tuple[str, str] | None:

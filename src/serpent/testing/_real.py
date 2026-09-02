@@ -164,7 +164,23 @@ class RealEnv:
         return self._raw.max_ttl()
 
     def advance(self, n: int) -> None:
-        """Move the ledger forward `n` sequences -- tier 1's verb, verbatim."""
+        """Move the ledger forward `n` sequences -- tier 1's verb, verbatim.
+
+        Tier 1's PRECONDITION too, with tier 1's wording (`serpent.env.Env.advance`):
+        a ledger sequence does not go backwards, and a zero advance is a test-
+        authoring mistake worth naming rather than absorbing. Sharing the
+        precondition is not cosmetic -- a differential test that calls
+        `advance(n)` on both legs from one table row must get one answer for a
+        bad `n`, or the table has a row whose two legs disagree about something
+        that is not a host fact at all.
+
+        `set_ledger(sequence=...)` is the way to move the ledger absolutely,
+        including backwards; this verb is the monotonic one.
+        """
+        if not isinstance(n, int) or isinstance(n, bool):
+            raise TypeError(f"advance() takes an int, not {type(n).__name__}")
+        if n <= 0:
+            raise ValueError(f"advance() takes a positive number of ledgers, not {n}")
         self._sequence += n
         self._raw.set_ledger(sequence_number=self._sequence)
 
@@ -351,9 +367,19 @@ class RealContract:
         """
         published: list[PublishedEvent] = []
         for raw in self.env._raw.events():
-            body = ContractEvent.from_xdr_bytes(raw).body.v0
-            if body is None:  # a v1 event body: nothing this tier can read
-                continue
+            event = ContractEvent.from_xdr_bytes(raw)
+            body = event.body.v0
+            if body is None:
+                # `body.v0` is Optional in the generated XDR because the union
+                # is versioned. RAISE rather than skip: silently dropping an
+                # event would make `events()` answer a SHORTER tuple than the
+                # host published, and a differential comparing that tuple would
+                # report the contract's behaviour as the disagreement instead of
+                # this reader's blind spot.
+                raise NotImplementedError(
+                    f"the host published a contract event with body version "
+                    f"{event.body.v!r}; serpent.testing reads v0 only"
+                )
             topics = tuple(_loose(topic) for topic in body.topics)
             published.append((topics, _loose(body.data)))
         return tuple(published)

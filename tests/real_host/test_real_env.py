@@ -11,8 +11,10 @@ import pytest
 
 from serpent import U32, Address, Symbol
 from serpent._host._codegen import PINNED_TAG
+from serpent.emitter import build_file
 from serpent.testing import (
     DEFAULT_PROTOCOL,
+    FrozenTableDisagreement,
     HostPanic,
     RealContractError,
     RealEnv,
@@ -26,6 +28,7 @@ from serpent.testing._marker import (
     unavailable_reason,
 )
 from serpent.testing._real import DEFAULT_MAX_ENTRY_TTL
+from serpent.testing._scval import from_xdr
 from tests.unit.test_emitter_end_to_end import EXAMPLE_COUNTER, EXAMPLE_ERRORS
 from tests.unit.test_examples import load_example
 
@@ -65,50 +68,89 @@ def test_the_facade_agrees_with_the_markers_availability_answer() -> None:
             RealEnv()
 
 
-def test_a_rust_less_checkout_skips_loudly_and_a_required_run_fails(tmp_path: Path) -> None:
-    """U2 both ways, in a subprocess that HIDES serpent_host via a sitecustomize shim.
+def _rust_less(tmp_path: Path) -> dict[str, str]:
+    """An environment in which `serpent_host` is not importable.
 
     `sys.modules["serpent_host"] = None` is what a Rust-less checkout looks like
     from inside Python: `importlib.util.find_spec` answers `None` and `import
-    serpent_host` raises `ModuleNotFoundError`. The selection is one real-host
-    test that COLLECTS without the extension, which is the whole point of the
-    lazy import in `_real._require_host`.
+    serpent_host` raises `ModuleNotFoundError`. A `sitecustomize` shim on
+    `PYTHONPATH` is how that reaches a SUBPROCESS, which is the only place the
+    policy can be observed end to end -- the policy runs at session start, and
+    this session already has the extension.
     """
     shim = tmp_path / "sitecustomize.py"
     shim.write_text("import sys; sys.modules['serpent_host'] = None\n", encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": str(tmp_path)}
     env.pop(REQUIRE_ENV_VAR, None)
-    probe = ["-q", "-p", "no:cacheprovider", "tests/real_host/test_real_env.py", "-k", "counter"]
-    root = Path(__file__).resolve().parents[2]
-    skipped = subprocess.run(
-        [sys.executable, "-m", "pytest", *probe, "-rs"],
+    return env
+
+
+def _pytest_run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *args],
         capture_output=True,
         text=True,
         env=env,
-        cwd=root,
-        check=False,
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,  # a non-zero exit is the POINT of the required-mode runs
     )
+
+
+def test_a_rust_less_checkout_skips_loudly_and_a_required_run_fails(tmp_path: Path) -> None:
+    """U2 both ways. The selection is one real-host test that COLLECTS without
+    the extension, which is the whole point of the lazy import in
+    `_real._require_host`."""
+    env = _rust_less(tmp_path)
+    target = ["tests/real_host/test_real_env.py", "-k", "counter"]
+    skipped = _pytest_run(env, *target, "-rs")
     assert skipped.returncode == 0, skipped.stdout
     assert "skipped" in skipped.stdout, skipped.stdout
     assert "maturin develop" in skipped.stdout, "the skip reason must carry the rebuild command"
-    required = subprocess.run(
-        [sys.executable, "-m", "pytest", *probe, "-rEf"],
-        capture_output=True,
-        text=True,
-        env={**env, REQUIRE_ENV_VAR: "1"},
-        cwd=root,
-        check=False,  # a non-zero exit is the POINT of the second run
-    )
-    # MEASURED on pytest 8 (the brief predicted a FAILED line): `pytest.fail`
-    # raised from `pytest_runtest_setup` lands in the SETUP phase, which pytest
-    # reports as an ERROR, not a FAILED. That is louder, not weaker, and the
-    # property review B4 actually asked for is the one asserted here -- a
-    # non-zero exit and an outcome that is neither a pass nor an xfail, which is
-    # exactly what `xfail(run=False, strict=True)` could not give.
+
+    required = _pytest_run({**env, REQUIRE_ENV_VAR: "1"}, *target)
     assert required.returncode != 0, required.stdout
-    assert " error" in required.stdout, required.stdout
-    assert "xfail" not in required.stdout, required.stdout
     assert REQUIRE_ENV_VAR in required.stdout, "the reason must name the switch that caused it"
+    assert "maturin develop" in required.stdout, required.stdout
+    # Neither a pass nor an xfail, which is the property review B4 asked for:
+    # `xfail(run=False, strict=True)` was probed to exit 0, so it could not be
+    # the mechanism.
+    assert "xfail" not in required.stdout, required.stdout
+    assert "passed" not in required.stdout, required.stdout
+
+
+def test_a_module_level_importorskip_cannot_hide_from_the_required_mode(tmp_path: Path) -> None:
+    """The vacuity hole that made the required-mode guard session-level.
+
+    `tests/real_host/test_serpent_host_module.py` (Task 1's, not this task's)
+    calls `pytest.importorskip("serpent_host")` at MODULE scope, so on a
+    Rust-less checkout it contributes zero items -- the skip happens during
+    collection, before any item exists for an item-level hook to mark. Measured
+    against the first version of `tests/conftest.py`: `1 skipped`, exit code 5,
+    a completely vacuous pass under `SERPENT_REQUIRE_REAL_HOST=1`. The guard
+    now runs at `pytest_sessionstart`, so there is nothing left to hide behind.
+    """
+    env = _rust_less(tmp_path)
+    target = "tests/real_host/test_serpent_host_module.py"
+
+    quiet = _pytest_run(env, target, "-rs")
+    assert "skipped" in quiet.stdout, "the unrequired mode still skips the module"
+    # MEASURED: exit code 5, pytest's NO_TESTS_COLLECTED, not 0 -- selecting
+    # ONLY this file on a Rust-less checkout leaves nothing to run, because the
+    # module skipped during collection. That is pytest's own answer to an empty
+    # selection and has nothing to do with this policy; a whole-suite run on the
+    # same checkout collects thousands of other items and exits 0. What the
+    # unrequired mode must not do is manufacture a failure, which is what the
+    # last two assertions pin.
+    assert quiet.returncode in (0, 5), quiet.stdout
+    assert "failed" not in quiet.stdout, quiet.stdout
+    assert "error" not in quiet.stdout, quiet.stdout
+
+    required = _pytest_run({**env, REQUIRE_ENV_VAR: "1"}, target)
+    assert required.returncode != 0, (
+        "a module-level importorskip hid the whole file from the required mode"
+    )
+    assert REQUIRE_ENV_VAR in required.stdout, required.stdout
+    assert "maturin develop" in required.stdout, required.stdout
 
 
 def test_an_account_authorizer_is_refused_at_construction() -> None:
@@ -259,3 +301,176 @@ def test_the_allow_set_refuses_an_address_not_in_it() -> None:
     assert not isinstance(info.value, RealContractError)
     assert info.value.underlying is not None and info.value.underlying[0] == "Auth"
     assert c.auths() == ()
+
+
+# --- the surface later tasks import, pinned here rather than on first use ---------
+
+
+def test_frozen_table_disagreement_is_an_assertion_with_its_message() -> None:
+    """A producer contract for Tasks 4/5, so it is pinned where it is DEFINED.
+
+    An `AssertionError` subclass on purpose: a frozen-table disagreement is a
+    test failure, and pytest reports it the way it reports every other one. The
+    message is the whole payload -- it has to name the row, both answers, and
+    that a controller decision is required (E10) -- so what this asserts is that
+    nothing in the subclassing eats it.
+    """
+    exc = FrozenTableDisagreement(
+        "val_cmp row 12: tier 1 says -1, the real host says 1 -- controller decision required"
+    )
+    assert isinstance(exc, AssertionError)
+    assert "controller decision required" in str(exc)
+    with pytest.raises(AssertionError, match="controller decision required"):
+        raise exc
+
+
+@pytestmark_real
+def test_resources_is_none_before_the_first_invoke_and_a_full_dict_after() -> None:
+    """m14: the sdk PANICS for `resources()` before an invocation, so `None` is
+    a mapped answer rather than a natural one and has to be pinned."""
+    env = RealEnv()
+    c = env.deploy_source(EXAMPLE_COUNTER)
+    assert c.resources() is None
+    c.invoke("increment", U32(1))
+    resources = c.resources()
+    assert resources is not None
+    assert resources["write_entries"] >= 1  # the counter writes its slot
+    assert set(resources) == {
+        "instructions",
+        "mem_bytes",
+        "disk_read_entries",
+        "memory_read_entries",
+        "write_entries",
+        "disk_read_bytes",
+        "write_bytes",
+        "contract_events_size_bytes",
+        "persistent_rent_ledger_bytes",
+        "persistent_entry_rent_bumps",
+        "temporary_rent_ledger_bytes",
+        "temporary_entry_rent_bumps",
+    }
+    cpu, mem = c.budget()
+    assert cpu > 0 and mem > 0
+
+
+@pytestmark_real
+def test_events_decode_to_the_tier_one_published_event_shape() -> None:
+    """`PublishedEvent` is `(topics, data)` with both sides read loosely, which
+    is the same shape tier 1's `published_events` records -- that is what makes
+    the two comparable at all (Task 5).
+
+    `log_declared` publishes `Logged(who, amount)`, declared with `who` as a
+    topic and the amount as bare single-value data
+    (`tests/fixtures/env_surface.py`).
+    """
+    from tests.semantics.env_scenarios import ENV_SURFACE
+
+    who = Address(SHAPES_ID)
+    c = RealEnv().deploy_source(ENV_SURFACE)
+    assert c.events() == ()
+    c.invoke("log_declared", who, U32(7))
+    assert c.events() == (((Symbol("logged"), who), U32(7)),)
+
+
+@pytestmark_real
+def test_deploy_of_a_path_loaded_class_names_deploy_source() -> None:
+    """B3, from the failing side: a class whose module is not in `sys.modules`
+    cannot be traced back to its file, so `deploy` refuses instead of guessing
+    and points at the form that works."""
+    module = load_example(EXAMPLE_COUNTER)
+    assert sys.modules.get(module.__name__) is None, "load_example must not register the module"
+    with pytest.raises(ValueError, match="deploy_source"):
+        RealEnv().deploy(module.Counter)
+
+
+@pytestmark_real
+def test_deploy_wasm_and_invoke_raw_hand_back_undecoded_xdr() -> None:
+    """The Task-4 path: pre-built wasm, no class, and the result as BYTES.
+
+    `invoke_raw` is for a test that owns the decode, so what it must not do is
+    decode; the assertion is therefore on the XDR, with `from_xdr` applied by
+    the test itself. `deploy_wasm`'s own `invoke` falls back to `decode_loose`,
+    which for a `U32` answer is exact.
+    """
+    env = RealEnv()
+    c = env.deploy_wasm(build_file(EXAMPLE_COUNTER).wasm)
+    assert c.cls is None
+    assert c.invoke("increment", U32(4)) == U32(4)
+    raw = env.invoke_raw(c.address.strkey, "increment", [U32(3)])
+    assert isinstance(raw, bytes)
+    assert from_xdr(raw, U32) == U32(7)
+
+
+@pytestmark_real
+def test_set_ledger_moves_the_sequence_the_contract_reads() -> None:
+    """`advance`'s absolute counterpart, observed through the contract rather
+    than through the façade's own bookkeeping."""
+    from tests.semantics.env_scenarios import ENV_SURFACE
+
+    env = RealEnv()
+    c = env.deploy_source(ENV_SURFACE)
+    env.set_ledger(sequence=2_000_000)
+    assert env.sequence == 2_000_000
+    assert c.invoke("ledger_seq") == U32(2_000_000)
+
+
+@pytestmark_real
+def test_advance_refuses_a_non_positive_or_non_int_step() -> None:
+    """The precondition is tier 1's, with tier 1's wording (`Env.advance`): one
+    differential row must not get two different answers for a bad `n`."""
+    env = RealEnv()
+    with pytest.raises(ValueError, match="positive number of ledgers"):
+        env.advance(0)
+    with pytest.raises(ValueError, match="positive number of ledgers"):
+        env.advance(-1)
+    with pytest.raises(TypeError, match="takes an int"):
+        env.advance(True)
+    assert env.sequence == 1_000_000, "a refused advance must not have moved anything"
+
+
+@pytestmark_real
+def test_storage_set_is_visible_to_get_and_to_the_contract() -> None:
+    """Tier-3 seeding (Task 9): a write from outside puts the ledger in a state
+    no sequence of invocations reaches, and the contract resumes from it."""
+    env = RealEnv()
+    c = env.deploy_source(EXAMPLE_COUNTER)
+    slot = c.storage("persistent")
+    assert slot.has(Symbol("TOTAL")) is False
+    slot.set(Symbol("TOTAL"), U32(40))
+    assert slot.has(Symbol("TOTAL")) is True
+    assert slot.get(Symbol("TOTAL"), U32) == U32(40)
+    assert c.invoke("increment", U32(2)) == U32(42)
+
+
+@pytestmark_real
+def test_an_invalid_method_name_is_a_value_error_not_a_host_error() -> None:
+    """The `invalid_input` arm: the Rust layer rejected the call before the host
+    saw it, so this is the CALLER's bug and must not be catchable as an answer
+    the host gave about a contract (P4)."""
+    c = RealEnv().deploy_source(EXAMPLE_COUNTER)
+    with pytest.raises(ValueError, match="invalid_input") as info:
+        c.invoke("has-dash")
+    assert not isinstance(info.value, RealHostError)
+
+
+@pytestmark_real
+def test_a_module_with_two_contract_classes_is_refused(tmp_path: Path) -> None:
+    """The discovery rule's failing side: a serpent module declares exactly one
+    contract, so two is a ValueError before anything is compiled."""
+    two = tmp_path / "two_contracts.py"
+    two.write_text(
+        "from serpent import U32, Env, contract\n"
+        "\n"
+        "@contract\n"
+        "class First:\n"
+        "    def f(self, env: Env) -> U32:\n"
+        "        return U32(1)\n"
+        "\n"
+        "@contract\n"
+        "class Second:\n"
+        "    def g(self, env: Env) -> U32:\n"
+        "        return U32(2)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="2 @contract classes"):
+        RealEnv().deploy_source(two)
