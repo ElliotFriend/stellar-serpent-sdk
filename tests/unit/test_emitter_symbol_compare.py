@@ -116,8 +116,9 @@ import random
 import pytest
 
 from serpent import val
+from serpent.compiler.diagnostics import CompileError
 from serpent.compiler.frontend import compile_module
-from serpent.emitter import BuildResult, build_wasm
+from serpent.emitter import BuildResult, build_wasm, lower
 from serpent.emitter.printer import disassemble
 from serpent.types import Symbol
 from tests.harness import engine
@@ -198,6 +199,27 @@ class StrictObjCmpHost(FullHost):
         return super().obj_cmp(left, right)
 
 
+class RoutingProbeHost(StrictObjCmpHost):
+    """`StrictObjCmpHost`, plus an answer for `object` against `Void`.
+
+    Needed for one pin only: `Some(SymbolObject)` against `None` at type
+    `Symbol | None`. The real host answers that from `ScValType` rank (`Void`
+    ranks below `Symbol`, so the object is Greater), but `tests/harness`'s
+    `ObjectStore.compare` decodes both words to tier-1 values first and there
+    is no tier-1 chain value for `Void` -- `objects.py` raises on it by design
+    (A9: extending the supported set means extending the differential). The
+    claim being pinned is only that the guard ROUTED to the host, so this
+    answers rather than models, and it still refuses two non-object words.
+    """
+
+    def obj_cmp(self, left: int, right: int) -> int:
+        an_object = val.is_object(left) or val.is_object(right)
+        if an_object and val.VOID_VAL in (left, right):
+            self._log("obj_cmp", left, right)
+            return 1
+        return super().obj_cmp(left, right)
+
+
 def _strict(built: BuildResult) -> tuple[StrictObjCmpHost, engine.MiniHost]:
     """One instance of the contract, linked against the strict host."""
     host = StrictObjCmpHost()
@@ -259,6 +281,19 @@ def _guard_index(body: list[str]) -> int:
     ]
     assert len(hits) == 1, f"expected exactly one object-tag guard, found {len(hits)}"
     return hits[0]
+
+
+def test_the_guards_object_floor_is_the_one_val_is_object_uses() -> None:
+    """`lower._FIRST_OBJECT_TAG` is the smallest tag `val.is_object` accepts.
+
+    The guard tests only the LOWER bound (`>= 64`) where `val.is_object` is
+    `63 < tag < 80`, so the constant is the one place the two spellings have to
+    meet. Asserted rather than commented, because a protocol that moved the
+    object range would otherwise leave the emitter decoding an object handle as
+    a packed symbol body.
+    """
+    assert val.is_object(lower._FIRST_OBJECT_TAG)
+    assert not val.is_object(lower._FIRST_OBJECT_TAG - 1)
 
 
 def _part_func_name(wat: str) -> str:
@@ -586,4 +621,182 @@ def test_a_long_symbol_is_unequal_to_a_short_one_through_the_host(built: BuildRe
     long = host.val_word(Symbol("abcdefghijk"))
     assert val.tag_of(long) == val.TAG_SYMBOL_OBJECT, "11 characters has no small form"
     assert mini.invoke("eq", small, long) == val.FALSE_VAL
+    assert host.count("obj_cmp") == 1
+
+
+def test_two_object_symbols_go_to_the_host_and_agree_with_tier_one(
+    built: BuildResult,
+) -> None:
+    """Object/object: `obj_cmp` IS called, and the answer is tier 1's.
+
+    The third leg of the guard's `then` arm, alongside the mixed pins above --
+    two symbols of 11 and 12 characters, neither of which has a small form, so
+    the OR-ed tag byte is 74 and the guard sends both to the host untouched.
+    Ordering as well as equality, because the orderings are the operators that
+    could have been diverted to `symsmall_cmp` by a wrong guard and would then
+    have decoded two object HANDLES as packed bodies.
+    """
+    host = StrictObjCmpHost()
+    mini = engine.MiniHost(built.wasm, imports=host.bindings())
+    host.attach(mini)
+    left, right = Symbol("abcdefghijk"), Symbol("abcdefghijkl")
+    a, b = host.val_word(left), host.val_word(right)
+    assert val.tag_of(a) == val.tag_of(b) == val.TAG_SYMBOL_OBJECT
+    assert mini.invoke("eq", a, b) == val.pack_bool(left == right)
+    assert mini.invoke("ne", a, b) == val.pack_bool(left != right)
+    assert mini.invoke("lt", a, b) == val.pack_bool(left < right)
+    assert mini.invoke("gt", a, b) == val.pack_bool(left > right)
+    assert host.count("obj_cmp") == 4, "every operator went to the host"
+    # Not vacuous: tier 1 really does order these, and the shorter is Less.
+    assert left < right
+
+
+# ===========================================================================
+# `Option`: the same bug, the same guard (fix-round-1 controller ruling)
+# ===========================================================================
+
+#: `Option` is `via_obj_cmp` for a structural reason of its own -- one side can
+#: be the immediate `Void` while the other is an object handle -- so the
+#: shipped emitter sent `U32(1) == U32(2)` at type `U32 | None` into `obj_cmp`
+#: with two SMALL words, exactly the refusal review B1 is about. The controller
+#: ruled that `Option` equality takes the identical guard. Only `==`/`!=` are
+#: written here because the four orderings are a frontend reject (`SPT3005`),
+#: which `test_an_option_ordering_is_a_frontend_reject` pins.
+_OPTION_SOURCE = '''\
+"""Option comparison, one export per equality operator."""
+
+from serpent import Bool, Env, Symbol, U32, contract
+
+
+@contract
+class Compare:
+    """Equality over `U32 | None`, plus one `Symbol | None` for the object arm."""
+
+    def eq(self, env: Env, a: U32 | None, b: U32 | None) -> Bool:
+        return a == b
+
+    def ne(self, env: Env, a: U32 | None, b: U32 | None) -> Bool:
+        return a != b
+
+    def eq_sym(self, env: Env, a: Symbol | None, b: Symbol | None) -> Bool:
+        return a == b
+'''
+
+
+@pytest.fixture(scope="module")
+def option_built() -> BuildResult:
+    return build_wasm(compile_module(_OPTION_SOURCE, "contracts/option_compare.py"))
+
+
+@pytest.mark.parametrize("method", ("eq", "ne", "eq_sym"))
+def test_an_option_equality_takes_the_same_object_guard(
+    option_built: BuildResult, method: str
+) -> None:
+    """Structurally the SAME six-instruction guard, the same two arms.
+
+    Not a parallel implementation: `_lower_guarded_compare` is one function and
+    `_takes_the_object_guard` is what admits `Option` to it, so this asserts
+    the shared shape rather than a second copy of it.
+    """
+    body = _func_body(disassemble(option_built.wasm), method)
+    assert body.count("call $obj_cmp") == 1
+    guard = _guard_index(body)
+    call = body.index("call $obj_cmp")
+    else_ = body.index("else", guard)
+    assert guard < call < else_
+    end = body.index("end", else_)
+    assert [line for line in body[else_ + 1 : end] if not line.startswith("local.get")] == [
+        "i64.ne",
+        "i64.extend_i32_u",
+    ], f"{method}: the non-object path is a word compare"
+
+
+def test_an_option_module_links_no_runtime_part(option_built: BuildResult) -> None:
+    """`Option` never orders, so it never reaches `symsmall_cmp` -- the part is
+    linked by an ORDERING, and `Option` has none."""
+    assert option_built.runtime_parts_linked == frozenset()
+
+
+@pytest.mark.parametrize("op", ("<", "<=", ">", ">="))
+def test_an_option_ordering_is_a_frontend_reject(op: str) -> None:
+    """The premise the ruling rests on: only `==`/`!=` reach the emitter.
+
+    So the guarded route needs no `Option` ordering arm, and
+    `_lower_guarded_compare` spells the absent case as a refusal rather than
+    letting it fall into the `Symbol` one.
+    """
+    source = (
+        "from serpent import Bool, Env, U32, contract\n"
+        "\n"
+        "\n"
+        "@contract\n"
+        "class C:\n"
+        "    def go(self, env: Env, a: U32 | None, b: U32 | None) -> Bool:\n"
+        f"        return a {op} b\n"
+    )
+    with pytest.raises(CompileError) as info:
+        compile_module(source, "contracts/reject.py")
+    assert [d.code for d in info.value.diagnostics] == ["SPT3005"]
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "equal"),
+    [
+        (val.pack_u32val(1), val.pack_u32val(1), True),
+        (val.pack_u32val(1), val.pack_u32val(2), False),
+        (val.pack_u32val(1), val.VOID_VAL, False),
+        (val.VOID_VAL, val.VOID_VAL, True),
+    ],
+)
+def test_option_equality_never_reaches_the_host(
+    option_built: BuildResult, left: int, right: int, equal: bool
+) -> None:
+    """The controller's four behavioural pins, under the strict host.
+
+    `U32Val` (tag 4) and `Void` (tag 2) are both non-object, so every pair here
+    is one the real host would refuse. `(None, None)` is the payload fast path
+    (`VOID_VAL == VOID_VAL`) and `(U32(1), None)` is the tag-differs case,
+    which `Compare<Val>` also answers without the host.
+    """
+    host, mini = _strict(option_built)
+    assert _call(host, mini, "eq", left, right) is equal
+    assert _call(host, mini, "ne", left, right) is not equal
+
+
+def test_a_mixed_option_pair_still_goes_to_the_host(option_built: BuildResult) -> None:
+    """The controller's mixed pin: an 11-character `Symbol` (no small form)
+    against `None` at type `Symbol | None` ROUTES to `obj_cmp`.
+
+    One side is an object, so the guard hands the pair to the host, which is
+    the only place a `Some(object)`-versus-`None` comparison can be decided.
+    `RoutingProbeHost` says why the answer here is supplied rather than
+    modelled; `1` (Greater) is the host's own ScValType-rank answer, and the
+    contract turns it into "unequal", which is what tier 1 says too.
+    """
+    host = RoutingProbeHost()
+    mini = engine.MiniHost(option_built.wasm, imports=host.bindings())
+    host.attach(mini)
+    wide = host.val_word(Symbol("abcdefghijk"))
+    assert val.is_object(wide)
+    assert mini.invoke("eq_sym", wide, val.VOID_VAL) == val.FALSE_VAL
+    assert host.count("obj_cmp") == 1, "the mixed pair is the host's call"
+
+
+def test_a_some_object_versus_some_small_option_pair_goes_to_the_host(
+    option_built: BuildResult,
+) -> None:
+    """The mixed `Option` case the mini host can model END TO END.
+
+    `Some(Symbol("abcdefghijk"))` against `Some(Symbol("ab"))`: one object, one
+    small, both decodable, so `FullHost.obj_cmp` answers for real and the pin
+    covers the routing AND the answer. Together with the pin above -- which
+    covers the `None` side but has to supply the answer -- the object arm of
+    the `Option` route is pinned without either test having to pretend.
+    """
+    host, mini = _strict(option_built)
+    wide = host.val_word(Symbol("abcdefghijk"))
+    small = val.symbol_small("ab")
+    assert val.is_object(wide) and not val.is_object(small)
+    word = mini.invoke("eq_sym", wide, small)
+    assert word == val.pack_bool(Symbol("abcdefghijk") == Symbol("ab")) == val.FALSE_VAL
     assert host.count("obj_cmp") == 1

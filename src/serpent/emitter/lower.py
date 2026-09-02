@@ -834,13 +834,16 @@ def _lower_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
     Four routes, and `Compare.via_obj_cmp` -- decided by the frontend (R4,
     F.1.2/T5) and never re-derived here -- picks the first two:
 
-    * **`Symbol`**, which is `via_obj_cmp` but must not call `obj_cmp`
-      unconditionally: the host refuses that call when both operands are small
-      (M1-F review B1). `_lower_symbol_compare` has the whole story.
-    * **`obj_cmp`** for every other HOST_OBJECT-repr type. Both sides go in as
-      `Val` WORDS (that is what the host compares), the result is a raw signed
-      -1/0/1 (`val_typed_ret` is `False`, B2), and the operator becomes a
-      SIGNED comparison of that against zero.
+    * **the object GUARD**, for the two `via_obj_cmp` types whose operands can
+      arrive as non-object `Val`s -- `Symbol` and `Option` -- because the host
+      refuses `obj_cmp` when both of them do (M1-F review B1).
+      `_takes_the_object_guard` is the predicate and `_lower_guarded_compare`
+      has the whole story.
+    * **`obj_cmp`** for every other HOST_OBJECT-repr type, whose operands are
+      ALWAYS objects. Both sides go in as `Val` WORDS (that is what the host
+      compares), the result is a raw signed -1/0/1 (`val_typed_ret` is
+      `False`, B2), and the operator becomes a SIGNED comparison of that
+      against zero.
     * **`{u,i}128_cmp`** for the 128-bit widths, which have no single-word
       form; same -1/0/1 shape, same signed test against zero.
     * a **direct relop** otherwise -- and both sides are unboxed FIRST
@@ -848,8 +851,8 @@ def _lower_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
       (F.1.11), never off the representation.
     """
     if e.via_obj_cmp:
-        if e.lhs.ty.tag is TyTag.SYMBOL:
-            _lower_symbol_compare(fn, ctx, e)
+        if _takes_the_object_guard(e):
+            _lower_guarded_compare(fn, ctx, e)
             return
         lower_expr(fn, ctx, e.lhs)
         lower_expr(fn, ctx, e.rhs)
@@ -883,12 +886,39 @@ def _lower_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
 #: here as if it were a symbol.
 _FIRST_OBJECT_TAG = 64
 
-#: The two operators whose small/small answer is a WORD compare, no decode.
+#: The two operators whose non-object answer is a WORD compare, no decode.
 _EQUALITY_OPS = frozenset({CompareOp.EQ, CompareOp.NE})
 
 
-def _lower_symbol_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
-    """A `Symbol` comparison: `obj_cmp` only when an operand IS an object.
+def _takes_the_object_guard(e: Compare) -> bool:
+    """Which `via_obj_cmp` comparisons must TEST for an object before calling.
+
+    Only the two types whose operands can legally arrive as non-object `Val`s:
+
+    * **`Symbol`**, at every operator. A `SymbolSmall` (9 characters or fewer,
+      tag 14) is non-object, and the frontend allows all six operators.
+    * **`Option`**, at `==`/`!=` only. Either side can be the immediate `Void`
+      (tag 2) or `T`'s own small form, so two non-object operands are the
+      COMMON case, not the corner. The four orderings never reach the emitter
+      at all -- the frontend rejects them (`SPT3005`, "`<` is not defined for
+      Option(U32)") -- so `Option` needs no ordering route, and if one ever
+      arrives it falls through to the unconditional call rather than being
+      silently mis-lowered here.
+
+    Every other `via_obj_cmp` type -- `Address`, `String`, `Bytes`, `Vec`,
+    `Map`, a struct -- is `HOST_OBJECT` repr with no small form whatever, so
+    both operands are always objects and the guard would be dead weight at
+    every call site. They keep the unconditional `obj_cmp`.
+    """
+    tag = e.lhs.ty.tag
+    if tag is TyTag.SYMBOL:
+        return True
+    return tag is TyTag.OPTION and e.op in _EQUALITY_OPS
+
+
+def _lower_guarded_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
+    """`obj_cmp` only when an operand IS an object (review B1; the M1-F fix-round-1
+    controller ruling extends it from `Symbol` to `Option` equality).
 
     **The bug this fixes (M1-F review finding B1).** Every `Symbol` comparison
     used to be an unconditional `obj_cmp` call. The real host refuses
@@ -900,23 +930,33 @@ def _lower_symbol_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
     Symbol("Rect")` is small on both sides. `tests/harness`'s mini host
     accepted the call, so tier 2a never saw it (ruling E1, in the field).
 
+    **`Option` is the same bug**, found reviewing the first fix: `U32(1) ==
+    U32(2)` at type `U32 | None` puts two small words into `obj_cmp` just the
+    same, and `None` (the immediate `Void`, tag 2) is non-object too. The
+    controller's ruling is that it takes EXACTLY this guard.
+
     **The shape is the host's own.** `Compare<Val> for E` in
     `soroban-env-common/src/compare.rs` @ v28.0.2 delegates to `obj_cmp` iff
-    `a.is_object() || b.is_object()` and otherwise reaches `SymbolSmall`'s
-    `Ord` directly, so this lowering is not an optimization of the host's
-    behaviour, it is a transcription of it:
+    `a.is_object() || b.is_object()`, and for two non-object `Val`s answers
+    from the payloads and tags directly, so this lowering is not an
+    optimization of the host's behaviour, it is a transcription of it:
 
     * **either side is an object** -> `obj_cmp`, unchanged. Required, not
       merely permitted: only the host can decide that a `SymbolObject` and a
       `SymbolSmall` spell the same text, and it answers `0` when they do.
-    * **both small, `==`/`!=`** -> `i64.ne` on the WORDS. Canonical
-      `SymbolSmall` packing (`val.symbol_small`: 6 bits per character,
-      high-order-first, zero-padded, one tag byte) makes word equality exact
-      for two small symbols.
-    * **both small, `<`/`<=`/`>`/`>=`** -> the `symsmall_cmp` part, which
-      decodes. The packed codes are NOT in ASCII order (`_` is code 1 and
-      ASCII 95) and the padding sits in the high groups, so no compare of the
-      raw bodies can answer an ordering.
+    * **both non-object, `==`/`!=`** -> `i64.ne` on the WORDS. That is exactly
+      what the host does: its payload fast path answers `Equal` for identical
+      words, and for two DIFFERENT non-object words it compares tags first and
+      then the body at that tag -- so unequal words are unequal values either
+      way. Canonical packing is what makes this exact for `Symbol`
+      (`val.symbol_small`: 6 bits per character, high-order-first,
+      zero-padded, one tag byte); for `Option` every arm is a canonical small
+      form or `VOID_VAL`.
+    * **both small `Symbol`, `<`/`<=`/`>`/`>=`** -> the `symsmall_cmp` part,
+      which decodes. The packed codes are NOT in ASCII order (`_` is code 1
+      and ASCII 95) and the padding sits in the high groups, so no compare of
+      the raw bodies can answer an ordering. `Option` never reaches this arm
+      (`_takes_the_object_guard` says why).
 
     The guard is one relop: `((a | b) & 0xFF) >= 64`. A tag byte is `>= 64`
     iff bit 6 or bit 7 is set, and `or` sets a bit iff either operand had it,
@@ -956,8 +996,18 @@ def _lower_symbol_compare(fn: Fn, ctx: LowerCtx, e: Compare) -> None:
         # below turns it into one.
         fn.relop_i64(opcodes.I64_NE)
         _bool_from_flag(fn)
-    else:
+    elif e.lhs.ty.tag is TyTag.SYMBOL:
         arith.symsmall_cmp(fn, ctx)
+    else:  # pragma: no cover - `_takes_the_object_guard` admits nothing else
+        # Spelled as a refusal rather than left to fall into the `Symbol` arm:
+        # decoding an `Option`'s word as a packed symbol body would answer
+        # confidently and wrongly, which is the failure class review B1 is
+        # about. If a new guarded type ever needs an ordering, it fails here.
+        raise EmitError(
+            f"no guest ordering route for {e.lhs.ty.render()}: only Symbol "
+            "orders without the host, and every other guarded type's "
+            "orderings are a frontend reject"
+        )
     fn.end_if()
     _compare_against_zero(fn, e.op)
 
