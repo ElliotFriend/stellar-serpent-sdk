@@ -132,7 +132,10 @@ class MiniHost:
 
     An `Engine`/`Store` per instance is deliberate: instances are cheap enough
     at this size, and sharing them would leak state between tests. Caching is
-    sub-plan F's productization problem, not this rig's.
+    settled at the compiled-BUILD layer, not here: `tests/harness/cache.py`
+    memoises `build_file`'s output (the wasm bytes), never a `MiniHost` -- every
+    test still gets its own fresh `Engine`/`Store`/instance, because a shared
+    one would leak state between tests exactly as this docstring says.
     """
 
     def __init__(

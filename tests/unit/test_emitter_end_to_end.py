@@ -60,11 +60,11 @@ from serpent import val
 from serpent.compiler.frontend import compile_module
 from serpent.compiler.ir import FuncKind
 from serpent.compiler.types_ import Ty
-from serpent.emitter import BuildResult, build_file, build_wasm
+from serpent.emitter import BuildResult, build_wasm
 from serpent.spec import build_env_meta
 from serpent.types import U32, Address, Bool, String, Symbol
 from tests.fixtures.token_style import Transfer
-from tests.harness import engine
+from tests.harness import cache, engine
 from tests.harness.hostfns import FullHost
 from tests.unit.conftest import deployed_env
 from tests.unit.test_emitter_semantics import decode_val
@@ -138,9 +138,15 @@ requires_spike_wasm = pytest.mark.skipif(
 
 
 def build_fixture(path: Path) -> BuildResult:
-    """`build_file` with external validation left at its default (ruling E5:
-    run `wasm-tools` when it is on PATH, skip it when it is not)."""
-    return build_file(path)
+    """`cache.built(path)`, kept as a thin alias so no other caller moves.
+
+    `build_file` with external validation left at its default (ruling E5: run
+    `wasm-tools` when it is on PATH, skip it when it is not), memoised by
+    `tests/harness/cache.py` on `(resolved path, sha256 of the file text)` --
+    this file's whole-contract properties replay every fixture repeatedly, and
+    the cache is what keeps that from recompiling each one every time.
+    """
+    return cache.built(path)
 
 
 def start(path: Path) -> tuple[BuildResult, FullHost, engine.MiniHost]:

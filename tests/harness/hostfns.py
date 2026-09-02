@@ -52,13 +52,17 @@ callback is:
   owns that table. Neither this module nor `objects.py` repeats it.
 * **`Symbol` compares over its DECODED TEXT, in ASCII order.** That is tier 1's
   pin, and it is deliberately mirrored here so the compiled answer can be
-  compared against tier 1 today. It may be the WRONG answer about the real
-  host: `SymbolSmall` packs each character through a 6-bit alphabet
-  (`val.SYMBOL_CHARS`, where `"_"` is code 1 and `"A"` is 12), and a host that
-  compares packed codes reverses `Symbol("_")` vs `Symbol("A")`. Settling that
-  is F's tier-2b obligation (dossier D.4, "the top sub-plan D/F differential
-  vector"); if the host disagrees, it is a controller decision on the frozen
-  table, not a change here.
+  compared against tier 1 today. It was once flagged as possibly the WRONG
+  answer about the real host: `SymbolSmall` packs each character through a
+  6-bit alphabet (`val.SYMBOL_CHARS`, where `"_"` is code 1 and `"A"` is 12),
+  and a host that compared packed codes would reverse `Symbol("_")` vs
+  `Symbol("A")`. **Settled: the real host agrees with tier 1** --
+  `tests/real_host/test_semantics_real.py`'s
+  `test_the_symbol_ordering_vector_on_the_real_host` and
+  `test_the_hosts_compare_trait_agrees_with_the_compiled_answer`, and
+  `tests/semantics/host_facts.py`'s `COMPARE_VECTORS` (asked of the real
+  `Compare` trait directly, no contract in between), all measure ASCII order,
+  the dossier D.4 differential vector this module used to flag as open.
 * **`val_cmp` is an explicitly PARTIAL model** (A9): "extending the supported
   set requires extending the differential tests". So a tag with no
   `serpent.types` class (`Void`, `Error`, the 256-bit family) raises rather than
@@ -72,7 +76,8 @@ The real host TRAPS when the invocation was not authorized. This rig has no
 authorization state to consult, so `require_auth`/`require_auth_for_args`
 record the address and return -- mock-all-auths semantics, and S17's documented
 tier-2a fidelity line. A contract's auth logic is therefore NOT under test
-here; tier 2b is where these can fail.
+here: `tests/real_host/test_env_scenarios_real.py` is where these DO fail, on
+the real host, for every `EnvScenario` whose `kind` is `"auth_failed"`.
 """
 
 from collections.abc import Callable

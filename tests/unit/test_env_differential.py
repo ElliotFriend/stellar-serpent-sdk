@@ -72,7 +72,7 @@ from serpent.compiler.recognize import _HELP
 # `@contractevent` metadata, read through the constant rather than as a
 # restated string literal.
 from serpent.decorators import _METADATA_ATTR
-from serpent.emitter import BuildResult, build_file
+from serpent.emitter import BuildResult
 from serpent.env import (
     DEFAULT_LEDGER_SEQUENCE,
     DEFAULT_LEDGER_TIMESTAMP,
@@ -87,7 +87,7 @@ from serpent.env import (
 from serpent.spec.sections import _DATA_FORMATS, _PARAM_LOCATIONS
 from serpent.types import U32, U64, Address, Bool, String, Symbol
 from serpent.types._storage_key import storage_key
-from tests.harness import engine
+from tests.harness import cache, engine
 from tests.harness.hostfns import FullHost
 from tests.semantics.env_scenarios import (
     ENV_SCENARIOS,
@@ -162,16 +162,16 @@ def _comparable(outcome: Outcome) -> Outcome:
     return replace(outcome, auths=())
 
 
-@functools.cache
 def _built(path: Path) -> BuildResult:
-    """`build_file(path)`, once per path per session.
+    """`cache.built(path)`, kept as a thin alias so no other caller moves.
 
     The table replays ~60 rows over three contracts; rebuilding per row would
-    pay for the same three compiles sixty times. The BUILD is cached, never the
-    host: every row gets a fresh `FullHost` and a fresh instance, because a
+    pay for the same three compiles sixty times, which is exactly what
+    `tests/harness/cache.py`'s memoisation removes. The BUILD is cached, never
+    the host: every row gets a fresh `FullHost` and a fresh instance, because a
     shared store would make one row's writes another row's setup.
     """
-    return build_file(path)
+    return cache.built(path)
 
 
 @functools.cache

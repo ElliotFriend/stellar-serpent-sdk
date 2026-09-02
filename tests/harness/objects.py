@@ -60,12 +60,15 @@ disagree with it. Cross-type order is `ScValType` rank (A8) and lives only in
 family) raises rather than guessing (A9).
 """
 
+import dataclasses
 import struct
+import typing
 from collections.abc import Callable, Mapping
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from serpent import val
 from serpent._host._scalars import STORAGE_TYPE
+from serpent.decorators import _METADATA_ATTR
 from serpent.types import (
     I32,
     I64,
@@ -76,6 +79,8 @@ from serpent.types import (
     Address,
     Bool,
     Bytes,
+    ContractEnum,
+    ContractUnion,
     Duration,
     Map,
     String,
@@ -115,10 +120,23 @@ class _RankOnly:
     __slots__ = ()
 
     def _cmp_payload(self) -> object:
+        """Still `NotImplementedError` (ruling O8: no new mock semantics here).
+
+        Tier 1 itself defers a container's payload order (A15: no inventing an
+        order the host has not been differentially checked against), so this
+        rig defers it too -- unchanged by this task. What HAS changed is that
+        the real host's answer is no longer unmeasured: it is recorded in
+        `tests/semantics/host_facts.py`'s `COMPARE_VECTORS` (three `Vec` rows,
+        asked of the real `Compare` trait directly, no contract in between),
+        and the tier-1 IMPLEMENTATION of that order is M2 -- this store keeps
+        deferring it until tier 1 does.
+        """
         raise NotImplementedError(
-            "container comparison; sub-plan B -- tier 1 defers the payload order "
-            "for Vec/Map (A15: no inventing an order the host has not been "
-            "differentially checked against), so this rig defers it too"
+            "container comparison; A15 -- tier 1 defers the payload order for "
+            "Vec/Map (no inventing an order the host has not been differentially "
+            "checked against), so this rig defers it too. The real host's order "
+            "is recorded in tests/semantics/host_facts.py's COMPARE_VECTORS; the "
+            "tier-1 implementation is M2"
         )
 
 
@@ -203,6 +221,43 @@ _NUMERIC_FORMS: dict[type, tuple[int, int]] = {
 _MODELLED_TAGS = (
     frozenset(_NUMERIC_BY_TAG) | _PAYLOAD_TAGS | {val.TAG_FALSE, val.TAG_TRUE, val.TAG_SYMBOL_SMALL}
 )
+
+
+def _runtime_class(ty: object, caller: str, requested: object) -> type[Any]:
+    """The runtime class `Vec`/`Map` needs for an element/key/value type.
+
+    A generic alias contributes its ORIGIN (`Vec[U32]` -> `Vec`); a bare class
+    is used as-is. `ObjectStore.chain_value_as`'s only caller ever hands this a
+    concrete element type (there is no bare-container/loose-decode mode here,
+    unlike `serpent.testing._scval.decode` -- this rig always has a `ty` to
+    decode against), so anything else is a caller error, named loudly rather
+    than guessed at.
+    """
+    if isinstance(ty, type):
+        return ty
+    origin = typing.get_origin(ty)
+    if isinstance(origin, type):
+        return origin
+    raise AssertionError(f"{caller}: {ty!r} in {requested!r} is not a usable element type")
+
+
+def _struct_fields(ty: type) -> list[tuple[str, object]]:
+    """`ty`'s `@contracttype` field annotations, `(name, annotation)` pairs.
+
+    Read off `_METADATA_ATTR`'s recorded `fields` (already resolved, already
+    stripped of any `Annotated[..., topic]` marker -- `decorators._build_record`
+    does both), which is the same record `serpent.testing._scval._struct_fields`
+    reads for the identical reason: `ty(**kwargs)`'s constructor takes the
+    field's declared shape, not whatever `chain_value_as` decoded it as.
+    """
+    metadata = vars(ty).get(_METADATA_ATTR)
+    if isinstance(metadata, dict) and metadata.get("kind") in ("struct", "event"):
+        fields: list[tuple[str, object]] = metadata["fields"]
+        return fields
+    # A plain dataclass no serpent decorator declared: resolved type hints,
+    # the same fallback `serpent.testing._scval._struct_fields` takes.
+    hints = typing.get_type_hints(ty)
+    return [(field.name, hints[field.name]) for field in dataclasses.fields(ty)]
 
 
 class ObjectStore:
@@ -355,6 +410,157 @@ class ObjectStore:
         assert isinstance(number, int), f"object {word:#018x} does not hold a number: {number!r}"
         return make(number)
 
+    def chain_value_as(self, word: int, ty: object) -> object:
+        """A TYPED decode: `ty` says what `word` is, `chain_value` alone cannot.
+
+        The public replacement for `test_examples.py`'s reach into the private
+        `host._vec` (O4, E7's tier-2a scope item (ii)): a chain scalar class
+        (delegated to `chain_value` plus an `isinstance` check), `Vec[T]`,
+        `Map[K, V]`, a `ContractUnion`/`ContractEnum` subclass, or a
+        `@contracttype` class. Containers are walked through the store
+        (`_vec`/`_map`) and each element/key/value is decoded by its own
+        element type, recursively -- `Vec[Shape]`, `Map[Symbol, Point]`, a
+        struct field typed `Vec[U32]` all work the same way this does at the
+        top level. The `_RankOnly` placeholders `chain_value` returns for a
+        bare container are never returned here: this method always answers a
+        real `Vec`/`Map`/union/enum/struct instance, or raises.
+
+        Every disagreement between `word` and `ty` is a loud `AssertionError`
+        naming the word's tag and the requested `ty` (A9's convention: there is
+        no oracle answer for a guess, so this rig does not guess).
+        """
+        origin = typing.get_origin(ty)
+        if origin is Vec:
+            (element_ty,) = typing.get_args(ty)
+            items: list[Any] = [self.chain_value_as(w, element_ty) for w in self._vec(word)]
+            return Vec(_runtime_class(element_ty, "chain_value_as", ty), items)
+        if origin is Map:
+            key_ty, value_ty = typing.get_args(ty)
+            entries = self._map(word)
+            pairs: list[tuple[Any, Any]] = [
+                (
+                    self.chain_value_as(self.key_word(key), key_ty),
+                    self.chain_value_as(value_word, value_ty),
+                )
+                for key, value_word in entries.items()
+            ]
+            return Map(
+                _runtime_class(key_ty, "chain_value_as", ty),
+                _runtime_class(value_ty, "chain_value_as", ty),
+                pairs,
+            )
+        assert isinstance(ty, type), (
+            f"chain_value_as: {ty!r} is not a chain type, Vec[T], Map[K, V], a "
+            "ContractUnion/ContractEnum subclass, or a @contracttype class"
+        )
+        if issubclass(ty, ContractUnion):
+            return self._union_as(word, ty)
+        if issubclass(ty, ContractEnum):
+            return self._enum_as(word, ty)
+        if dataclasses.is_dataclass(ty):
+            return self._struct_as(word, ty)
+        value = self.chain_value(word)
+        assert isinstance(value, ty), (
+            f"chain_value_as: word {word:#018x} (tag {val.tag_of(word)}) decodes as "
+            f"{value!r}, not a {ty.__name__}"
+        )
+        return value
+
+    def _union_as(self, word: int, ty: type[ContractUnion]) -> ContractUnion:
+        """`word` as the `ContractUnion` subclass `ty`: a Vec `[Symbol(case), *payload]`.
+
+        The payload is decoded slot by slot through the case's DECLARED
+        annotations (`@contractunion`'s recorded `cases`, the same metadata
+        `serpent.testing._scval._decode_union` reads -- read for the
+        convention, not imported: the harness is Val-word-based, not
+        ScVal-based), and the value is built through the case descriptor, so
+        `mypy --strict`'s constructor is also the one used here.
+        """
+        elements = self._vec(word)
+        if not elements:
+            raise AssertionError(
+                f"chain_value_as: word {word:#018x} is an empty Vec, not a {ty.__name__} case "
+                "(missing the leading case Symbol)"
+            )
+        case_value = self.chain_value(elements[0])
+        assert isinstance(case_value, Symbol), (
+            f"chain_value_as: word {word:#018x} (tag {val.tag_of(word)}) does not lead "
+            f"with a case Symbol for {ty.__name__} (decoded {case_value!r})"
+        )
+        metadata = vars(ty).get(_METADATA_ATTR)
+        if not isinstance(metadata, dict) or metadata.get("kind") != "union":
+            raise AssertionError(f"{ty.__name__} carries no @contractunion declaration")
+        cases: list[tuple[str, tuple[object, ...]]] = metadata["cases"]
+        for name, slots in cases:
+            if name != case_value.text:
+                continue
+            payload_words = elements[1:]
+            if len(payload_words) != len(slots):
+                raise AssertionError(
+                    f"chain_value_as: {ty.__name__}.{name} declares {len(slots)} payload "
+                    f"slot(s), but word {word:#018x} carries {len(payload_words)}"
+                )
+            decoded = [
+                self.chain_value_as(w, slot) for w, slot in zip(payload_words, slots, strict=True)
+            ]
+            descriptor = getattr(ty, name)
+            # A unit case's descriptor IS the value; every other case is called.
+            built = descriptor if not slots else descriptor(*decoded)
+            return typing.cast("ContractUnion", built)
+        declared = ", ".join(name for name, _ in cases)
+        raise AssertionError(
+            f"chain_value_as: {ty.__name__} declares no case {case_value.text!r} "
+            f"(it has: {declared})"
+        )
+
+    def _enum_as(self, word: int, ty: type[ContractEnum]) -> ContractEnum:
+        """`word` as the `ContractEnum` subclass `ty`: a bare `U32`."""
+        if val.tag_of(word) != val.TAG_U32:
+            raise AssertionError(
+                f"chain_value_as: word {word:#018x} (tag {val.tag_of(word)}) is not a bare "
+                f"U32, so it cannot be a {ty.__name__} case"
+            )
+        discriminant = self._u32(word)
+        metadata = vars(ty).get(_METADATA_ATTR)
+        if not isinstance(metadata, dict) or metadata.get("kind") != "enum":
+            raise AssertionError(f"{ty.__name__} carries no @contractenum declaration")
+        cases: list[tuple[str, int]] = metadata["cases"]
+        for name, declared in cases:
+            if declared == discriminant:
+                return typing.cast("ContractEnum", getattr(ty, name))
+        known = ", ".join(f"{name}={declared}" for name, declared in cases)
+        raise AssertionError(
+            f"chain_value_as: {ty.__name__} declares no case with discriminant "
+            f"{discriminant} ({known})"
+        )
+
+    def _struct_as(self, word: int, ty: type[object]) -> object:
+        """`word` as the `@contracttype` class `ty`: an ScMap-shaped Map keyed by field name."""
+        fields = _struct_fields(ty)
+        entries = self._map(word)
+        by_name: dict[str, int] = {}
+        for key, value_word in entries.items():
+            key_word = self.key_word(key)
+            tag = val.tag_of(key_word)
+            if tag not in (val.TAG_SYMBOL_SMALL, val.TAG_SYMBOL_OBJECT):
+                raise AssertionError(
+                    f"chain_value_as: word {word:#018x} for {ty.__name__} has a key of tag "
+                    f"{tag}, not a Symbol field name"
+                )
+            by_name[self.text_of(key_word)] = value_word
+        declared_names = {name for name, _ in fields}
+        missing = sorted(declared_names - by_name.keys())
+        unknown = sorted(by_name.keys() - declared_names)
+        if missing or unknown:
+            raise AssertionError(
+                f"chain_value_as: word {word:#018x} does not match {ty.__name__}'s fields "
+                f"({missing=} {unknown=})"
+            )
+        kwargs = {
+            name: self.chain_value_as(by_name[name], annotation) for name, annotation in fields
+        }
+        return ty(**kwargs)
+
     def val_word(self, value: object) -> int:
         """The canonical `Val` word for a tier-1 chain value.
 
@@ -365,6 +571,18 @@ class ObjectStore:
         CONSTRUCTORS (`vec_new`, `bytes_new_from_linear_memory`, ...) never
         intern -- a real host hands out a fresh handle per call, and the tests
         that prove host objects are immutable depend on that.
+
+        **Containers, unions, enums and structs (O5, E7's tier-2a scope item
+        (ii)):** a `Vec` becomes a fresh vec handle holding each element's
+        word; a `Map` becomes a fresh map handle keyed BY VALUE, the same
+        `map_key`/`key_word` normalisation `map_put` uses; a `ContractUnion`
+        becomes the led Vec `[Symbol(case), *payload]` (`.tag()` and
+        `._payload_items()`, the same licensed private seam
+        `serpent.testing._scval.encode` reads, not imports); a `ContractEnum`
+        becomes its bare discriminant as a `U32Val`; a `@contracttype` struct
+        becomes the sorted-Symbol-key map `sections.py`'s struct entry and the
+        emitter's `MakeStruct` both build. Every element/key/value word
+        recurses back through this method.
         """
         if isinstance(value, Bool):
             return val.pack_bool(value.value)
@@ -384,6 +602,28 @@ class ObjectStore:
             return self._intern(val.TAG_BYTES_OBJECT, value)
         if isinstance(value, Address):
             return self._intern(val.TAG_ADDRESS_OBJECT, value)
+        if isinstance(value, Vec):
+            return self._new(val.TAG_VEC_OBJECT, [self.val_word(item) for item in value])
+        if isinstance(value, Map):
+            entries: dict[object, int] = {}
+            for key in value:
+                key_word = self.val_word(key)
+                entries[self.map_key(key_word)] = self.val_word(value.get(key))
+            return self._new(val.TAG_MAP_OBJECT, entries)
+        if isinstance(value, ContractUnion):
+            words = [
+                self.val_word(value.tag()),
+                *(self.val_word(item) for item in value._payload_items()),
+            ]
+            return self._new(val.TAG_VEC_OBJECT, words)
+        if isinstance(value, ContractEnum):
+            return val.pack_u32val(typing.cast("int", value._cmp_payload()))
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            entries = {}
+            for name, _annotation in _struct_fields(type(value)):
+                key_word = self.val_word(Symbol(name))
+                entries[self.map_key(key_word)] = self.val_word(getattr(value, name))
+            return self._new(val.TAG_MAP_OBJECT, entries)
         forms = _NUMERIC_FORMS.get(type(value))
         if forms is None:
             raise AssertionError(f"no Val encoding for {value!r} in this rig (A9)")

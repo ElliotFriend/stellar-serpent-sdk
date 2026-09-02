@@ -25,12 +25,15 @@ here.
   review B4's whole point, so the accessors below REFUSE a non-object argument
   exactly as the host does -- a guest that forgot the tag branch fails loudly
   here instead of on chain.
-* **`i256_div`'s ROUNDING IS NOT PINNED IN THIS REPO.** It is implemented below
-  with RUST-TRUNCATED semantics (toward zero), which is what A4 requires and
-  what Rust's `/` on `i256` does. The binding's own docs say only "Performs
-  checked integer division", and no artifact in this repo demonstrates the real
-  host's rounding on a negative dividend. Sub-plan F re-proves it against a
-  real host; until then this is a *documented assumption*, not evidence.
+* **`i256_div`'s ROUNDING IS PROVEN ON THE REAL HOST (E15).** It is implemented
+  below with RUST-TRUNCATED semantics (toward zero), which is what A4 requires
+  and what Rust's `/` on `i256` does -- and `tests/real_host/test_host_facts_real.py`
+  (parametrized over `tests/semantics/host_facts.py`'s `HOST_FACTS`) is where
+  that stopped being an assumption: rows `i128_floordiv_truncates_toward_zero`,
+  `i128_mod_takes_the_dividends_sign` and `i128_min_mod_minus_one_is_zero`
+  measure the real host's `{i,u}256_div` route (128-bit division lowers to it,
+  S13) on a negative dividend and at `MIN % -1`, and match this module's
+  answer.
 * **`i256_rem_euclid`/`u256_rem_euclid` are deliberately ABSENT.** Their docs
   say "Performs checked **Euclidean** modulo", which contradicts A4's
   dividend-signed `%` (`-7 % 2 == -1`, not `+1`) -- F.1.2, the dossier's "single
@@ -53,14 +56,18 @@ I256_MIN = -(1 << 255)
 I256_MAX = (1 << 255) - 1
 U256_MAX = (1 << 256) - 1
 
-#: What a failed `{i,u}256_div` hands back. The real host returns an `ScError`
-#: (its XDR code is NOT pinned in this repo), which the VM surfaces as an abort;
-#: `HostError` (`tests.harness.errors`, M-3) is the harness's model of an
-#: abort, so it raises one carrying a distinctive Error `Val` of the VALUE
-#: type. Tests assert against
-#: this constant, never against a literal word -- the word is a harness
-#: convention standing in for an unpinned XDR code, not a fact about the host.
-DIV_ERROR_VAL = val.error_val(0, val.ERROR_TYPE_VALUE)
+#: What a failed `{i,u}256_div` hands back. `HostError` (`tests.harness.errors`,
+#: M-3) is the harness's model of an abort, so it raises one carrying a
+#: distinctive Error `Val`. **This code is no longer a harness convention
+#: standing in for an unpinned fact (E15): it is the UNDERLYING code the real
+#: host reported for a 128-bit `//0`, probe-confirmed 2026-09-02 for both
+#: signednesses** (`tests/semantics/host_facts.py`'s `DIV128_BY_ZERO_HOST_ERROR`,
+#: `("Object", "ArithDomain")` -- `ArithDomain`'s discriminant is 0, `Object`'s
+#: is 4). `tests/unit/test_harness_objects.py` derives both discriminants from
+#: that same pinned fact via `stellar_sdk.xdr.SCErrorType`/`SCErrorCode`'s own
+#: member names, so this literal cannot silently drift from it. Tests still
+#: assert against this constant, never against a literal word.
+DIV_ERROR_VAL = val.error_val(0, val.ERROR_TYPE_OBJECT)
 
 
 class WideHostFailure(Exception):

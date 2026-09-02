@@ -385,8 +385,8 @@ def test_the_events_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
     published events compared between tier 1 and WASM as decoded chain values.
 
     `record_round_closed`'s data is a `VecObject` on the WASM side, so it is
-    decoded through `host._vec` element by element rather than through the
-    single `host.chain_value` call that suffices for `record_score`'s bare
+    decoded through `host.chain_value_as(word, Vec[U32])` rather than through
+    the single `host.chain_value` call that suffices for `record_score`'s bare
     `U32`.
 
     Its topic is `round_closed` -- 12 characters, so a `SymbolObject` pooled
@@ -395,14 +395,11 @@ def test_the_events_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
     `topics[0]` past nine characters, and the example had to carry a
     deliberately short name to be reachable through both spellings.
 
-    **Carried obligation (sub-plan F): `host._vec` is PRIVATE.** `FullHost` has
-    no public container decoder, so this test reaches past the harness's own
-    surface to read a published vec -- a coupling that a rename inside the
-    harness would break silently, and the one place in this file that has it.
-    The durable fix is a public container decoder ON the host (the same shape
-    `chain_value` has for a scalar), which belongs with the tier-2b harness work
-    rather than here; disclosed rather than papered over, so the next reader
-    knows it is a known debt and not an oversight.
+    **Discharged: `chain_value_as`.** This test used to reach past the
+    harness's own surface into the private `host._vec` to read a published
+    vec -- a coupling a rename inside the harness could have broken silently.
+    `ObjectStore.chain_value_as` (tier-2a productization, ruling E7) is the
+    public container decoder that replaces it.
     """
     module = load_example(EXAMPLE_EVENTS)
     env = Env()
@@ -426,9 +423,7 @@ def test_the_events_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
     assert [host.chain_value(t) for t in wasm_score_topics] == list(score_topics)
     assert host.chain_value(wasm_score_data) == score_data
     assert [host.chain_value(t) for t in wasm_round_topics] == list(round_topics)
-    # `host._vec`: the private coupling this test's docstring carries to
-    # sub-plan F -- a public container decoder on `FullHost` is the fix.
-    assert [host.chain_value(item) for item in host._vec(wasm_round_data)] == list(round_data)
+    assert host.chain_value_as(wasm_round_data, Vec[U32]) == round_data
 
     assert score_topics == (Symbol("scored"), Address(ACCOUNT))
     assert score_data == U32(7)
@@ -475,8 +470,7 @@ def test_the_events_examples_canonical_spelling_matches_the_authoring_forms_desu
     )
     ((wasm_topics, wasm_data),) = host.events
     assert [host.chain_value(t) for t in wasm_topics] == list(authored_topics)
-    # `host._vec` again: the same private coupling, disclosed above.
-    assert [host.chain_value(item) for item in host._vec(wasm_data)] == list(authored_data)
+    assert host.chain_value_as(wasm_data, Vec[U32]) == authored_data
 
 
 # ===========================================================================
