@@ -103,6 +103,7 @@ grow when one is lifted):
 | a 0-element tuple variant (permanent) | a unit variant, `variant()` |
 | implicit int-enum discriminants (permanent) | spell the numbers, `enumvalue(N)` |
 | a union as a **multi-entry** `Map` key (a union's container ordering is not modelled in tier 1) | a `@contracttype` key struct -- or keep the map to a single entry |
+| an `Option` payload, `variant(X \| None)` (M2) | a unit variant for the absent case, `Nothing = variant()` |
 | generic / parameterized unions (M2) | one concrete union per instantiation |
 | `Option` narrowing, and `.value` introspection on an int enum (M2) | -- |
 | a union as a cross-contract argument (M2) | -- (cross-contract calls are themselves M2) |

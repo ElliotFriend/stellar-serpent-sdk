@@ -286,7 +286,20 @@ def contractunion(cls: type[_T]) -> type[_T]:
             continue
         if not isinstance(value, _VariantSpec):
             _reject_bare_case(cls, name, value, "@contractunion", f"{name} = variant(...)")
+        if name in _UNION_READERS:
+            raise ValueError(
+                f"{cls.__name__}.{name}: a case named `{name}` shadows `ContractUnion.{name}`, "
+                f"the reader every union value is read through -- `{cls.__name__}.{name}()` "
+                "would build the case instead of reading one. Rename the case"
+            )
         for annotation in value.payload:
+            if _is_option(annotation):
+                raise ValueError(
+                    f"{cls.__name__}.{name}: payload annotation {_render(annotation)} is an "
+                    "Option, and a variant payload cannot be absent in M1 -- the payload is an "
+                    "`ScVec` element, which has no empty spelling. Declare a unit variant for "
+                    "the absent case instead (`Nothing = variant()`)"
+                )
             if not _is_contract_annotation(annotation):
                 raise ValueError(
                     f"{cls.__name__}.{name}: payload annotation {_render(annotation)} is not a "
@@ -995,6 +1008,15 @@ def _annotations_of(owner: Any, *, include_extras: bool = False) -> dict[str, An
 #: One set, read by `_is_contract_annotation` alone, so the rule is stated once.
 _VALUE_KINDS: Final = frozenset({"struct", "union", "enum"})
 
+#: Case names `@contractunion` refuses: the public attributes of the base
+#: itself. DERIVED from `ContractUnion` rather than spelled out, so a reader
+#: added to the base later is covered the day it is added -- a case installs a
+#: descriptor under its own name, so `Circle = variant(U32)` next to
+#: `tag = variant()` would leave the union with no way to read its own tag.
+#: `ContractEnum` needs no twin: it has no public attribute at all (ruling E5
+#: kept `.value` off it), so `@contractenum` has nothing to shadow.
+_UNION_READERS: Final = frozenset(name for name in dir(ContractUnion) if not name.startswith("_"))
+
 
 def _is_contract_annotation(annotation: object) -> bool:
     """A chain type, a declared struct/union/int enum, or `X | None` of one.
@@ -1023,6 +1045,20 @@ def _is_contract_annotation(annotation: object) -> bool:
         return True
     metadata = vars(annotation).get(_METADATA_ATTR)
     return isinstance(metadata, dict) and metadata.get("kind") in _VALUE_KINDS
+
+
+def _is_option(annotation: object) -> bool:
+    """Whether `annotation` is `X | None` (either spelling).
+
+    Read by `@contractunion` alone: `X | None` is a legitimate STRUCT field
+    (the spec has an `Option` type def and a struct field can hold `None`), so
+    this is not a widening of `_is_contract_annotation` but a narrowing of the
+    ONE position that cannot hold one.
+    """
+    origin = typing.get_origin(annotation)
+    if origin is not typing.Union and origin is not types.UnionType:
+        return False
+    return any(arg is types.NoneType for arg in typing.get_args(annotation))
 
 
 def _render(annotation: object) -> str:

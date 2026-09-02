@@ -11,7 +11,7 @@ decorator also catches at runtime.
 import dataclasses
 import pathlib
 import typing
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 import pytest
 
@@ -1151,6 +1151,54 @@ def test_a_union_payload_that_is_not_a_declared_type_bridges_to_the_field_code()
         @contractunion
         class WithEvent(ContractUnion):
             Ev = variant(Bumped)
+
+
+def test_an_option_payload_is_refused_at_declaration() -> None:
+    """M1-E2 final-review ruling: `variant(X | None)` is refused where it is
+    written, not left to fail somewhere else.
+
+    An `X | None` annotation is a perfectly good STRUCT field -- the spec has
+    an `Option` type def, and a struct field can hold `None` -- but a variant
+    payload is an `ScVec` element, and tier 1's `Vec` cannot hold one, so the
+    accept was declarable and unrunnable. The idiomatic union answer is a case
+    of its own for the absent value, which the message says; relaxing this
+    later is additive.
+    """
+    spellings: list[Any] = [U32 | None, typing.Optional[U32]]  # noqa: UP045 - both spellings
+    for spelling in spellings:
+        with pytest.raises(ValueError, match="a variant payload cannot be absent"):
+            contractunion(
+                type("Maybe", (ContractUnion,), {"Some": variant(cast("type[U32]", spelling))})
+            )
+
+    # The struct-field position is untouched: the same annotation is fine there.
+    @contracttype
+    class Row:
+        value: U32 | None
+
+    assert _meta(Row)["fields"] == [("value", U32 | None)]
+
+
+def test_a_variant_named_after_a_base_reader_is_refused() -> None:
+    """The other unrunnable accept: a case named `tag` or `payload` replaces
+    the reader every union is read through, so `Shape.tag()` would call the
+    variant descriptor instead and the value could never be read at all.
+
+    The refused set is derived from `ContractUnion` itself rather than
+    hard-coded, so a reader added later is covered the day it is added.
+    `ContractEnum` has no public attribute at all (an int enum has no reader --
+    ruling E5 kept `.value` off it), so `@contractenum` needs no such check.
+    """
+    for case in ("tag", "payload"):
+        with pytest.raises(ValueError, match="shadows"):
+            contractunion(
+                type(
+                    "Shadow",
+                    (ContractUnion,),
+                    {"Empty": variant(), case: variant(U32)},
+                )
+            )
+    assert not [name for name in dir(ContractEnum) if not name.startswith("_")]
 
 
 def test_an_empty_union_or_int_enum_declares_nothing_and_is_refused() -> None:

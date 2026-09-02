@@ -11,7 +11,7 @@ ever disagree; the failure message names the regeneration command.
 
 serpent compiles a restricted subset of Python to a Soroban contract.
 This document is generated, in full, from the compiler's own registry
-of diagnostic codes, its `tests/must_reject/` fixture suite (112 minimal counter-examples, one per rejected
+of diagnostic codes, its `tests/must_reject/` fixture suite (114 minimal counter-examples, one per rejected
 construct), and its recognized-surface tables -- never hand-authored,
 so it cannot say something the compiler does not actually do.
 
@@ -1091,6 +1091,32 @@ class Contract:
 - **help:** give the local a name no parameter, module constant, import, or declared type already uses
 - **note:** `x` already names a parameter
 
+#### @contractunion case named after a base reader (`types/union_case_shadows_a_reader.py`)
+
+```python
+# A case installs a descriptor under its own name, so a case named `tag` or
+# `payload` replaces the reader every union value is read through: the value
+# could then never be read at all. The refused set is `ContractUnion`'s own
+# public attributes, so a reader added later is covered the day it is added.
+from serpent import ContractUnion, Env, U32, contract, contractunion, variant
+
+
+@contractunion
+class Shape(ContractUnion):
+    Empty = variant()
+    tag = variant(U32)  # HERE
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** Shape.tag: name shadows an existing declaration
+- **help:** give the declaration a name no other module-level name already uses
+- **note:** ValueError: Shape.tag: a case named `tag` shadows `ContractUnion.tag`, the reader every union value is read through -- `Shape.tag()` would build the case instead of reading one. Rename the case
+
 #### SPT2005
 
 **Construct:** Import / ImportFrom -- non-serpent module
@@ -1957,8 +1983,34 @@ class Contract:
 ```
 
 - **message:** Point.x: struct fields need a chain-type annotation
-- **help:** annotate the field with a chain type, a `@contracttype` struct, or `X | None` of one
+- **help:** annotate the field with a chain type, a `@contracttype` struct, or `X | None` of one; a variant payload takes the same set WITHOUT `X | None` (declare a unit variant for the absent case)
 - **note:** ValueError: Point.x: annotation int is not a chain type, a `@contracttype` struct, or `X | None` of one
+
+#### @contractunion variant with an Option payload (`types/union_option_payload.py`)
+
+```python
+# A variant payload is an `ScVec` element, and an element has no empty
+# spelling: `Vec` cannot hold a `None`. The idiomatic union answer is a case
+# of its own for the absent value (`Nothing = variant()`), which is why this
+# is refused where it is written rather than left to fail at tier 1.
+from serpent import ContractUnion, Env, U32, contract, contractunion, variant
+
+
+@contractunion
+class Maybe(ContractUnion):
+    Nothing = variant()
+    Some = variant(U32 | None)  # HERE
+
+
+@contract
+class Contract:
+    def act(self, env: Env) -> U32:
+        return U32(0)
+```
+
+- **message:** Maybe.Some: struct fields need a chain-type annotation
+- **help:** annotate the field with a chain type, a `@contracttype` struct, or `X | None` of one; a variant payload takes the same set WITHOUT `X | None` (declare a unit variant for the absent case)
+- **note:** ValueError: Maybe.Some: payload annotation serpent.types.numeric.U32 | None is an Option, and a variant payload cannot be absent in M1 -- the payload is an `ScVec` element, which has no empty spelling. Declare a unit variant for the absent case instead (`Nothing = variant()`)
 
 #### SPT4013
 

@@ -262,7 +262,9 @@ _HELP: dict[str, str] = {
     "SPT4010": "give every member of the enum a distinct code",
     "SPT4011": "declare at least one `NAME = errorcode(N)` member",
     "SPT4012": (
-        "annotate the field with a chain type, a `@contracttype` struct, or `X | None` of one"
+        "annotate the field with a chain type, a `@contracttype` struct, or `X | None` of one; "
+        "a variant payload takes the same set WITHOUT `X | None` (declare a unit variant for "
+        "the absent case)"
     ),
     "SPT4013": "apply exactly one serpent decorator per class",
     "SPT4014": "declare the event as `class Name(Event):`",
@@ -380,6 +382,15 @@ _BRIDGE_RULES: tuple[_BridgeRule, ...] = (
     # ever runs (the message therefore names no member, and the diagnostic
     # lands on the class).
     _BridgeRule(_VALUE_ERROR, "case is declared as", "SPT4022"),
+    # M1-E2 final review. Two accepts that were declarable and unrunnable, each
+    # bridged to the code whose rule it breaks rather than to one of its own:
+    # an Option payload is the payload-annotation rule SPT4012 already carries
+    # for this position (the needle above it), narrowed by the one shape an
+    # `ScVec` element has no spelling for; a case named after a base reader is
+    # SPT2004's shadowing rule, which already covers a module-level
+    # redeclaration and a duplicate member inside one class body.
+    _BridgeRule(_VALUE_ERROR, "a variant payload cannot be absent", "SPT4012"),
+    _BridgeRule(_VALUE_ERROR, "the reader every union value is read through", "SPT2004"),
     _BridgeRule(_VALUE_ERROR, "declares at least one case", "SPT4021"),
     _BridgeRule(_VALUE_ERROR, "class declares exactly one base", "SPT4025"),
     _BridgeRule(_VALUE_ERROR, "is out of range -- an int-enum member", "SPT4023"),

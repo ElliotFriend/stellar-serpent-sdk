@@ -352,6 +352,22 @@ _ROWS: tuple[tuple[str, str, str, str], ...] = (
         "variant() takes payload types",
         "@contractunion\nclass U(ContractUnion):\n    Circle = variant(U32(3))  # HERE",
     ),
+    # --- M1-E2 final review: the two unrunnable declaration accepts ---------
+    # Neither spends a new code: an Option payload breaks the payload/field
+    # annotation rule SPT4012 already carries for this position, and a case
+    # named after a base reader breaks SPT2004's shadowing rule.
+    (
+        "union_option_payload",
+        "SPT4012",
+        "a variant payload cannot be absent",
+        "@contractunion\nclass U(ContractUnion):\n    Some = variant(U32 | None)  # HERE",
+    ),
+    (
+        "union_case_shadows_a_reader",
+        "SPT2004",
+        "the reader every union value is read through",
+        "@contractunion\nclass U(ContractUnion):\n    tag = variant(U32)  # HERE",
+    ),
     # --- M1-E2 Task 5: the `topic`-marker refusal (fed item X2, ruling E10) --
     # `SPT4026` in a position that has no topics. One row per new needle
     # (P8): the struct-field spelling (`_build_record`, recoded off the
