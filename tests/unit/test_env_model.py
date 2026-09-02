@@ -632,15 +632,19 @@ def test_isolation_a_stored_container_is_not_the_local() -> None:
 
 
 def test_isolation_holds_for_maps_structs_and_nesting() -> None:
-    """M1-E2 ruling E13: the two new kinds join this property too, and
-    trivially -- a union's `__deepcopy__` rebuilds a fresh instance
-    (`_udt.py`'s `ContractUnion.__deepcopy__`) and an int enum's returns
-    `self` (it is immutable, so a copy would answer the same value either
-    way, `ContractEnum.__deepcopy__`), so there is no MUTATION surface left to
-    grow after the write the way `m`, `holder` and `nested` are grown below.
-    What is left to check is the ordinary round trip: a stored union or int
-    enum reads back equal, and two reads of the same entry are not the same
-    object where the model actually allocates one (the union case).
+    """M1-E2 ruling E13 extends this property to the two new kinds too, in a
+    shape that actually needs the deep-copy law rather than one that
+    happens to hold anyway: `Shape.Boxed`'s payload is a `Vec`, and
+    `Shape.Boxed(inner)` SHARES the caller's `inner` at construction time
+    (`test_udt_values.py`'s own pin) -- so what makes the round trip below
+    isolated is `ContractUnion.__deepcopy__` RECURSING into the payload
+    (`_udt.py`), run at both the `set` and the `get` boundary, exactly like
+    `m`, `holder` and `nested` are isolated below. An int enum needs no such
+    recursion: it holds nothing mutable, and its own `__deepcopy__` answers
+    `self` (a copy of an immutable value is that value), which this pins as
+    an IDENTITY round trip instead -- the stored member comes back as the
+    very object that was written, matching the default-passthrough pin in
+    `test_a_union_default_passes_through_instead_of_being_re_adopted` above.
     """
     from tests.unit.test_udt_values import Color, Shape
 
@@ -661,14 +665,18 @@ def test_isolation_holds_for_maps_structs_and_nesting() -> None:
     nested.get(0).items.push_back(U32(9))
     assert len(bucket.get(Symbol("n"), Vec).get(0).items) == 1
 
-    bucket.set(Symbol("shape"), Shape.Circle(U32(3)))
+    inner = Vec(U32, [U32(1)])
+    bucket.set(Symbol("shape"), Shape.Boxed(inner))
+    inner.push_back(U32(2))
     first_shape = bucket.get(Symbol("shape"), Shape)
+    assert len(first_shape.payload(U32(0), Vec)) == 1
+    assert first_shape.payload(U32(0), Vec) is not inner
     second_shape = bucket.get(Symbol("shape"), Shape)
-    assert first_shape == Shape.Circle(U32(3))
     assert first_shape is not second_shape
 
-    bucket.set(Symbol("color"), Color.Green)
-    assert bucket.get(Symbol("color"), Color) == Color.Green
+    color = Color.Green
+    bucket.set(Symbol("color"), color)
+    assert bucket.get(Symbol("color"), Color) is color
 
 
 def test_isolation_two_reads_never_share_an_object() -> None:

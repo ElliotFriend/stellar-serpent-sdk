@@ -18,7 +18,8 @@ to cover are unreachable through every contract the repo already ships:
 Everything else the table needs is here too, one narrow method per surface, so
 that a scenario is a sequence of calls rather than a contract of its own: the
 three durabilities, `default=`, `has`, `del_`, all three `extend_ttl` shapes,
-both event spellings, `require_auth`, and both ledger reads.
+both event spellings, `require_auth`, both ledger reads, and (M1-E2 ruling
+E13) a union and an int enum as stored VALUES and a union as a storage KEY.
 
 **Deliberately NOT in `test_emitter_end_to_end.py`'s `FIXTURES`.** That tuple
 carries the contracts the whole-contract property sweep and the WAT goldens run
@@ -255,17 +256,17 @@ class EnvSurface:
     # --- unions and int enums (M1-E2 ruling E13) ----------------------------
 
     def put_shape(self, env: Env, area: U32) -> None:
-        """Store a `Shape.Circle` in instance storage -- the union VALUE
+        """Store a `Shape.Circle` in PERSISTENT storage -- the union VALUE
         round trip. The payload IS the area directly, not a radius the read
         below would have to square: the point of this method is the
         tag/payload round trip, not arithmetic.
         """
-        env.storage().instance().set(SHAPE_KEY, Shape.Circle(area))
+        env.storage().persistent().set(SHAPE_KEY, Shape.Circle(area))
 
     def read_shape_area(self, env: Env) -> U32:
         """The `tag()`-branching read: `Circle`'s payload IS the answer, and
         the unit case -- never written by `put_shape` -- answers zero."""
-        shape = env.storage().instance().get(SHAPE_KEY, Shape, default=Shape.Empty)
+        shape = env.storage().persistent().get(SHAPE_KEY, Shape, default=Shape.Empty)
         if shape.tag() == Symbol("Circle"):
             return shape.payload(U32(0), U32)
         else:
@@ -284,13 +285,15 @@ class EnvSurface:
         return Bool(color == Color.Green)
 
     def put_by_shape_key(self, env: Env, value: U32) -> None:
-        """A union as a storage KEY: `Shape.Empty` is rebuilt fresh on every
-        access (a union has no identity on chain), so this is the union-KEY
-        round trip and not a handle round trip."""
-        env.storage().temporary().set(Shape.Empty, value)
+        """A union as a storage KEY: `Shape.Circle(U32(1))` is rebuilt fresh
+        on every access (a union has no identity on chain), with a PAYLOAD --
+        not the unit case -- so `storage_key`'s `Vec` branch recurses into an
+        element on both this write and the read below, on both legs."""
+        env.storage().temporary().set(Shape.Circle(U32(1)), value)
 
     def read_by_shape_key(self, env: Env) -> U32:
-        """The read rebuilds `Shape.Empty` again, independently of the write
-        above -- the host compares the key's VALUE, so a separately built
-        unit case still finds the entry the write used."""
-        return env.storage().temporary().get(Shape.Empty, U32)
+        """The read rebuilds `Shape.Circle(U32(1))` again, independently of
+        the write above -- the host compares the key's VALUE, so a
+        separately built, equal-payload union still finds the entry the
+        write used."""
+        return env.storage().temporary().get(Shape.Circle(U32(1)), U32)

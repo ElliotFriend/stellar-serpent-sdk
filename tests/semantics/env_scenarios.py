@@ -853,9 +853,9 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
     # only, above) -- so every row here writes the new kind from INSIDE the
     # contract and reads a scalar back out.
     EnvScenario(
-        # E13: a union's storage round trip exercises `storage_key`'s `Vec`
-        # branch and the `"vec"` tag family, which no existing scenario
-        # reaches with a UDT.
+        # E13: a union's storage VALUE round trip reaches the `"vec"` tag
+        # family, which no existing scenario reaches with a UDT. (The
+        # `storage_key` Vec branch is a KEY-side concern -- row 3 below.)
         name="union_round_trips_through_persistent_storage",
         contract=ENV_SURFACE,
         setup=(Call("put_shape", (U32(3),)),),
@@ -874,7 +874,9 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
     EnvScenario(
         # S13's key round trip, over a UNION key rather than a struct key: the
         # read rebuilds a fresh, value-equal key rather than remembering the
-        # one the write used.
+        # one the write used -- exercising `storage_key`'s `Vec` branch (a
+        # union IS a `Vec` on chain), which no existing scenario reaches with
+        # a KEY.
         name="union_keyed_entry_is_found_by_a_rebuilt_value_equal_key",
         contract=ENV_SURFACE,
         setup=(Call("put_by_shape_key", (U32(7),)),),
