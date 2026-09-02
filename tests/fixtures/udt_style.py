@@ -99,6 +99,11 @@ class UdtStyle:
         """`tag()` is the variant name -- element 0 of the on-chain `ScVec`."""
         return env.storage().instance().get(SHAPE, Shape).tag()
 
+    def current_shape(self, env: Env) -> Shape:
+        """The stored union itself, not just its tag -- the same read
+        `shape_name` makes, minus the `.tag()` narrowing."""
+        return env.storage().instance().get(SHAPE, Shape)
+
     def radius(self, env: Env) -> U32:
         """A one-payload read, guarded by the tag the way a compiled contract
         must guard it: the payload of a `Rect` is not a `Circle`'s."""
