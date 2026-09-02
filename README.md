@@ -30,9 +30,13 @@ its own, and higher layers depend only on the ones below them:
   contract author writes against (`U32`, `I128`, `Address`, `Bytes32`,
   `Vec`, `Map`, ...), each knowing how to encode itself via the val codec.
 - **Decorators** (`serpent/decorators.py`) -- `@contract`, `@contracttype`,
-  `@contractevent`, `@contracterror`, and the `errorcode` field-declaration
-  function (`LimitExceeded = errorcode(7)`, not a decorator): the authoring
-  surface that attaches the metadata later layers consume.
+  `@contractevent`, `@contracterror`, `@contractunion`, `@contractenum`, and
+  the field-declaration functions that are not decorators: `errorcode`
+  (`LimitExceeded = errorcode(7)`), `variant` (`Circle = variant(U32)`, in a
+  `class Shape(ContractUnion)`) and `enumvalue` (`Red = enumvalue(0)`, in a
+  `class Color(ContractEnum)`). Together they are the authoring surface that
+  attaches the metadata later layers consume; `examples/shapes.py` is the
+  worked contract for the last two.
 - **Env surface** (`serpent/env.py`) -- the `Env`/`ChainValue`/`Event` API a
   contract method calls against for storage, events, TTL, ledger reads and
   auth. It ships with a deliberately minimal in-Python tier-1 model
@@ -73,6 +77,35 @@ frame rollback, storage footprint, TTL clamp/trap at the exact chain-defined
 bound, and a time-arithmetic algebra for `Timepoint`/`Duration` (bridge
 through `to_u64()`/`from_u64()` in the meantime -- `examples/structs.py` has a
 worked example).
+
+## Tagged unions and int enums: the fence
+
+`@contractunion` and `@contractenum` are the newest part of the authoring
+surface, so the scope is worth stating exactly. What compiles today:
+
+- a **unit** variant (`Empty = variant()`), a **single-payload** variant
+  (`Circle = variant(U32)`), and a **multi-payload tuple** variant
+  (`Rect = variant(U32, U32)`) up to **12** payload values -- the spec's
+  tuple-arity cap, so serpent has one arity story rather than two;
+- an int enum with **explicit u32 discriminants**, every number spelled
+  (`Red = enumvalue(0)`).
+
+A union is read in two steps, `tag()` then `payload(index, ty)`, and an int
+enum by `==`. Both kinds cross the ABI, live in a struct field, and store under
+any durability. Everything else is deliberately out, and each has a named thing
+to write instead (every restriction here is additive to relax: accepts only
+grow when one is lifted):
+
+| Not available | Write this instead |
+|---|---|
+| `match` over a union | an `if`/`elif` chain over `tag()` -- the rewrite `SPT1024`'s own help text recommends |
+| a named-field variant (permanent; Rust refuses it too) | a single-payload variant carrying a `@contracttype` struct |
+| a 0-element tuple variant (permanent) | a unit variant, `variant()` |
+| implicit int-enum discriminants (permanent) | spell the numbers, `enumvalue(N)` |
+| a union as a **multi-entry** `Map` key (a union's container ordering is not modelled in tier 1) | a `@contracttype` key struct -- or keep the map to a single entry |
+| generic / parameterized unions (M2) | one concrete union per instantiation |
+| `Option` narrowing, and `.value` introspection on an int enum (M2) | -- |
+| a union as a cross-contract argument (M2) | -- (cross-contract calls are themselves M2) |
 
 Design rationale, the full milestone plan, and load-bearing facts (interface
 counts, byte layouts, on-chain-verified constants) live in
