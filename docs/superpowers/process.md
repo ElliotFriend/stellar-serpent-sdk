@@ -61,7 +61,12 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   `is_pinned` docstring needs a golden regen), text-keyed allowlist;
   M2: `match` sugar, Option payloads/narrowing, `.value`, `discriminant`
   rename, typed container reads.
-- **NEXT: F (testing tiers)**, then G (CLI as a Stellar CLI plugin). M1 ENDS with
+- **NEXT: F (testing tiers)**, then G (CLI as a Stellar CLI plugin).
+  F inputs decided with Elliot 2026-09-02 (tier-2b build-from-source in
+  M1 + wheels at M3; tier 2b an opt-in skipping marker; tier 3 fixture-
+  only until approved; embed the env-host matching TESTNET's protocol;
+  a deployed shapes.py contract as a tier-3 fixture source) are in
+  `.superpowers/sdd/2026-08-31-m1e2-unions/final-review-attention.md` §6. M1 ENDS with
   a user-approved testnet deployment (HARD STOP — Elliot must
   explicitly approve it in-session).
 
