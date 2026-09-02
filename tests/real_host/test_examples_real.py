@@ -45,11 +45,12 @@ from tests.unit.test_emitter_end_to_end import (
 )
 from tests.unit.test_examples import _allowance_token_roles, load_example
 
-#: A well-known account strkey, restated locally rather than imported: every
-#: module under `tests/` that needs one declares its own copy
+#: Two well-known strkeys, restated locally rather than imported: every module
+#: under `tests/` that needs one declares its own copy
 #: (`tests/real_host/test_real_env.py`, `tests/unit/test_emitter_end_to_end.py`,
 #: ...) rather than reaching into another test module for it.
 ACCOUNT = "GCUNZ4XXN2LPHSGWPGCVZAZ4GUWL6HMXLJ7NCHCPB3I23EPY6JCVISSY"
+CONTRACT = "CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI"
 
 real = (
     pytest.mark.real_host
@@ -93,62 +94,80 @@ def _outcome(call: Any) -> object:
 
 @real
 def test_counter() -> None:
-    """`increment`/`total`, the same round trip `examples/counter.py`'s own docstring shows."""
+    """Faithful restatement of
+    `test_the_counter_example_answers_the_same_at_tier_1_and_as_wasm`
+    (`tests/unit/test_examples.py:162-191`): `total()` FIRST, on the
+    unwritten default, then `increment(5)`, `increment(7)`, `total()`."""
     steps: list[Step] = [
-        ("increment", (U32(2),)),
-        ("increment", (U32(3),)),
+        ("total", ()),
+        ("increment", (U32(5),)),
+        ("increment", (U32(7),)),
         ("total", ()),
     ]
     tier1, real_leg = _both_legs(EXAMPLE_COUNTER, (), steps)
     assert real_leg == tier1
-    assert tier1 == [U32(2), U32(5), U32(5)]
+    assert tier1 == [U32(0), U32(5), U32(12), U32(12)]
 
 
 @real
 def test_errors_vault() -> None:
-    """`deposit`/`withdraw`/`balance`, with a `LimitExceeded` refusal in the
-    middle (the codes `examples/errors.py` declares: `LimitTooSmall=1,
-    Unauthorized=2, LimitExceeded=3, InsufficientBalance=4`)."""
+    """Faithful restatement of
+    `test_the_errors_example_answers_the_same_at_tier_1_and_as_wasm`
+    (`tests/unit/test_examples.py:229-275`): the happy path
+    (`deposit(40)`, `withdraw(10)`, `balance()`), then all three refusals in
+    the order the headline reaches them (`deposit(1000)` -> `LimitExceeded`,
+    `withdraw(1000)` -> `InsufficientBalance`, `set_limit` by a non-owner
+    -> `Unauthorized`), then a final `balance()` proving none of the three
+    refusals wrote anything."""
     owner = Address(ACCOUNT)
     steps: list[Step] = [
-        ("deposit", (U32(4),)),
-        ("deposit", (U32(7),)),
-        ("withdraw", (U32(9),)),
+        ("deposit", (U32(40),)),
+        ("withdraw", (U32(10),)),
+        ("balance", ()),
+        ("deposit", (U32(1000),)),
+        ("withdraw", (U32(1000),)),
+        ("set_limit", (Address(CONTRACT), U32(5))),
         ("balance", ()),
     ]
-    tier1, real_leg = _both_legs(EXAMPLE_ERRORS, (owner, U32(10)), steps)
+    tier1, real_leg = _both_legs(EXAMPLE_ERRORS, (owner, U32(100)), steps)
     assert real_leg == tier1
-    assert real_leg[1] == ("error", 3)  # LimitExceeded: 4 + 7 > the limit of 10
+    assert tier1 == [
+        U32(40),
+        U32(30),
+        U32(30),
+        ("error", 3),  # LimitExceeded
+        ("error", 4),  # InsufficientBalance
+        ("error", 2),  # Unauthorized
+        U32(30),
+    ]
 
 
 @real
 def test_structs_registry() -> None:
-    """`examples/structs.py`'s headline sequence
-    (`test_the_structs_example_answers_the_same_at_tier_1_and_as_wasm`,
-    `tests/unit/test_examples.py:314`): join once, then read both fields
-    back."""
+    """Faithful restatement of
+    `test_the_structs_example_answers_the_same_at_tier_1_and_as_wasm`
+    (`tests/unit/test_examples.py:314-352`): join once, read both fields
+    back, then both refusals -- a second `join` for the same member
+    (`AlreadyJoined`=1) and `display_name_of` for a never-joined address
+    (`NotAMember`=2)."""
     member = Address(ACCOUNT)
     name = String("Ana Registrar")
     steps: list[Step] = [
+        ("join", (member, name)),
         ("display_name_of", (member,)),
         ("joined_ledger_of", (member,)),
+        ("join", (member, String("Ana Again"))),
+        ("display_name_of", (Address(CONTRACT),)),
     ]
-
-    module = load_example(EXAMPLE_STRUCTS)
-    cls = _contract_class(module)
-    env1 = Env()
-    inst: Any = deploy(cls, env1)
-    with env1.frame():
-        inst.join(env1, member, name)
-        tier1 = [getattr(inst, m)(env1, *a) for m, a in steps]
-
-    real_env = RealEnv()
-    c = real_env.deploy_source(EXAMPLE_STRUCTS)
-    c.invoke("join", member, name)
-    real_leg = [c.invoke(m, *a) for m, a in steps]
-
+    tier1, real_leg = _both_legs(EXAMPLE_STRUCTS, (), steps)
     assert real_leg == tier1
-    assert tier1 == [name, U32(1_000_000)]
+    assert tier1 == [
+        None,
+        name,
+        U32(1_000_000),
+        ("error", 1),  # AlreadyJoined
+        ("error", 2),  # NotAMember
+    ]
 
 
 @real
@@ -192,32 +211,50 @@ def test_events_scoreboard() -> None:
 
 @real
 def test_allowance_token() -> None:
-    """`examples/allowance_token.py`'s headline sequence
-    (`test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm`,
-    `tests/unit/test_examples.py:487`): mint, approve, one successful
-    `transfer_from`, both refusals, and the events `approve` and the
-    successful `transfer_from` publish. `RealEnv()` mocks every
-    authorization, matching tier 1's `Env(auths=None)`, so `require_auth` on
-    admin/owner/spender goes through unchallenged on both legs."""
+    """Faithful restatement of
+    `test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm`
+    (`tests/unit/test_examples.py:487-586`): mint, approve, one successful
+    `transfer_from`, the three reads the headline takes at that point
+    (`balance(owner)`, `balance(to)`, `allowance(owner, spender)`), both
+    refusals (`transfer_from` over the balance -> `InsufficientBalance`=2,
+    then with no allowance at all -> `InsufficientAllowance`=1), and the
+    headline's final re-reads (`balance(owner)`, `allowance(owner,
+    spender)`) proving neither refusal wrote anything. `RealEnv()` mocks
+    every authorization, matching tier 1's `Env(auths=None)`, so
+    `require_auth` on admin/owner/spender goes through unchallenged on both
+    legs.
+    """
     admin, owner, spender, to = _allowance_token_roles()
     steps: list[Step] = [
+        ("mint", (owner, U32(100))),
+        ("approve", (owner, spender, U32(200))),
+        ("transfer_from", (spender, owner, to, U32(25))),
         ("balance", (owner,)),
         ("balance", (to,)),
         ("allowance", (owner, spender)),
+        ("transfer_from", (spender, owner, to, U32(100))),
+        ("transfer_from", (to, owner, spender, U32(1))),
+        ("balance", (owner,)),
+        ("allowance", (owner, spender)),
     ]
-    tier1, real_leg = _both_legs(
-        EXAMPLE_ALLOWANCE_TOKEN,
-        (admin,),
-        [
-            ("mint", (owner, U32(100))),
-            ("approve", (owner, spender, U32(200))),
-            ("transfer_from", (spender, owner, to, U32(25))),
-            *steps,
-        ],
-    )
+    tier1, real_leg = _both_legs(EXAMPLE_ALLOWANCE_TOKEN, (admin,), steps)
     assert real_leg == tier1
-    assert tier1 == [None, None, None, U32(75), U32(25), U32(175)]
+    assert tier1 == [
+        None,
+        None,
+        None,
+        U32(75),
+        U32(25),
+        U32(175),
+        ("error", 2),  # InsufficientBalance
+        ("error", 1),  # InsufficientAllowance
+        U32(75),
+        U32(175),
+    ]
 
+    # The headline test also compares the `Approval`/`Transfer` events the
+    # setup calls publish, on both legs -- a second, dedicated deploy, since
+    # `_both_legs`/`_outcome` do not track events.
     module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
     env1 = Env()
     token = deploy(module.AllowanceToken, env1, admin)
@@ -336,18 +373,27 @@ def test_a_union_and_an_int_enum_return_decode_through_their_types() -> None:
     """
     udt_style = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "udt_style.py"
     module = load_example(udt_style)
+
     c = RealEnv().deploy_source(udt_style)
     c.invoke("set_rect", U32(2), U32(3))
-    assert c.invoke("current_shape") == module.Shape.Rect(U32(2), U32(3))
+    real_shape = c.invoke("current_shape")
     c.invoke("promote")
-    level = c.invoke("level")
-    assert isinstance(level, ContractEnum)
-    assert level == module.Level.High
+    real_level = c.invoke("level")
+    assert isinstance(real_level, ContractEnum)
+
     env = Env()
-    inst = deploy(module.UdtStyle, env)
+    inst: Any = deploy(module.UdtStyle, env)
     with env.frame():
         inst.set_rect(env, U32(2), U32(3))
-        assert inst.current_shape(env) == module.Shape.Rect(U32(2), U32(3))
+        tier1_shape = inst.current_shape(env)
+        inst.promote(env)
+        tier1_level = inst.level(env)
+
+    # the real leg compared to tier 1 DIRECTLY, before either is pinned to a literal
+    assert real_shape == tier1_shape
+    assert real_level == tier1_level
+    assert real_shape == module.Shape.Rect(U32(2), U32(3))
+    assert real_level == module.Level.High
 
 
 def _contract_class(module: object) -> type:
