@@ -102,9 +102,10 @@ grow when one is lifted):
 | a named-field variant (permanent; Rust refuses it too) | a single-payload variant carrying a `@contracttype` struct |
 | a 0-element tuple variant (permanent) | a unit variant, `variant()` |
 | implicit int-enum discriminants (permanent) | spell the numbers, `enumvalue(N)` |
-| a union as a **multi-entry** `Map` key (a union's container ordering is not modelled in tier 1) | a `@contracttype` key struct -- or keep the map to a single entry |
+| a union as a `Map` KEY, at any entry count (a union's container ordering is not modelled in tier 1) | a `@contracttype` key struct (storage keyed by a union is unaffected) |
 | an `Option` payload, `variant(X \| None)` (M2) | a unit variant for the absent case, `Nothing = variant()` |
 | generic / parameterized unions (M2) | one concrete union per instantiation |
+| a container payload read back in compiled code, `payload(i, Vec)` (F/M2) | wrap it in a `@contracttype` struct field and read the struct back |
 | `Option` narrowing, and `.value` introspection on an int enum (M2) | -- |
 | a union as a cross-contract argument (M2) | -- (cross-contract calls are themselves M2) |
 

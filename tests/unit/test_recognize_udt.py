@@ -408,6 +408,28 @@ def test_an_int_enum_compares_but_does_not_order_or_add() -> None:
     _expect_module_reject("return c + U32(1)", "SPT3003")
 
 
+def test_a_container_ty_in_a_decoding_position_names_the_wrap_around() -> None:
+    """The M1-E2 final-review reword of `SPT3013`'s container arm, in BOTH
+    decoding positions (E2's "pass `ty` like `get`" inherits `get`'s refusal).
+
+    The old text was `to_spec_type`'s generic annotation advice -- "a container
+    needs its element types: write `Vec[T]`" -- which is right for an
+    annotation and wrong here: `Vec[T]` in this position is not a bare `Name`,
+    so it meets the OTHER arm of the same code ("must name a chain type
+    directly"). M1 lowers neither spelling, so the message says that and names
+    the wrap-around that does work.
+    """
+    for body in (
+        "return env.storage().temporary().get(sym, Vec)",
+        "return s.payload(U32(0), Vec)",
+    ):
+        exc = _expect_module_reject(body, "SPT3013", ret="Vec[U32]")
+        message = _message_for(exc, "SPT3013")
+        assert "a container cannot be the type argument of `get()`/`payload()`" in message
+        help_text = next(d.help for d in exc.diagnostics if d.code == "SPT3013")
+        assert "@contracttype struct field" in (help_text or "")
+
+
 def test_a_union_has_no_truthiness_and_no_field_read() -> None:
     _expect_module_reject("if s:\n    return U32(1)\nreturn U32(0)", "SPT3015")
     _expect_module_reject("return s.width", "SPT1037")

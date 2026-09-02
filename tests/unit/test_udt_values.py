@@ -251,8 +251,9 @@ def test_an_int_enum_orders_against_a_u32_by_rank_then_discriminant() -> None:
 
 
 def test_a_union_is_a_storage_key_but_not_orderable_at_tier_1() -> None:
-    """D10's exact wording, and F.1.8's worse-than-refusal failure mode: ONE
-    Map key succeeds because a one-element binary search compares nothing."""
+    """D10's exact wording, and F.1.8's worse-than-refusal failure mode: the
+    first `set` succeeds because a one-element binary search compares nothing
+    -- and nothing else about that map works (the read pin below)."""
     shape = _shape_module().Shape
     assert storage_key(shape.Circle(U32(3))) == storage_key(shape.Circle(U32(3)))
     with pytest.raises(NotImplementedError, match="container comparison"):
@@ -267,6 +268,27 @@ def test_a_second_map_entry_keyed_by_a_union_hits_the_deferred_refusal() -> None
     keyed.set(shape.Circle(U32(1)), U32(1))
     with pytest.raises(NotImplementedError, match="container comparison"):
         keyed.set(shape.Circle(U32(2)), U32(2))
+
+
+def test_a_one_entry_map_keyed_by_a_union_cannot_be_READ_either() -> None:
+    """The correction the M1-E2 final review made to F.1.8: the first `set`
+    succeeding is not a working single-entry map.
+
+    A `get`/`has` compares the probe key against the stored one, so BOTH raise
+    `Vec`'s deferred refusal at every entry count, one entry included -- the
+    "keep the map to a single entry" workaround the prose used to offer never
+    existed. A `Map` keyed by a union is not modelled in tier 1 at all; key on
+    a `@contracttype` struct instead. (Storage keyed by a union is a different
+    mechanism -- hash-based, not ordered -- and is unaffected.)
+    """
+    shape = _shape_module().Shape
+    keyed: Map[ContractUnion, U32] = Map(ContractUnion, U32)
+    keyed.set(shape.Circle(U32(1)), U32(1))
+    assert len(keyed) == 1
+    with pytest.raises(NotImplementedError, match="container comparison"):
+        keyed.get(shape.Circle(U32(1)))
+    with pytest.raises(NotImplementedError, match="container comparison"):
+        keyed.has(shape.Circle(U32(1)))
 
 
 def test_two_equal_unions_are_equal_and_hash_equal() -> None:

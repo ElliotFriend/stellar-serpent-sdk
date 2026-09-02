@@ -1098,12 +1098,23 @@ def _storage_del(node: ast.Call, ctx: FuncCtx, loc: Loc, bucket: str) -> IRExpr:
     )
 
 
-def _resolve_type_arg(node: ast.expr, ctx: FuncCtx, loc: Loc) -> Ty | None:
+def _resolve_type_arg(
+    node: ast.expr, ctx: FuncCtx, loc: Loc, *, decoded_read: bool = False
+) -> Ty | None:
     """The `T` in `<bucket>.get(key, T)`: a bare `Name` naming a chain type
     or `@contracttype` struct. Container-generic forms (`Vec[U32]`) are
     Task 7b's extension of this function; only a bare `Name` is recognized
     here (SS C.4's own worked examples -- `get(NAME_KEY, String)`, `get(key,
-    U32, default=U32(0))` -- are all bare type names)."""
+    U32, default=U32(0))` -- are all bare type names).
+
+    `decoded_read` marks the two positions that DECODE a value under the type
+    named here -- `get()` and `payload()` -- as opposed to the element/key/value
+    types a container CONSTRUCTION declares. In a decoding position a container
+    is refused outright, with the message below: `Vec` alone would need element
+    types, `Vec[T]` is not a bare `Name`, and neither spelling is lowerable in
+    M1, so an author sent after `Vec[T]` by the generic annotation advice would
+    only meet the other arm of this same code (M1-E2 final review).
+    """
     if not isinstance(node, ast.Name):
         _error(
             ctx,
@@ -1117,6 +1128,19 @@ def _resolve_type_arg(node: ast.expr, ctx: FuncCtx, loc: Loc) -> Ty | None:
     if obj is None:
         _error(ctx, "SPT2001", loc, f"`{node.id}` is not defined in this contract")
         return None
+    if decoded_read and obj in (_VecType, _MapType):
+        _error(
+            ctx,
+            "SPT3013",
+            loc,
+            f"a container cannot be the type argument of `get()`/`payload()` in M1: "
+            f"`{node.id}` names no readable type here",
+            help=(
+                "wrap the container in a @contracttype struct field and read the struct back, "
+                "e.g. `get(key, Holder)` for `class Holder: items: Vec[U32]`"
+            ),
+        )
+        return None
     return resolve_annotation(obj, ctx.loaded, loc, ctx.sink)
 
 
@@ -1129,7 +1153,7 @@ def _storage_get(node: ast.Call, ctx: FuncCtx, loc: Loc, bucket: str) -> IRExpr:
     if bound is None:
         return _invalid(loc)
 
-    target_ty = _resolve_type_arg(bound["ty"], ctx, loc)
+    target_ty = _resolve_type_arg(bound["ty"], ctx, loc, decoded_read=True)
     if target_ty is None:
         return _invalid(loc)
 
@@ -2462,7 +2486,7 @@ def _recognize_union_read(
     bound = _bind(node, ctx, loc, f"{name}.payload(index, ty)", ("index", "ty"))
     if bound is None:
         return _invalid(loc)
-    slot_ty = _resolve_type_arg(bound["ty"], ctx, loc)
+    slot_ty = _resolve_type_arg(bound["ty"], ctx, loc, decoded_read=True)
     if slot_ty is None:
         return _invalid(loc)
     index = _check_value(bound["index"], ctx, expected=Ty.U32)

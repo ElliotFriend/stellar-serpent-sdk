@@ -65,13 +65,16 @@ nor a `has` guard before its first read.
 ## Two boundaries this file is honest about
 
 **A union is a hashable storage KEY, but it is not modelled as ORDERABLE at
-tier 1.** Keying a storage entry on one is fine (that is `pin`). A multi-entry
-`Map[Shape, V]` is NOT: the map keeps its pairs sorted by `val_cmp` of the key,
-comparing two unions needs the nested-container ordering sub-plan B verifies,
-and the model raises `NotImplementedError` on the SECOND entry rather than
-inventing an order. The first entry goes in silently, which is the sharp edge:
-if you want a map keyed by shape, key it on a `@contracttype` struct instead
-and let the struct's fields carry the shape's data.
+tier 1.** Keying a storage entry on one is fine (that is `pin`). A
+`Map[Shape, V]` is NOT, at any entry count: the map keeps its pairs sorted by
+`val_cmp` of the key, comparing two unions needs the nested-container ordering
+sub-plan B verifies, and the model raises `NotImplementedError` rather than
+inventing an order. The first `set` does go in silently -- a one-element map
+compares nothing -- but reading it back does not: `get` and `has` compare the
+probe key against the stored one and raise, so a single-entry map keyed by a
+union is not a workaround either. If you want a map keyed by shape, key it on a
+`@contracttype` struct instead and let the struct's fields carry the shape's
+data.
 
 **`get(key, Shape)` accepts a stored plain `Vec`, and `get(key, Color)` a
 stored plain `U32` -- and reads each one back AS the type you asked for.** The

@@ -29,9 +29,11 @@ matched by `env._FAMILY_BY_TYPE` before the `Struct` arm is ever reached.
 is the discriminant, so `val_cmp` compares it against another member or a bare
 `U32` exactly as it compares two `U32`s. A union is NOT: `_cmp_payload()`
 raises `Vec`'s own deferred `NotImplementedError` (the string is imported from
-`containers`, not restated), so a union is a hashable storage key and a
-single-entry `Map` key, and a SECOND `Map` entry keyed by one raises. That is
-"not modelled in tier 1", not an invented order.
+`containers`, not restated), so a union is a hashable storage key but NOT a
+`Map` key at any entry count: the first `set` compares nothing and succeeds,
+and every `get`/`has` (and every later `set`) raises. That is "not modelled in
+tier 1", not an invented order. Key a `Map` on a `@contracttype` struct
+instead; storage keyed by a union is hash-based and unaffected.
 
 **The authoring surface (ruling E1).** A case is declared with
 `variant()` / `variant(U32)` / `variant(U32, U32)` ... up to
