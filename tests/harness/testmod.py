@@ -16,7 +16,8 @@ avoided. `imports` fixes the import order; `CallImport(name)` resolves through
 it by name, `CallDefined(d)` resolves to `len(imports) + d`.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 
 from serpent._host import functions_by_name
 from serpent.emitter import encode, opcodes
@@ -43,6 +44,10 @@ _KIND_MEMORY = 0x02
 
 #: The memory a Soroban module exports, spelled the way the host expects.
 MEMORY_EXPORT_NAME = "memory"
+
+#: An immutable empty default for `custom_sections` (a `{}` default would be a
+#: mutable-argument bug), the same shape `serpent.spec.sections._NO_PAIRS` uses.
+_NO_CUSTOM_SECTIONS: Mapping[str, bytes] = MappingProxyType({})
 
 _VALTYPES = {"i64": opcodes.VALTYPE_I64, "i32": _VALTYPE_I32}
 
@@ -76,6 +81,7 @@ def build_test_module(
     imports: Sequence[str] = (),
     memory_pages: int | None = None,
     data: bytes | None = None,
+    custom_sections: Mapping[str, bytes] = _NO_CUSTOM_SECTIONS,
 ) -> bytes:
     """Assemble the smallest valid module holding `functions`.
 
@@ -85,6 +91,15 @@ def build_test_module(
     exported under its own name, and the memory -- present iff `memory_pages` is
     given -- is exported as `memory`. `data` becomes one active segment at
     offset 0 of memory 0.
+
+    `custom_sections` maps a section NAME to its payload and is emitted last,
+    after the code and data sections (M1-F review M1). It exists for exactly one
+    caller: `tests/real_host/test_feature_set_real.py`, which needs a
+    `contractenvmetav0` section on every module it hands the real host, because
+    the host rejects a module without one BEFORE it ever looks at the code --
+    so a feature-set negative built without it would fail for the wrong reason
+    and pass vacuously. Insertion order is preserved (`dict` is ordered), so a
+    caller passing two sections gets them in the order it wrote them.
     """
     if data is not None and memory_pages is None:
         raise ValueError("a data segment needs a memory: pass memory_pages")
@@ -154,4 +169,10 @@ def build_test_module(
             + data
         )
         out += encode.section(_SEC_DATA, encode.vec([segment]))
+    for name, payload in custom_sections.items():
+        # Custom sections may legally appear anywhere between two known
+        # sections; last is where the emitter puts serpent's own
+        # (`emitter/module.py`), so this matches the modules the real host
+        # already accepts from this repo.
+        out += encode.custom_section(name, payload)
     return bytes(out)
