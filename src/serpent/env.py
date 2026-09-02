@@ -72,8 +72,8 @@ ceiling is worse than no ceiling: a test would go green over an `extend_to`
 that TRAPS on chain for a temporary entry. So:
 
 **Modelled.** A per-entry `live_until: int | None` compared against the ledger
-sequence; `extend_ttl` on all three buckets; the threshold guard (extend only
-when `live_until - sequence < threshold`); never-reduce
+sequence; `extend_ttl` on all three buckets; the threshold guard (extend when
+`live_until - sequence <= threshold`, the host's own boundary); never-reduce
 (`live_until = max(live_until or 0, sequence + extend_to)`); lazy expiry in
 `get`/`has` once the sequence is strictly past `live_until`; S8's dead-entry
 error for both deaths a tier-1 sequence can produce -- a key that was never
@@ -90,14 +90,16 @@ accepts-shrink -- a model that accepted what the host refuses cannot fail a
 test the host fails, and this one had put twelve `ENV_SCENARIOS` rows on
 `(threshold=2000, extend_to=1000)`, inputs no host will run.
 
-**One boundary this model is KNOWN to have one ledger off, unfixed pending a
-ruling:** the guard extends when `live_until - sequence < threshold`, and the
-host extends when `live_until - sequence <= threshold` -- so at exact equality
-tier 1 is a no-op and the host extends (measured; 999 and 1_001 agree, only
-equality differs). `tests/unit/test_env_ttl.py`'s
-`test_the_threshold_guard_at_exact_equality_is_a_known_model_host_difference`
-and the matching `host_diverges` declaration on `ENV_SCENARIOS`'
-`the_threshold_guard_blocks_at_exact_equality` are the enumerable record.
+**And one boundary the real leg MOVED, in the same direction:** the guard used
+to extend only when `live_until - sequence < threshold`; the host extends when
+`live_until - sequence <= threshold` (measured 2026-09-02 -- 999 and 1_001
+agreed, exact equality was the only disagreement), so this model now does too.
+Ruled by the addendum to the 2026-09-02 "M1-F Task 5 rulings" -- the host is the
+truth, so tier 1 mirrors it rather than declaring a divergence, and the E9
+declaration that recorded the gap for one run was retired with the fix.
+`tests/unit/test_env_ttl.test_the_threshold_guard_extends_at_exact_equality`
+and `ENV_SCENARIOS`' `the_threshold_guard_extends_at_exact_equality` row are the
+two pins that hold it.
 
 **NOT modelled, named rather than approximated.** The clamp, the trap, and
 hence the whole persistent/temporary asymmetry: `extend_to` is applied exactly
@@ -816,8 +818,15 @@ def _extended_live_until(
 
     Ruling E4(c)'s algebra, in one place because all three buckets share it:
 
-    * the THRESHOLD GUARD -- an entry with `threshold` or more ledgers of
-      lifetime left is not extended at all. A `None` live-until always passes
+    * the THRESHOLD GUARD -- an entry with MORE than `threshold` ledgers of
+      lifetime left is not extended at all, and one with exactly `threshold`
+      IS. The boundary is the host's, measured 2026-09-02 on the embedded
+      soroban-env-host and ruled into this model by the addendum to the
+      2026-09-02 "M1-F Task 5 rulings": the host extends when
+      `live_until - sequence <= threshold`, and this model used to extend only
+      when `< threshold`, so the two answered differently at exact equality and
+      nowhere else (999 and 1_001 always agreed). The host is the truth, so the
+      comparison here is `>` and not `>=`. A `None` live-until always passes
       the guard (module docstring: the first extension always applies);
     * NEVER-REDUCE -- `max(live_until or 0, sequence + extend_to)`, so a
       smaller `extend_to` after a larger one cannot pull the live-until back;
@@ -830,7 +839,7 @@ def _extended_live_until(
     `None` from the `live_until` parameter's "never extended" -- the two never
     meet, because the caller only ever writes a non-`None` result.
     """
-    if live_until is not None and live_until - sequence >= threshold:
+    if live_until is not None and live_until - sequence > threshold:
         return None
     return max(live_until or 0, sequence + extend_to)
 
@@ -1218,8 +1227,9 @@ class InstanceStorage(_StorageBucket):
         """
 
     def extend_ttl(self, threshold: U32, extend_to: U32) -> None:
-        """Extend the instance's TTL to `extend_to` if it falls below
-        `threshold` ledgers remaining.
+        """Extend the instance's TTL to `extend_to` if it is AT OR BELOW
+        `threshold` ledgers remaining (the host's boundary; see
+        `_extended_live_until`).
 
         No key: the whole instance sub-map shares one live-until with the
         contract instance itself (S7). Valid even when the sub-map is empty --
@@ -1264,8 +1274,8 @@ class PersistentStorage(_StorageBucket):
     _DURABILITY_NAME: ClassVar[str] = "persistent"
 
     def extend_ttl(self, key: ChainValue, threshold: U32, extend_to: U32) -> None:
-        """Extend `key`'s TTL to `extend_to` if it falls below `threshold`
-        ledgers remaining.
+        """Extend `key`'s TTL to `extend_to` if it is AT OR BELOW `threshold`
+        ledgers remaining (the host's boundary; see `_extended_live_until`).
 
         Threshold guard, never-reduce, the F1 window refusal, and a
         `StorageTrap` for an entry that is not there (never written, deleted, or
@@ -1290,8 +1300,8 @@ class TemporaryStorage(_StorageBucket):
     _DURABILITY_NAME: ClassVar[str] = "temporary"
 
     def extend_ttl(self, key: ChainValue, threshold: U32, extend_to: U32) -> None:
-        """Extend `key`'s TTL to `extend_to` if it falls below `threshold`
-        ledgers remaining.
+        """Extend `key`'s TTL to `extend_to` if it is AT OR BELOW `threshold`
+        ledgers remaining (the host's boundary; see `_extended_live_until`).
 
         The same body as `PersistentStorage.extend_ttl`, and that is itself the
         model's loudest gap: **NOT modelled: S8's trap** -- an `extend_to` past

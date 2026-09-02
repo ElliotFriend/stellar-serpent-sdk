@@ -167,26 +167,32 @@ def test_a_window_where_threshold_equals_extend_to_is_accepted() -> None:
     assert env.storage().temporary().has(KEY) == Bool(False)
 
 
-def test_the_threshold_guard_at_exact_equality_is_a_known_model_host_difference() -> None:
-    """**The model extends when `remaining < threshold`; the host extends when
-    `remaining <= threshold`.** Measured 2026-09-02 on the embedded host: an
-    entry with 1_000 ledgers remaining and `extend_ttl(key, 1_000, 5_000)` is a
-    NO-OP here and an extension there (999 blocks on both, 1_001 extends on
-    both -- the two differ at equality and nowhere else).
+def test_the_threshold_guard_extends_at_exact_equality() -> None:
+    """THE BOUNDARY, at exact equality: `remaining <= threshold` EXTENDS.
 
-    Asserted rather than fixed: this is a one-ledger boundary in the tier-1
-    oracle, discovered by the real leg AFTER the F1 rulings were written (which
-    recorded the guard as agreeing), so the fix is a controller decision, not a
-    passing edit. `ENV_SCENARIOS`'
-    `the_threshold_guard_blocks_at_exact_equality` row carries the matching
-    declared divergence, which is what keeps this enumerable at the tier that
-    can see it.
+    Measured on the embedded host 2026-09-02: an entry with 1_000 ledgers
+    remaining and `extend_ttl(key, 1_000, 5_000)` is an extension there, so it
+    is an extension here (999 blocks on both sides of the boundary, 1_001
+    extends -- equality was the only disagreement, and the decisions.md
+    addendum to the 2026-09-02 "M1-F Task 5 rulings" ruled that tier 1 mirrors
+    the host).
+
+    This pin used to assert the opposite (`< threshold`, so a no-op at
+    equality), which is the model this repo shipped before the real leg
+    measured the host. It is the moved pin: the row
+    `ENV_SCENARIOS.the_threshold_guard_extends_at_exact_equality` moved with
+    it, and its E9 declaration was retired, because there is nothing left to
+    declare.
     """
     env = deployed_env()
     env.storage().temporary().set(KEY, U32(1))
     env.storage().temporary().extend_ttl(KEY, U32(1_000), U32(1_000))
-    env.storage().temporary().extend_ttl(KEY, U32(1_000), U32(5_000))  # a no-op HERE
+    env.storage().temporary().extend_ttl(KEY, U32(1_000), U32(5_000))  # extends at equality
     env.advance(1_001)
+    assert env.storage().temporary().has(KEY) == Bool(True)
+    env.advance(5_000 - 1_001)
+    assert env.storage().temporary().has(KEY) == Bool(True)
+    env.advance(1)
     assert env.storage().temporary().has(KEY) == Bool(False)
 
 

@@ -355,29 +355,14 @@ U32_LEDGER_UNRUNNABLE = (
     "model's own rough edge -- a state the model can reach and no host can (F3)"
 )
 
-#: The threshold guard's BOUNDARY, one ledger apart between the model and the
-#: host. Measured on the embedded host 2026-09-02, AFTER the F1 rulings were
-#: written (those recorded the guard as agreeing, on a first run that never
-#: probed equality): the host extends when `live_until - sequence <= threshold`
-#: and tier 1 extends when `live_until - sequence < threshold`, so at EXACT
-#: EQUALITY tier 1 is a no-op and the host extends. 999 blocks on both sides
-#: and 1_001 extends on both; equality is the only disagreement.
-#:
-#: Declared rather than fixed: a boundary change in the tier-1 oracle is a
-#: controller decision (E9's "wrong by omission ... fixing the model is an M2
-#: oracle edit once the evidence is in"), and this row plus
-#: `test_env_ttl.py`'s
-#: `test_the_threshold_guard_at_exact_equality_is_a_known_model_host_difference`
-#: are the two places the evidence now lives. **This one is not yet ruled on.**
-THRESHOLD_BOUNDARY_REASON = (
-    "the threshold guard's boundary is one ledger apart between the legs: tier 1 "
-    "extends when `live_until - sequence < threshold` and the host extends when "
-    "`live_until - sequence <= threshold`, so this row's exact-equality call is a "
-    "NO-OP at tier 1 and an EXTENSION on the host -- which leaves the entry alive "
-    "at +1001 there and expired here. Measured 2026-09-02 (999 blocks on both, "
-    "1_001 extends on both); a NEW finding after the F1/F2/F3/F5 rulings, declared "
-    "under E9 pending a controller decision on the model's boundary"
-)
+#: RETIRED, and recorded rather than deleted: `THRESHOLD_BOUNDARY_REASON` was
+#: the E9 declaration on `the_threshold_guard_extends_at_exact_equality` (then
+#: named `..._blocks_at_...`) for exactly one run. The real leg measured the
+#: host extending at exact equality where tier 1 blocked; the addendum to the
+#: 2026-09-02 "M1-F Task 5 rulings" moved the MODEL to the host's boundary
+#: instead of carrying the gap, so the declaration had nothing left to declare.
+#: A declared divergence is meant to be retired the day the model is fixed --
+#: this is what that looks like.
 
 #: A keyed WRITE and the temporary entry's live-until: tier 1 CLEARS it (the
 #: entry is never-extended, and a never-extended entry is immortal here), the
@@ -804,16 +789,26 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
     EnvScenario(
         # THE THRESHOLD BOUNDARY, at exact equality (Task 3's carried
         # obligation): the second call sees `live_until - sequence == 1000 ==
-        # threshold`, and the guard's `>=` makes it a NO-OP. A guard written
-        # `>` would extend to sequence + 5000 and this entry would still be
-        # alive below.
+        # threshold`, and the guard EXTENDS there -- to sequence + 5000, so the
+        # entry is still alive 1001 ledgers on. A guard written `>=` would make
+        # it a no-op and this row would read the default.
         #
-        # F1 rewrite: the FIRST call was (2000, 1000); the second was already
-        # host-legal, and it is the one the claim is about, so the boundary is
-        # untouched. The real host answers differently here -- it extends at
-        # equality -- and that is the declared divergence below, the one finding
-        # in this round that arrived after the rulings.
-        name="the_threshold_guard_blocks_at_exact_equality",
+        # F1 rewrite: the first call was (2000, 1000); the second was already
+        # host-legal, and it is the one the claim is about.
+        #
+        # F1 rewrite (round 2, the boundary itself): `expect` was U32(0) and
+        # this row carried an E9 `host_diverges` for one run, because tier 1
+        # blocked at equality and the host extended. Ruled by the addendum to
+        # the 2026-09-02 "M1-F Task 5 rulings" -- the host is the truth, so the
+        # tier-1 guard moved to the host's `<=` boundary and BOTH legs now
+        # answer U32(7). The declaration is retired: there is nothing left to
+        # declare, and `test_env_ttl.test_the_threshold_guard_extends_at_exact_
+        # equality` is the moved tier-1 pin.
+        #
+        # It is the one row in this table whose named claim was measured FALSE
+        # by the real host and corrected, rather than the model being wrong
+        # about something it never promised -- which is what tier 2b is for.
+        name="the_threshold_guard_extends_at_exact_equality",
         contract=ENV_SURFACE,
         setup=(
             Call("put_temp", (_K, U32(7))),
@@ -823,9 +818,8 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         ),
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
-        expect=U32(0),
+        expect=U32(7),
         mini_host_gap=TTL_REASON,
-        host_diverges=HostDivergence(reason=THRESHOLD_BOUNDARY_REASON, events=(), answer=U32(7)),
     ),
     EnvScenario(
         # One ledger later the SAME two calls fall BELOW the threshold (999 <
