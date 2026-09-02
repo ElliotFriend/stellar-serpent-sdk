@@ -12,7 +12,7 @@ oracle" that mirrors on-chain semantics exactly. Spec:
 (§13's verified-facts appendix is REQUIRED READING before touching compiler or
 harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
 
-## State (as of 2026-08-27 evening)
+## State (as of 2026-09-02)
 
 - **Phase 0**: COMPLETE (GO). Testnet contract
   `CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI`.
@@ -42,22 +42,26 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   Suite 3947/2skip, all gates green on main. Carried obligations live in
   `.superpowers/sdd/2026-08-28-m1e-env-runtime/final-review-attention.md`
   (kept, like M1-C/D's) — F/G/M2 items plus the parked triage.
-- **M1-E2 (tagged unions + int enums): IN PROGRESS on branch
-  `m1e2-unions`** — dossier (byte-verified against real Rust builds) at
-  specs/2026-08-31-m1e2-inputs-dossier.md; rulings E1-E13 + plan-review
-  rulings in decisions.md (2026-08-31); plan v2 at
-  plans/2026-08-31-m1e2-unions.md (10 tasks / 12 commits). **Tasks 1-2
-  of 10 complete** (the value layer: ContractUnion/ContractEnum +
-  variant()/enumvalue() descriptors, tier-1 tag()/payload(); the
-  declaration layer: @contractunion/@contractenum, the limits.py
-  case-name rerouting, six new SPT4xxx/5xxx rows, serpent.__all__ +6).
-  Suite 4088/2skip, all gates green at 4524506. **RESUME AT TASK 3**
-  (spec entries), then 4-10, the Fable whole-branch review, one fix
-  wave, local merge. The ledger
-  (.superpowers/sdd/2026-08-31-m1e2-unions/progress.md) is the map and
-  carries the booked debts (discriminant rename; the M1-E
-  event-convention unbridged raises; SPT4012 wording).
-- Then F (testing tiers), G (CLI as a Stellar CLI plugin). M1 ENDS with
+- **M1-E2 (tagged unions + int enums): merged to main 2026-09-02**
+  (fast-forward, tip e827a1e; 31 commits). The value layer
+  (`ContractUnion`/`ContractEnum`, `variant()`/`enumvalue()`), the
+  `@contractunion`/`@contractenum` declaration layer, UDT union/enum spec
+  entries in the XDR kind order, `MakeUnion` + two `Ty` tags in the
+  emitter, `tag()`/`payload()` reads, SPT3021/3022/4026 + six SPT4xxx/5xxx
+  codes, the `topic`-marker refusal, the SPT3019 narrowing, the `get`
+  overloads, `examples/shapes.py` (sixth example), three ENV_SCENARIOS
+  rows (62 total). Final review (Fable) found one silent cross-tier
+  divergence (D6 x E9: enum read back as U32) fixed by tier-1 re-typing;
+  rulings in decisions.md (2026-09-01 x2). Suite 4222/2skip, all gates
+  green on main. Carried obligations live in
+  `.superpowers/sdd/2026-08-31-m1e2-unions/final-review-attention.md`
+  (kept, like C/D/E's) -- F: harness decoding of union/enum returns,
+  container `obj_cmp`, the bridge-gate generalisation, param shadowing;
+  G: the sanctioned wording pass (SPT4012, origin fields, `_HELP` order,
+  `is_pinned` docstring needs a golden regen), text-keyed allowlist;
+  M2: `match` sugar, Option payloads/narrowing, `.value`, `discriminant`
+  rename, typed container reads.
+- **NEXT: F (testing tiers)**, then G (CLI as a Stellar CLI plugin). M1 ENDS with
   a user-approved testnet deployment (HARD STOP — Elliot must
   explicitly approve it in-session).
 
@@ -132,7 +136,7 @@ record of those decisions for review later."
    history) and the most recent SDD ledger under `.superpowers/sdd/`.
 3. If mid-sub-plan: the ledger's first line names its plan; tasks with a
    `complete` line are DONE — resume at the first task without one.
-4. If starting a sub-plan (M1-D is next): begin at step 1 of the loop above
+4. If starting a sub-plan (F is next): begin at step 1 of the loop above
    (dossier if warranted → plan → Opus plan review → execute). M1-C's
    carried obligations for D are in
    `.superpowers/sdd/2026-08-27-m1c-compiler-frontend/final-review-attention.md`
