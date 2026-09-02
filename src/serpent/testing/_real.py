@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from stellar_sdk import scval
 from stellar_sdk.strkey import StrKey
-from stellar_sdk.xdr import ContractEvent, DiagnosticEvent, SCVal
+from stellar_sdk.xdr import ContractEvent, DiagnosticEvent, SCVal, SCValType
 
 from serpent.decorators import _METADATA_ATTR
 from serpent.emitter import build_file
@@ -48,7 +48,7 @@ from serpent.env import (
     PublishedEvent,
     RecordedAuth,
 )
-from serpent.testing._errors import RealHostUnavailable, raise_from_failure
+from serpent.testing._errors import RealHostError, RealHostUnavailable, raise_from_failure
 from serpent.testing._marker import unavailable_reason
 from serpent.testing._scval import decode_loose, from_xdr, to_xdr
 from serpent.types import Address, Vec
@@ -306,14 +306,25 @@ class RealEnv:
         method: str,
         args_xdr: list[bytes],
         module: ModuleType | None,
+        pending: Sequence[tuple[str, list[bytes]]] = (),
     ) -> bytes:
-        """One invocation, with the auth set re-established first (M6)."""
+        """One invocation, with the auth set re-established first (M6).
+
+        `pending` is the caller's registered `(authorizer, args XDR)` entries
+        (`RealContract.add_mock_auths`), paired here with the method being
+        invoked. They are part of the SAME set as the per-call entries, because
+        `mock_auths` replaces the whole thing: passing the two separately would
+        mean the second call silently revoked the first.
+        """
         if self._allow is not None:
             # `mock_auths` REPLACES the sdk's whole entry set, so the complete
             # list is rebuilt here per call: one entry per allowed address, for
             # THIS contract, method and argument list -- the shape the host
-            # records for a bare `require_auth`.
-            self._raw.mock_auths([(who.strkey, address, method, args_xdr) for who in self._allow])
+            # records for a bare `require_auth` -- plus every pending entry,
+            # whose args are the caller's and whose function is this call's.
+            entries = [(who.strkey, address, method, args_xdr) for who in self._allow]
+            entries += [(who, address, method, args) for who, args in pending]
+            self._raw.mock_auths(entries)
         try:
             return self._raw.invoke(address, method, args_xdr)
         except self._host.HostFailure as exc:
@@ -334,6 +345,65 @@ class RealContract:
         self.address = address
         self.cls = cls
         self._module = module
+        #: Registered `(authorizer strkey, args ScVal XDR)` entries, replayed
+        #: into every later invoke's mock set (`add_mock_auths`).
+        self._pending: list[tuple[str, list[bytes]]] = []
+        #: Everything the invocations on this contract have recorded, in order
+        #: (`events_for_sequence`/`auths_for_sequence`). Accumulated here
+        #: because the raw readers only ever answer for the LAST invocation.
+        self._sequence_events: list[PublishedEvent] = []
+        self._sequence_auths: list[RecordedAuth] = []
+
+    def add_mock_auths(self, entries: Iterable[tuple[Address, Vec[Any]]]) -> None:
+        """Register `(authorizer, args)` authorizations for every later invoke.
+
+        The one shape the per-call entries cannot express.
+        `RealEnv._invoke` mocks each allowed address for the invocation's OWN
+        argument list, which is what a bare `require_auth` needs; a
+        `require_auth_for_args(who, args)` call asks the host for an entry
+        carrying `args` instead, and nothing about the invocation says what
+        those are. So the caller registers them, once, and every later invoke on
+        this contract pairs them with the method it is calling.
+
+        Pending, not immediate: `mock_auths` REPLACES the sdk's whole entry set
+        (review M6), so an entry set here and now would be wiped by the next
+        invoke's per-call entries. `RealEnv._invoke` builds ONE set from both
+        halves instead.
+
+        Allow-set mode only. With `auths=None` the host mocks every
+        authorization, and calling `mock_auths` at all would replace that
+        blanket mode with an enforcing one -- so a registration would start
+        REFUSING every call it did not cover, which is the opposite of what the
+        caller asked for.
+
+        Both fences are the sdk's, checked here rather than met as a panic: the
+        authorizer must be a CONTRACT strkey (review B2 -- a `MockAuthContract`
+        is registered at that address) and must never be this contract's own
+        address, which registering would overwrite with the mock.
+        """
+        if self.env._allow is None:
+            raise ValueError(
+                "add_mock_auths() needs an allow-set: RealEnv(auths=(...)). With "
+                "auths=None every authorization is already mocked, and a mock entry set "
+                "would replace that blanket mode with an enforcing one."
+            )
+        registered: list[tuple[str, list[bytes]]] = []
+        for who, args in entries:
+            if not StrKey.is_valid_contract(who.strkey):
+                raise ValueError(
+                    f"add_mock_auths() takes contract (C...) strkeys, not {who.strkey!r}: "
+                    "the test host mocks an authorization by registering a MockAuthContract "
+                    "AT the authorizer's address, which an account address cannot host. "
+                    "Account authorization needs real signatures (M2)."
+                )
+            if who.strkey == self.address.strkey:
+                raise ValueError(
+                    f"add_mock_auths() cannot mock {who.strkey!r}: it is this contract's own "
+                    "address, and the MockAuthContract registered there would replace the "
+                    "contract under test."
+                )
+            registered.append((who.strkey, _args_xdr(args)))
+        self._pending.extend(registered)
 
     def invoke(self, method: str, *args: object) -> object:
         """Call `method` and decode the result as the method DECLARES it.
@@ -347,11 +417,58 @@ class RealContract:
         The type is resolved AFTER the call, not before: `invoke("no_such")` has
         to reach the host and come back as a `RealHostError`, not die in a local
         `getattr`.
+
+        The sequence accumulators are fed here, including when the invocation
+        FAILED: the host's records are then the failed invocation's own (they
+        are not the previous call's -- measured, which is what makes this safe
+        rather than double-counting), so the honest thing is to ask and record
+        whatever it says. On this host a failed frame answers nothing at all,
+        for events (the sdk's `Events::all()` drops a `failed_call`, review m7)
+        and for auths alike. A failure BEFORE the host was reached -- a
+        malformed argument, a rejected mock entry -- is not recorded, because no
+        invocation happened and the buffer still holds the previous one's.
         """
-        result = self.env._invoke(
-            self.address.strkey, method, [to_xdr(arg) for arg in args], self._module
-        )
+        try:
+            result = self.env._invoke(
+                self.address.strkey,
+                method,
+                [to_xdr(arg) for arg in args],
+                self._module,
+                self._pending,
+            )
+        except RealHostError:
+            self._accumulate()
+            raise
+        self._accumulate()
         return from_xdr(result, self._return_type(method))
+
+    def _accumulate(self) -> None:
+        """Fold the invocation that just ran into the sequence records."""
+        self._sequence_events.extend(self.events())
+        self._sequence_auths.extend(self.auths())
+
+    def events_for_sequence(self) -> tuple[PublishedEvent, ...]:
+        """Every event every `invoke` on this contract has published, in order.
+
+        The quantity a scenario table pins (`tests/semantics/env_scenarios.py`
+        pins `events` over a WHOLE sequence -- setup calls and the observable
+        together), which `events()` cannot answer because the host reports one
+        invocation at a time. Accumulation starts at the deploy and never
+        includes it: `register` publishes nothing, and its own
+        `CreateContractV2HostFn` authorization is dropped one layer down
+        (review M8).
+        """
+        return tuple(self._sequence_events)
+
+    def auths_for_sequence(self) -> tuple[RecordedAuth, ...]:
+        """Every authorization every `invoke` on this contract has recorded, in order.
+
+        The counterpart to `events_for_sequence`, and the same reason: a
+        scenario's `auths` are pinned across the sequence. The args are the
+        host's, never flattened to tier 1's `None` -- reconciling the two is the
+        differential runner's job, not this reader's.
+        """
+        return tuple(self._sequence_auths)
 
     def events(self) -> tuple[PublishedEvent, ...]:
         """The LAST invocation's contract events, in order.
@@ -533,6 +650,24 @@ def _loose(sc: SCVal) -> ChainValue:
     function's own docstring already promises.
     """
     return cast("ChainValue", decode_loose(sc))
+
+
+def _args_xdr(args: Vec[Any]) -> list[bytes]:
+    """One recorded-args `Vec` as the per-argument XDR list `mock_auths` takes.
+
+    The inverse of `_loose_vec`, and deliberately routed through `to_xdr` and
+    the ScVec rather than encoding each element separately: whatever
+    `_loose_vec` widened a heterogeneous argument list into has to encode back
+    to the same elements, and one round trip through the same marshaller is what
+    guarantees that.
+    """
+    sc = SCVal.from_xdr_bytes(to_xdr(args))
+    if sc.type is not SCValType.SCV_VEC:
+        raise ValueError(
+            f"mock auth args must be a Vec of the arguments require_auth_for_args was "
+            f"given, not {args!r}"
+        )
+    return [element.to_xdr_bytes() for element in scval.from_vec(sc)]
 
 
 def _loose_vec(args: list[bytes]) -> Vec[Any]:
