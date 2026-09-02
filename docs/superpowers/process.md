@@ -61,14 +61,26 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   `is_pinned` docstring needs a golden regen), text-keyed allowlist;
   M2: `match` sugar, Option payloads/narrowing, `.value`, `discriminant`
   rename, typed container reads.
-- **NEXT: F (testing tiers)**, then G (CLI as a Stellar CLI plugin).
-  F inputs decided with Elliot 2026-09-02 (tier-2b build-from-source in
-  M1 + wheels at M3; tier 2b an opt-in skipping marker; tier 3 fixture-
-  only until approved; embed the env-host matching TESTNET's protocol;
-  a deployed shapes.py contract as a tier-3 fixture source) are in
-  `.superpowers/sdd/2026-08-31-m1e2-unions/final-review-attention.md` §6. M1 ENDS with
-  a user-approved testnet deployment (HARD STOP — Elliot must
-  explicitly approve it in-session).
+- **M1-F (testing tiers): IN PROGRESS since 2026-09-02.** Dossier
+  `specs/2026-09-02-m1f-inputs-dossier.md` (chain facts verified live:
+  testnet is on protocol 28, core 28.0.1 embedding env-host v28.0.0; the
+  env.json pin v28.0.2 == crates.io latest == what soroban-sdk 28.0.0-rc.1
+  pins; the deployed shapes contract is byte-identical to
+  `build_file(examples/shapes.py)` at main tip) and its 16 rulings
+  (decisions.md 2026-09-02) are committed. Plan v1
+  `plans/2026-09-02-m1f-testing-tiers.md` (10 tasks) is committed; the
+  Opus adversarial plan review is the next step, then plan v2, then the
+  `m1f-testing-tiers` branch under SDD. Ledger:
+  `.superpowers/sdd/2026-09-02-m1f-testing-tiers/progress.md`. The F
+  inputs decided with Elliot (tier-2b build-from-source in M1 + wheels at
+  M3; tier 2b an opt-in skipping marker; tier 3 fixture-only until
+  approved; embed the env-host matching TESTNET's protocol; the deployed
+  shapes.py contract as a tier-3 fixture source) are the dossier's U1-U5.
+  Tier-3 fixture RECORDING needs an existing testnet account's public key
+  from Elliot (ruling E14) — ask in-session when Task 9 runs.
+- **THEN: G (CLI as a Stellar CLI plugin).** M1 ENDS with a user-approved
+  testnet deployment (HARD STOP — Elliot must explicitly approve it
+  in-session).
 
 ## How each sub-plan runs (the loop that built A, B, C)
 
