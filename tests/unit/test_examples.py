@@ -49,7 +49,7 @@ from serpent.compiler.frontend import compile_module
 from serpent.compiler.ir import FuncKind
 from serpent.env import AuthorizationFailed, ConstructorFailed, Env, deploy
 from serpent.errors import ContractError
-from serpent.types import U32, Address, String, Symbol, Vec
+from serpent.types import U32, Address, Bool, String, Symbol, Vec
 from tests.harness import engine
 from tests.unit.test_emitter_end_to_end import (
     ACCOUNT,
@@ -58,9 +58,11 @@ from tests.unit.test_emitter_end_to_end import (
     EXAMPLE_COUNTER,
     EXAMPLE_ERRORS,
     EXAMPLE_EVENTS,
+    EXAMPLE_SHAPES,
     EXAMPLE_STRUCTS,
     EXAMPLES,
     EXAMPLES_DIR,
+    build_fixture,
     start,
 )
 
@@ -70,6 +72,12 @@ from tests.unit.test_emitter_end_to_end import (
 # decode" is the drift this repo keeps avoiding (the same reason
 # `_wasm_custom_section` is imported across test modules rather than re-derived).
 from tests.unit.test_emitter_end_to_end import _answer as answer
+
+# The spec-section readers, imported for the same anti-drift reason `_answer`
+# is: `tests/unit/test_sections.py` owns the tiny custom-section reader and the
+# `SCSpecEntry` stream decoder, and a second copy of either would be a second
+# thing to keep right.
+from tests.unit.test_sections import _unpack, _wasm_custom_section
 
 #: Two more real strkeys, beyond `ACCOUNT`/`CONTRACT`, for `allowance_token`'s
 #: four distinct roles (admin, owner, spender, recipient) -- lifted from
@@ -726,6 +734,187 @@ def test_the_allowance_expires_and_transfer_from_then_fails_with_the_authors_err
         assert code == 1  # AllowanceError.InsufficientAllowance
         # The refused call wrote nothing: the balance mint left is untouched.
         assert token.balance(env, owner) == U32(50)
+
+
+# ===========================================================================
+# shapes: the tagged union and the int enum (M1-E2)
+# ===========================================================================
+
+
+def test_the_shapes_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
+    """The whole-contract differential (S13) for the two new value kinds:
+    construct each variant shape, store it, read it back, branch on `tag()`,
+    read `payload()`, and compare the decoded answers between the legs.
+
+    The sequence walks all three arities in order -- the unit `Empty` that a
+    never-written key defaults to, then `Circle` (one payload), then `Rect`
+    (two) -- and reads `kind()`/`area()` after each, so both union read
+    patterns run against every case rather than only against the one the
+    contract happens to end on. `palette()` is the int-enum half: an
+    `if`/`elif` chain over `Color` equality, which is the operation an int
+    enum exists for and the one this file's cross-check would have caught
+    going missing.
+
+    `pin()`/`is_pinned()` are in the sequence because a union is a storage
+    KEY there, not a value: the `Shape.Circle(U32(3))` that `pin` writes and
+    the one `is_pinned` looks up are two separately built objects, so an
+    entry found by object identity rather than by VALUE would answer `False`
+    on the tier-1 leg and diverge from the host's own key hashing.
+
+    Every entry point answers a `Symbol`, a `U32` or a `Bool` on purpose --
+    see the example's docstring. The mini host has no spec decoder, so a
+    method returning a `Shape` would decode to an opaque vec rank on this
+    leg and to the author's own `Shape` on the other, and the two lists could
+    not be compared at all. That is a harness limitation carried to sub-plan
+    F, not a language one -- the spec-entry test below is what proves both
+    types really reach the contract's interface.
+    """
+    module = load_example(EXAMPLE_SHAPES)
+    env = Env()
+    drawing = deploy(module.Drawing, env)
+    with env.frame():
+        tier_1 = [drawing.kind(env), drawing.area(env), drawing.palette(env)]
+        drawing.draw_circle(env, U32(3))
+        tier_1 += [drawing.kind(env), drawing.area(env), drawing.is_pinned(env)]
+        drawing.pin(env)
+        tier_1 += [drawing.is_pinned(env)]
+        drawing.draw_rect(env, U32(4), U32(5))
+        tier_1 += [drawing.kind(env), drawing.area(env), drawing.is_pinned(env)]
+        drawing.paint(env, module.Color.Blue)
+        tier_1 += [drawing.palette(env)]
+        drawing.clear(env)
+        tier_1 += [drawing.kind(env), drawing.area(env)]
+
+    _built, host, mini = start(EXAMPLE_SHAPES)
+    from_wasm = [
+        answer(host, mini, "kind"),
+        answer(host, mini, "area"),
+        answer(host, mini, "palette"),
+    ]
+    assert mini.invoke("draw_circle", val.pack_u32val(3)) == val.VOID_VAL
+    from_wasm += [
+        answer(host, mini, "kind"),
+        answer(host, mini, "area"),
+        answer(host, mini, "is_pinned"),
+    ]
+    assert mini.invoke("pin") == val.VOID_VAL
+    from_wasm += [answer(host, mini, "is_pinned")]
+    assert mini.invoke("draw_rect", val.pack_u32val(4), val.pack_u32val(5)) == val.VOID_VAL
+    from_wasm += [
+        answer(host, mini, "kind"),
+        answer(host, mini, "area"),
+        answer(host, mini, "is_pinned"),
+    ]
+    # `Color.Blue` crosses the ABI as the bare `u32` 2 -- the int enum's whole
+    # on-chain representation (M1-E2 SS B.1), which is why the WASM leg can
+    # spell it with `pack_u32val` and no encoder.
+    assert mini.invoke("paint", val.pack_u32val(2)) == val.VOID_VAL
+    from_wasm += [answer(host, mini, "palette")]
+    assert mini.invoke("clear") == val.VOID_VAL
+    from_wasm += [answer(host, mini, "kind"), answer(host, mini, "area")]
+
+    assert from_wasm == tier_1
+    assert tier_1 == [
+        # nothing drawn yet: `default=Shape.Empty`, and the default palette
+        Symbol("Empty"),
+        U32(0),
+        Symbol("red"),
+        # a Circle, unpinned then pinned
+        Symbol("Circle"),
+        U32(27),
+        Bool(False),
+        Bool(True),
+        # a Rect -- a DIFFERENT union value, so the pinned Circle's key misses
+        Symbol("Rect"),
+        U32(20),
+        Bool(False),
+        # painted blue, read back through the enum `==` chain
+        Symbol("blue"),
+        # cleared: the unit variant again
+        Symbol("Empty"),
+        U32(0),
+    ]
+
+
+def test_the_shapes_examples_union_survives_all_three_durabilities_at_tier_1() -> None:
+    """Durability is a property of the ENTRY, not of the value: the same
+    `Shape.Rect(U32(4), U32(5))` written into instance, persistent and
+    temporary storage reads back EQUAL out of each one.
+
+    Driven against the model's store directly rather than through the
+    example's methods, because the example picks one bucket per key the way a
+    real contract does -- instance for the shape being drawn, persistent for
+    the color, temporary for the pinned set -- and three near-identical
+    methods that exist only to write the same union three ways would be
+    test-shaped code in teaching material. What makes this a statement about
+    `Shape` and not about `Vec` is that it is the EXAMPLE's own union type,
+    round-tripped through `get(key, Shape)`, which is the tag-checked read an
+    author writes.
+
+    Tier-1 only: the mini host has no spec decoder, so there is no WASM leg to
+    compare a returned union against (the limitation the headline test's
+    docstring carries to sub-plan F).
+    """
+    module = load_example(EXAMPLE_SHAPES)
+    env = Env()
+    deploy(module.Drawing, env)
+    rect = module.Shape.Rect(U32(4), U32(5))
+    key = Symbol("K")
+    with env.frame():
+        buckets = (
+            env.storage().instance(),
+            env.storage().persistent(),
+            env.storage().temporary(),
+        )
+        for bucket in buckets:
+            bucket.set(key, rect)
+        read_back = [bucket.get(key, module.Shape) for bucket in buckets]
+
+    assert read_back == [rect, rect, rect]
+    # Read back as the union it was stored as, not as a bare vec: the tag and
+    # both payload slots survive, which is what "round trip" has to mean.
+    for shape in read_back:
+        assert shape.tag() == Symbol("Rect")
+        assert shape.payload(U32(0), U32) == U32(4)
+        assert shape.payload(U32(1), U32) == U32(5)
+
+
+def test_the_shapes_example_declares_both_new_kinds_in_its_spec() -> None:
+    """The Task 3 property, now on SHIPPED source: the built module's
+    `contractspecv0` carries a `UDT_UNION_V0` entry for `Shape` and a
+    `UDT_ENUM_V0` entry for `Color`.
+
+    This is what makes the harness limitation the headline test discloses a
+    harness limitation and not a hole in the contract's interface: a client
+    fetching this module's spec off the ledger gets both types, every variant
+    with its arity, and every discriminant -- whatever the mini host is able
+    to decode a returned `Val` into.
+
+    Read out of the ASSEMBLED wasm rather than from `build_spec_entries`
+    directly, the same way `test_env_differential.py` reads its event entries
+    back, because what a client sees is the section and not the builder call.
+    """
+    built = build_fixture(EXAMPLE_SHAPES)
+    entries = _unpack(_wasm_custom_section(built.wasm, "contractspecv0"))
+
+    (union,) = [e.udt_union_v0 for e in entries if e.udt_union_v0 is not None]
+    assert union.name == b"Shape"
+    assert [case.void_case.name for case in union.cases if case.void_case is not None] == [b"Empty"]
+    assert [case.tuple_case.name for case in union.cases if case.tuple_case is not None] == [
+        b"Circle",
+        b"Rect",
+    ]
+    # The arities the example's two tuple variants declare, in declaration order.
+    arities = [len(case.tuple_case.type) for case in union.cases if case.tuple_case is not None]
+    assert arities == [1, 2]
+
+    (int_enum,) = [e.udt_enum_v0 for e in entries if e.udt_enum_v0 is not None]
+    assert int_enum.name == b"Color"
+    assert [(case.name, case.value.uint32) for case in int_enum.cases] == [
+        (b"Red", 0),
+        (b"Green", 1),
+        (b"Blue", 2),
+    ]
 
 
 # --- small readers -----------------------------------------------------------

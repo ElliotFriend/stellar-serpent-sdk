@@ -1050,9 +1050,10 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     `examples/`, M1-E Task 9 added `env_surface.py` (the E9 scenario table's
     contract), M1-E2 Task 1 added `udt_style.py` (the union/int-enum
     authoring fixture), and M1-E2 Task 7 added `get_default_typing.py` (the
-    `get` overload set's positive typing fixture, B5) -- each joined this
-    corpus automatically, which is the intended behavior, and updating these
-    lines is how it gets acknowledged.
+    `get` overload set's positive typing fixture, B5), and M1-E2 Task 8 added
+    `examples/shapes.py` (the sixth shipped example, the tagged union and the
+    int enum) -- each joined this corpus automatically, which is the intended
+    behavior, and updating these lines is how it gets acknowledged.
     """
     must_reject = [name for name, _ in CORPUS if name.startswith("must_reject/")]
     fixtures = [name for name, _ in CORPUS if name.startswith("fixtures/")]
@@ -1073,6 +1074,7 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
         "examples/counter.py",
         "examples/errors.py",
         "examples/events.py",
+        "examples/shapes.py",
         "examples/structs.py",
     ]
 

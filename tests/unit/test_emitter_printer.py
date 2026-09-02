@@ -363,8 +363,9 @@ REGEN_HINT = f"{REGEN_ENV}=1 uv run pytest tests/unit/test_emitter_printer.py"
 #: The rows: the Phase 0 re-author, the one real richly-shaped contract, the two
 #: promoted sandbox contracts, M1-E's `token_style_canonical` (the contract that
 #: keeps the canonical `env.events().publish(topics, data)` spelling covered now
-#: that `token_style` publishes through `Event.publish`), and M1-E's shipped
-#: `examples/`.
+#: that `token_style` publishes through `Event.publish`), M1-E's shipped
+#: `examples/`, and M1-E2's sixth example `shapes.py` (the tagged union and the
+#: int enum).
 #:
 #: The pair replaced a bare stem tuple when the examples arrived: the stems were
 #: enough only while every source sat in `tests/fixtures/`, and `examples/` is a
@@ -388,6 +389,7 @@ FIXTURE_SOURCES: tuple[tuple[str, str], ...] = (
     ("examples/structs.py", "structs"),
     ("examples/events.py", "events"),
     ("examples/allowance_token.py", "allowance_token"),
+    ("examples/shapes.py", "shapes"),
 )
 
 #: The golden stems, derived from the pairs above -- the name every test here

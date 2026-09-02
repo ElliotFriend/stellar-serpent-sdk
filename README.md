@@ -41,10 +41,11 @@ its own, and higher layers depend only on the ones below them:
   compiles and runs as WASM under `tests/harness`'s mini host, and
   `tests/unit/test_env_differential.py` checks the two agree on 58 stateful
   scenarios.
-- **Examples** (`examples/`) -- five complete contracts (a counter, error
-  codes, structs, events, an allowance-style token) exercising the authoring
-  surface end to end; each one compiles, builds to WASM, and runs both at
-  tier 1 and under the mini host in `tests/unit/test_examples.py`.
+- **Examples** (`examples/`) -- six complete contracts (a counter, error
+  codes, structs, events, an allowance-style token, tagged unions and int
+  enums) exercising the authoring surface end to end; each one compiles,
+  builds to WASM, and runs both at tier 1 and under the mini host in
+  `tests/unit/test_examples.py`.
 - **`_host` bindings** (`serpent/_host/`) -- the pinned, code-generated table
   of all 199 Soroban host functions (from a pinned `env.json`), with export
   codes, arities, and the protocol-gate logic used to compute a build's

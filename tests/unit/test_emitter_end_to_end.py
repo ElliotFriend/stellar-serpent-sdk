@@ -104,12 +104,14 @@ EXAMPLE_ERRORS = EXAMPLES_DIR / "errors.py"
 EXAMPLE_STRUCTS = EXAMPLES_DIR / "structs.py"
 EXAMPLE_EVENTS = EXAMPLES_DIR / "events.py"
 EXAMPLE_ALLOWANCE_TOKEN = EXAMPLES_DIR / "allowance_token.py"
+EXAMPLE_SHAPES = EXAMPLES_DIR / "shapes.py"
 EXAMPLES: tuple[Path, ...] = (
     EXAMPLE_COUNTER,
     EXAMPLE_ERRORS,
     EXAMPLE_STRUCTS,
     EXAMPLE_EVENTS,
     EXAMPLE_ALLOWANCE_TOKEN,
+    EXAMPLE_SHAPES,
 )
 
 #: THE fixture list this sub-plan's whole-contract properties run over. Defined
@@ -659,6 +661,12 @@ def test_sandbox_hello_world_refuses_the_unimaginative_greeting() -> None:
 #: only honors that reserved name from protocol 22 (spec SS 13 / CAP-0058), so
 #: the computed floor over these is 22 even though nothing they IMPORT is gated
 #: -- see `test_every_fixture_instantiates_and_declares_the_protocol_floor`.
+#:
+#: This is a BY-NAME inventory, so an absence from it is a claim. **M1-E2's
+#: `examples/shapes.py` has NO `__init__` and its absence here is deliberate**:
+#: a unit variant is the natural empty value, so `get(SHAPE, Shape,
+#: default=Shape.Empty)` covers the never-written key and there is nothing for
+#: a constructor to initialize. It therefore declares protocol 20, not 22.
 CONSTRUCTOR_BEARING: frozenset[Path] = frozenset(
     {
         TOKEN_STYLE,
@@ -680,8 +688,8 @@ def test_every_fixture_instantiates_and_declares_the_protocol_floor(path: Path) 
     started declaring something higher for an import reason would mean a gated
     function crept into one of them. But the floor also counts FEATURE gates
     (2026-08-28 ruling): a `__constructor` export needs protocol 22 (spec SS 13
-    / CAP-0058), so the four constructor-bearing fixtures declare 22 and the
-    constructor-less four declare 20. Both halves are asserted, and which half
+    / CAP-0058), so the five constructor-bearing fixtures declare 22 and the
+    constructor-less six declare 20. Both halves are asserted, and which half
     a fixture is in is derived from its own IR rather than restated, so adding
     an `__init__` to a fixture cannot silently drop it out of the pin.
     """
