@@ -155,7 +155,9 @@ _SURFACE = (
 _DENIAL = (
     r"(?:not (?:yet )?(?:supported|available|implemented|modelled|modeled|in the subset)"
     r"|unsupported|unavailable|no support for|has no support"
-    r"|(?:is|are|was|were) deferred|defers to|will (?:be added|ship|land|come)"
+    r"|(?:do|does|did|would) not support|(?:cannot|can\'t|could not) be declared"
+    r"|will (?:be supported|be added|ship|land|come)|coming soon"
+    r"|(?:is|are|was|were) (?:deferred|a stub|still a stub)|defers to"
     r"|(?:the )?documented workaround)"
 )
 
@@ -215,6 +217,13 @@ _DENIALS_THAT_MUST_TRIP: tuple[str, ...] = (
     "# no support for @contractunion values; use a struct key instead",
     '"""The documented workaround for a tagged union stays a Symbol constant."""',
     "# an int enum is unavailable today",
+    # The M1-E2 final review widened the vocabulary: five more spellings an
+    # absence note reaches for, each of which used to walk straight past.
+    "# we do not support @contractenum members with implicit discriminants",
+    "# a tagged union cannot be declared in this position yet",
+    "# variant() payloads of this shape will be supported in a later release",
+    "# int-enum ordering is coming soon",
+    "# the @contractunion decorator is a stub",
 )
 
 #: Prose the gate MUST NOT touch. The first two are the honest scope fence the

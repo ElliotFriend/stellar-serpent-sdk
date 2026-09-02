@@ -988,14 +988,9 @@ def test_a_built_module_carries_the_event_spec_entry() -> None:
     may import from `serpent` and nowhere else) -- compiles, and the assembled
     wasm's `contractspecv0` carries the matching `SC_SPEC_ENTRY_EVENT_V0`."""
     payload = _customs(build(EVENT_SRC))[sections.SPEC_SECTION_NAME]
-    unpacker = Unpacker(payload)
-    events: list[xdr.SCSpecEventV0] = []
-    kinds: list[xdr.SCSpecEntryKind] = []
-    while unpacker.get_position() < len(payload):
-        entry = xdr.SCSpecEntry.unpack(unpacker)
-        kinds.append(entry.kind)
-        if entry.event_v0 is not None:
-            events.append(entry.event_v0)
+    entries = _unpack_all(payload)
+    kinds = [entry.kind for entry in entries]
+    events = [entry.event_v0 for entry in entries if entry.event_v0 is not None]
 
     # Ruling E2's order: the event entry is LAST, after every function.
     assert kinds[-1] is xdr.SCSpecEntryKind.SC_SPEC_ENTRY_EVENT_V0

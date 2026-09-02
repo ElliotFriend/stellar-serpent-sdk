@@ -99,14 +99,14 @@ grow when one is lifted):
 | Not available | Write this instead |
 |---|---|
 | `match` over a union | an `if`/`elif` chain over `tag()` -- the rewrite `SPT1024`'s own help text recommends |
-| a named-field variant (permanent; Rust refuses it too) | a single-payload variant carrying a `@contracttype` struct |
+| a named-field variant (not planned; Rust refuses it too) | a single-payload variant carrying a `@contracttype` struct |
 | a 0-element tuple variant (permanent) | a unit variant, `variant()` |
-| implicit int-enum discriminants (permanent) | spell the numbers, `enumvalue(N)` |
+| implicit int-enum discriminants (not planned; Rust requires them too) | spell the numbers, `enumvalue(N)` |
 | a union as a `Map` KEY, at any entry count (a union's container ordering is not modelled in tier 1) | a `@contracttype` key struct (storage keyed by a union is unaffected) |
 | an `Option` payload, `variant(X \| None)` (M2) | a unit variant for the absent case, `Nothing = variant()` |
 | generic / parameterized unions (M2) | one concrete union per instantiation |
 | a container payload read back in compiled code, `payload(i, Vec)` (F/M2) | wrap it in a `@contracttype` struct field and read the struct back |
-| `Option` narrowing, and `.value` introspection on an int enum (M2) | -- |
+| `Option` narrowing, and `.value` introspection on an int enum (M2) | `== None` compiles but does not narrow |
 | a union as a cross-contract argument (M2) | -- (cross-contract calls are themselves M2) |
 
 Design rationale, the full milestone plan, and load-bearing facts (interface

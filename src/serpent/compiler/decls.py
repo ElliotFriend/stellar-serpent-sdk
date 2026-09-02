@@ -246,14 +246,12 @@ def check_declarations(loaded: LoadedModule, sink: Diagnostics) -> Declarations:
         elif decl.kind == "error_enum":
             error_enums.append(_error_enum_decl(decl, loaded))
             spec_types.append(decl.cls)
-        elif decl.kind == "union":
-            # M1-E2: a tagged union is a declared TYPE a UDT reference can
-            # name (E7), so it joins `spec_types` exactly as a struct does --
-            # but it gets no IR node of its own (`Declarations`' own
-            # docstring), so there is nothing else to do here.
-            spec_types.append(decl.cls)
-        elif decl.kind == "enum":
-            # Same reasoning, for an int enum.
+        elif decl.kind in ("union", "enum"):
+            # M1-E2: a tagged union and an int enum are declared TYPES a UDT
+            # reference can name (E7), so each joins `spec_types` exactly as a
+            # struct does -- but neither gets an IR node of its own
+            # (`Declarations`' own docstring), so there is nothing else to do
+            # here for either kind.
             spec_types.append(decl.cls)
 
     events = tuple(

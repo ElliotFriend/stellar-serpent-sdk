@@ -339,6 +339,9 @@ def test_env_meta_rejects_a_non_int_protocol(protocol: object) -> None:
 
 
 def test_counter_spec_is_byte_equal_to_the_rust_sdk_compat_golden() -> None:
+    # The same three assertions carry ruling E7's argument below
+    # (`test_the_on_chain_counter_spec_golden_does_not_move`); both are kept,
+    # one as the plain byte-compat pin and one for the reasoning it names.
     golden = (GOLDENS / "counter_spec.bin").read_bytes()
     assert len(golden) == 64
     assert build_spec_entries(Counter) == golden

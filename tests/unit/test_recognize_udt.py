@@ -406,6 +406,12 @@ def test_an_int_enum_compares_but_does_not_order_or_add() -> None:
     assert "obj_cmp" not in compiled.host_fns_used
     _expect_module_reject("if c < Color.Red:\n    return U32(1)\nreturn U32(0)", "SPT3005")
     _expect_module_reject("return c + U32(1)", "SPT3003")
+    # ...and enum + enum, which the U32 form does NOT cover: two operands of
+    # one type never reach the cross-type row, so this is the omitted-operator
+    # row instead (`Ty.Enum` is not in `_ARITH_TAGS`) -- a different code for a
+    # different half of the same rule, and both halves are refused.
+    exc = _expect_module_reject("return c + c", "SPT3005")
+    assert "`+` is not defined for Enum(Color)" in _message_for(exc, "SPT3005")
 
 
 def test_a_container_ty_in_a_decoding_position_names_the_wrap_around() -> None:
