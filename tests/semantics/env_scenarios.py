@@ -856,7 +856,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         # E13: a union's storage round trip exercises `storage_key`'s `Vec`
         # branch and the `"vec"` tag family, which no existing scenario
         # reaches with a UDT.
-        name="a stored union round-trips through persistent storage",
+        name="union_round_trips_through_persistent_storage",
         contract=ENV_SURFACE,
         setup=(Call("put_shape", (U32(3),)),),
         invoke=Call("read_shape_area", ()),
@@ -864,7 +864,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         expect=U32(3),
     ),
     EnvScenario(
-        name="a stored int enum round-trips and compares",
+        name="int_enum_round_trips_and_compares",
         contract=ENV_SURFACE,
         setup=(Call("put_color", (U32(1),)),),
         invoke=Call("color_is_green", ()),
@@ -875,7 +875,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         # S13's key round trip, over a UNION key rather than a struct key: the
         # read rebuilds a fresh, value-equal key rather than remembering the
         # one the write used.
-        name="a union-keyed entry is found by a rebuilt, value-equal key",
+        name="union_keyed_entry_is_found_by_a_rebuilt_value_equal_key",
         contract=ENV_SURFACE,
         setup=(Call("put_by_shape_key", (U32(7),)),),
         invoke=Call("read_by_shape_key", ()),
