@@ -53,6 +53,10 @@ from tests.unit.test_env_differential import Outcome, _tier_1
 
 real = pytest.mark.real_host  # per-test (M12): the table meta-tests run on every checkout
 
+#: The address every auth row authorizes with -- `env_scenarios._ADMIN`'s own
+#: constant, so the tests below mock exactly what the table mocks (B2).
+_ALLOWED = Address(SHAPES_CONTRACT)
+
 
 def _real(scenario: EnvScenario) -> Outcome:
     """Replay `scenario` against the embedded real host.
@@ -140,8 +144,12 @@ def _blanked_against(
     for a bare `require_auth`); the table and tier 1 write `None` where only the
     address is claimed. This is the one translation between the two
     vocabularies, and it is deliberately shared by the tier-1 comparison and the
-    declared-auths assertion so they cannot drift. A length mismatch is left to
-    the caller, which is where the two have different things to say about it.
+    declared-auths assertion so they cannot drift.
+
+    `strict=False`, and every caller checks the lengths BEFORE calling: a
+    mismatch means two different things at the two call sites (an escalation
+    against tier 1, a failed declaration against the table), and neither of
+    those messages can be written from in here.
     """
     return tuple(
         (address, None if pinned_args is None else real_args)
@@ -190,6 +198,14 @@ def test_a_row_answers_on_the_real_host_as_tier_1_does(scenario: EnvScenario) ->
             assert real_outcome.answer == divergence.answer, divergence.reason
             assert type(real_outcome.answer).__name__ == type(divergence.answer).__name__
         if divergence.auths is not None:
+            # The length first, and on its own: a declaration that names three
+            # auths where the host recorded one is wrong about the COUNT, and
+            # `_blanked_against`'s zip would quietly compare the shorter prefix.
+            assert len(real_outcome.auths) == len(divergence.auths), (
+                f"{scenario.name}: the host recorded {len(real_outcome.auths)} auths "
+                f"{real_outcome.auths!r}, the declaration names {len(divergence.auths)} "
+                f"{divergence.auths!r} -- {divergence.reason}"
+            )
             assert _blanked_against(real_outcome.auths, divergence.auths) == divergence.auths, (
                 f"{scenario.name}: real auths {real_outcome.auths!r} do not match the "
                 f"declared {divergence.auths!r} -- {divergence.reason}"
@@ -255,24 +271,18 @@ def test_at_least_one_declared_divergence_exists() -> None:
     assert any(s.host_diverges is not None for s in ENV_SCENARIOS)
 
 
-def test_the_authorizer_constant_can_never_collide_with_a_deployed_contract() -> None:
-    """B2's safety half, as an assertion rather than a comment.
-
-    `mock_auths` registers a `MockAuthContract` AT the authorizer's address, so
-    the authorizer must never be the address of the contract under test. It
-    cannot be: `register` generates the deployed address, and `SHAPES_CONTRACT`
-    is a fixed strkey from a different network's ledger. Unmarked and cheap
-    where the extension is absent, marked where it is not -- so the claim is
-    checked against real generated addresses too (below).
-    """
-    assert SHAPES_CONTRACT not in {s.contract.name for s in ENV_SCENARIOS}, (
-        "sanity: the constant is a strkey, not a path"
-    )
-
-
 @real
 def test_a_deployed_address_is_never_the_mocked_authorizer() -> None:
-    """The same claim, measured: two deploys, neither at `SHAPES_CONTRACT`."""
+    """B2's safety half, MEASURED rather than argued.
+
+    `mock_auths` registers a `MockAuthContract` AT the authorizer's address, so
+    the authorizer must never be the address of the contract under test -- and
+    it cannot be, because `register` generates a fresh address per deploy while
+    `SHAPES_CONTRACT` is a fixed strkey from a different network's ledger. Two
+    deploys, two distinct generated addresses, neither of them the constant the
+    table's authorizer is built from.
+    """
+    assert _ALLOWED.strkey == SHAPES_CONTRACT  # the address the rows authorize with
     env = RealEnv()
     first = env.deploy_source(ENV_SURFACE)
     second = env.deploy_source(ENV_SURFACE)
@@ -290,8 +300,6 @@ def test_a_deployed_address_is_never_the_mocked_authorizer() -> None:
 # them) but reach `add_mock_auths` only with an EMPTY entry list, because the
 # one `require_auth_for_args` row runs under mock-all-auths. These three tests
 # are what actually pin the method.
-
-_ALLOWED = Address(SHAPES_CONTRACT)
 
 
 @real

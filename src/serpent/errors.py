@@ -103,14 +103,23 @@ class BadArgument(ContractError):
 class MissingValue(ContractError):
     """Storage `get(key, T)` (no `default`) found no value for `key`.
 
-    Four consumers now, all carrying `CODE_MISSING_VALUE`: Task 2's tier-1
+    Three consumers now, all carrying `CODE_MISSING_VALUE`: Task 2's tier-1
     `get` raises this Python exception when the tier-1 model finds the key
-    absent; Task 3's tier-1 `extend_ttl` raises it too, for a dead entry (S8's
-    "extending a dead entry errors"), on both the keyed persistent/temporary
-    form and the keyless instance form; and the emitter's E13 guard already
-    emits the *same* code as a raw `fail_with_error` from compiled WASM
-    (`serpent.emitter.lower`) -- one code, every consumer, never a second
-    number to keep in sync (dossier C.4).
+    absent; the emitter's E13 has-then-get guard emits the *same* code as a raw
+    `fail_with_error` from compiled WASM (`serpent.emitter.lower`); and the
+    frontend counts that guard's code as a certain use
+    (`compiler.frontend`) -- one code, every consumer, never a second number to
+    keep in sync (dossier C.4).
+
+    **`extend_ttl` is NOT one of them any more** (finding F2, ruled 2026-09-02
+    "M1-F Task 5 rulings"). S8's "extending a dead entry errors" used to raise
+    this from all three tier-1 `extend_ttl` forms, and the real host proved that
+    wrong: it answers `Storage(MissingValue)` as a HOST error, and the compiled
+    contract has no guard to launder it into a code, because E13's wrapper
+    covers `get` alone. A dead entry therefore TRAPS -- `serpent.env.StorageTrap`
+    at tier 1, an invocation-killing host error on chain -- and a contract cannot
+    catch it. Nothing here changed; what changed is that `extend_ttl` stopped
+    pretending it was this.
     """
 
     code = CODE_MISSING_VALUE

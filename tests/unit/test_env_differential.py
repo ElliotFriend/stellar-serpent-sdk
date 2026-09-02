@@ -378,12 +378,15 @@ def test_a_row_carries_expect_or_code_exactly_when_its_kind_calls_for_it() -> No
         # A declared divergence (E9) that matches the model in every facet is
         # not a divergence at all -- it would make the real-host runner assert a
         # difference it can never find, which is a green test about nothing. At
-        # least one of the three facets has to differ (F5 added the third).
+        # least one of the three facets has to DIFFER from the row (F5 added the
+        # third), which is a stronger claim than "declares one": a declaration
+        # that repeats the row's own `expect` or `auths` declares a facet and
+        # differs in nothing.
         divergence = scenario.host_diverges
         assert divergence is None or (
             divergence.events != scenario.events
-            or divergence.answer is not None
-            or divergence.auths is not None
+            or (divergence.answer is not None and divergence.answer != scenario.expect)
+            or (divergence.auths is not None and divergence.auths != scenario.auths)
         ), f"{scenario.name}: host_diverges declares no difference from the model"
 
 

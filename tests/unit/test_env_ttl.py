@@ -106,7 +106,7 @@ def test_an_extension_never_reduces_as_an_algebra() -> None:
 
 
 def test_the_threshold_guard_refuses_when_enough_lifetime_remains() -> None:
-    """`live_until - sequence < threshold` is the whole guard: 1_000 ledgers
+    """`live_until - sequence <= threshold` is the whole guard: 1_000 ledgers
     remaining against a threshold of 100 is a no-op, not an extension."""
     env = deployed_env()
     env.storage().temporary().set(KEY, U32(1))
