@@ -39,7 +39,12 @@ call, so it answers with or without a frame.
 import pytest
 
 from serpent import U32, U64, Bool, Symbol
-from serpent.env import DEFAULT_LEDGER_SEQUENCE, DEFAULT_LEDGER_TIMESTAMP
+from serpent.env import (
+    DEFAULT_LEDGER_SEQUENCE,
+    DEFAULT_LEDGER_TIMESTAMP,
+    StorageTrap,
+    _extended_live_until,
+)
 from serpent.errors import MissingValue
 from tests.unit.conftest import deployed_env
 
@@ -76,17 +81,28 @@ def test_a_never_extended_entry_takes_the_first_extension_however_small_the_thre
 # --- the algebra: never-reduce and the threshold guard ---------------------
 
 
-def test_an_extension_never_reduces() -> None:
-    """S8's never-reduce: a smaller `extend_to` after a larger one cannot pull
-    the live-until back, even when the threshold lets the call through."""
-    env = deployed_env()
-    env.storage().persistent().set(KEY, U32(1))
-    env.storage().persistent().extend_ttl(KEY, U32(0), U32(1_000))
-    env.storage().persistent().extend_ttl(KEY, U32(4_000_000_000), U32(10))
-    env.advance(1_000)
-    assert env.storage().persistent().has(KEY) == Bool(True)
-    env.advance(1)
-    assert env.storage().persistent().has(KEY) == Bool(False)
+def test_an_extension_never_reduces_as_an_algebra() -> None:
+    """S8's never-reduce, pinned on `_extended_live_until` directly -- because
+    no host-legal CALL can reach it.
+
+    The shape that used to drive this test (`extend_ttl(key, 4_000_000_000,
+    10)`: a huge threshold to force the guard open, a tiny `extend_to` to try
+    to shorten the entry) is refused outright by the real host, which requires
+    `threshold <= extend_to` (finding F1). And the refusal is not the only
+    thing in the way: for an accepted call to REDUCE you would need
+    `extend_to < remaining` to get past never-reduce AND `remaining <
+    threshold` to get past the guard AND `threshold <= extend_to` to be
+    accepted -- which together say `threshold <= extend_to < remaining <
+    threshold`. **So a reduction is unreachable through the public API on every
+    host, and never-reduce is a `max` that can never be the second operand.**
+    Kept as an algebra pin rather than deleted: the `max` is still what makes
+    the guard's arithmetic total, and a future clamp (S8, M2) could produce a
+    smaller candidate from inside the model.
+    """
+    # remaining 1_000, a 10-ledger candidate: the max keeps the 1_000.
+    assert _extended_live_until(2_000, 1_000, 4_000_000_000, 10) == 2_000
+    # and the never-extended entry takes the candidate, whatever it is.
+    assert _extended_live_until(None, 1_000, 0, 10) == 1_010
 
 
 def test_the_threshold_guard_refuses_when_enough_lifetime_remains() -> None:
@@ -96,6 +112,80 @@ def test_the_threshold_guard_refuses_when_enough_lifetime_remains() -> None:
     env.storage().temporary().set(KEY, U32(1))
     env.storage().temporary().extend_ttl(KEY, U32(0), U32(1_000))
     env.storage().temporary().extend_ttl(KEY, U32(100), U32(5_000))
+    env.advance(1_001)
+    assert env.storage().temporary().has(KEY) == Bool(False)
+
+
+# --- F1: the host's `threshold <= extend_to` window -------------------------
+
+
+@pytest.mark.parametrize("durability", ["persistent", "temporary"])
+def test_extend_ttl_refuses_a_threshold_above_extend_to(durability: str) -> None:
+    """Finding F1, ruled 2026-09-02: the real host REFUSES `threshold >
+    extend_to` with `Storage(InvalidInput)` and the message "threshold must be
+    <= extend_to", so the model refuses it too.
+
+    An accepts-shrink oracle edit: a model that accepted inputs the host
+    refuses is the silent-false-green class sub-plan F exists to close, and it
+    had already put twelve `ENV_SCENARIOS` rows on inputs no host would run.
+    A TRAP, like the host's answer -- not a contract error.
+    """
+    env = deployed_env()
+    bucket = getattr(env.storage(), durability)()
+    bucket.set(KEY, U32(1))
+    with pytest.raises(StorageTrap, match="threshold must be <= extend_to"):
+        bucket.extend_ttl(KEY, U32(2_000), U32(1_000))
+
+
+def test_the_instance_extend_ttl_refuses_the_same_window() -> None:
+    """The keyless form has the same precondition, measured on the host."""
+    env = deployed_env()
+    with pytest.raises(StorageTrap, match="threshold must be <= extend_to"):
+        env.storage().instance().extend_ttl(U32(2_000), U32(1_000))
+
+
+@pytest.mark.parametrize("durability", ["persistent", "temporary"])
+def test_the_window_is_checked_before_the_entry_exists(durability: str) -> None:
+    """Order, mirrored from the host: an absent key with an illegal window
+    answers `InvalidInput`, not `MissingValue` (measured 2026-09-02). A model
+    that checked absence first would report the second-best diagnosis for a
+    call that is malformed whatever the store holds."""
+    env = deployed_env()
+    bucket = getattr(env.storage(), durability)()
+    with pytest.raises(StorageTrap, match="InvalidInput"):
+        bucket.extend_ttl(KEY, U32(2_000), U32(1_000))
+
+
+def test_a_window_where_threshold_equals_extend_to_is_accepted() -> None:
+    """The boundary of the window itself: `<=`, not `<`."""
+    env = deployed_env()
+    env.storage().temporary().set(KEY, U32(1))
+    env.storage().temporary().extend_ttl(KEY, U32(1_000), U32(1_000))
+    env.advance(1_000)
+    assert env.storage().temporary().has(KEY) == Bool(True)
+    env.advance(1)
+    assert env.storage().temporary().has(KEY) == Bool(False)
+
+
+def test_the_threshold_guard_at_exact_equality_is_a_known_model_host_difference() -> None:
+    """**The model extends when `remaining < threshold`; the host extends when
+    `remaining <= threshold`.** Measured 2026-09-02 on the embedded host: an
+    entry with 1_000 ledgers remaining and `extend_ttl(key, 1_000, 5_000)` is a
+    NO-OP here and an extension there (999 blocks on both, 1_001 extends on
+    both -- the two differ at equality and nowhere else).
+
+    Asserted rather than fixed: this is a one-ledger boundary in the tier-1
+    oracle, discovered by the real leg AFTER the F1 rulings were written (which
+    recorded the guard as agreeing), so the fix is a controller decision, not a
+    passing edit. `ENV_SCENARIOS`'
+    `the_threshold_guard_blocks_at_exact_equality` row carries the matching
+    declared divergence, which is what keeps this enumerable at the tier that
+    can see it.
+    """
+    env = deployed_env()
+    env.storage().temporary().set(KEY, U32(1))
+    env.storage().temporary().extend_ttl(KEY, U32(1_000), U32(1_000))
+    env.storage().temporary().extend_ttl(KEY, U32(1_000), U32(5_000))  # a no-op HERE
     env.advance(1_001)
     assert env.storage().temporary().has(KEY) == Bool(False)
 
@@ -192,18 +282,26 @@ def test_an_expired_entry_does_not_leak_into_another_key() -> None:
 
 
 @pytest.mark.parametrize("durability", ["persistent", "temporary"])
-def test_extend_ttl_on_a_never_written_key_errors(durability: str) -> None:
+def test_extend_ttl_on_a_never_written_key_traps(durability: str) -> None:
     """S8's "extending a dead entry errors", for the never-written case -- the
     one dead-entry death a fixed-sequence model owns outright. LOUD, unlike
-    `del_`'s absent-key no-op."""
+    `del_`'s absent-key no-op.
+
+    A TRAP, not the `CODE_MISSING_VALUE` contract error this used to raise
+    (finding F2, ruled 2026-09-02 "M1-F Task 5 rulings"): the real host answers
+    `Storage(MissingValue)` as a host error, and the compiled contract has no
+    guard to launder it into a code -- the emitter's E13 has-then-get wrapper
+    covers `get` only. A model that handed back a contract error here would
+    teach an author to catch something the chain never raises.
+    """
     env = deployed_env()
     bucket = getattr(env.storage(), durability)()
-    with pytest.raises(MissingValue, match="extend"):
+    with pytest.raises(StorageTrap, match="MissingValue"):
         bucket.extend_ttl(KEY, U32(0), U32(100))
 
 
 @pytest.mark.parametrize("durability", ["persistent", "temporary"])
-def test_extend_ttl_on_an_expired_entry_errors(durability: str) -> None:
+def test_extend_ttl_on_an_expired_entry_traps(durability: str) -> None:
     """The second death: an entry that HAS expired. It reads absent everywhere
     else in the model, so `extend_ttl` gives the same answer as for a key that
     was never written -- which is also the chain's answer (a lapsed temporary
@@ -214,7 +312,7 @@ def test_extend_ttl_on_an_expired_entry_errors(durability: str) -> None:
     bucket.set(KEY, U32(1))
     bucket.extend_ttl(KEY, U32(0), U32(10))
     env.advance(11)
-    with pytest.raises(MissingValue, match="extend"):
+    with pytest.raises(StorageTrap, match="MissingValue"):
         bucket.extend_ttl(KEY, U32(0), U32(100))
 
 
@@ -222,7 +320,7 @@ def test_a_deleted_key_cannot_be_extended() -> None:
     env = deployed_env()
     env.storage().persistent().set(KEY, U32(1))
     env.storage().persistent().del_(KEY)
-    with pytest.raises(MissingValue, match="extend"):
+    with pytest.raises(StorageTrap, match="MissingValue"):
         env.storage().persistent().extend_ttl(KEY, U32(0), U32(100))
 
 
@@ -281,14 +379,14 @@ def test_a_set_does_not_revive_an_expired_instance_bucket() -> None:
     assert env.storage().instance().has(KEY) == Bool(False)
 
 
-def test_extend_ttl_on_an_expired_instance_bucket_errors() -> None:
+def test_extend_ttl_on_an_expired_instance_bucket_traps() -> None:
     """The dead-entry rule again, for the keyless bucket: once the instance
     entry's TTL has lapsed the model refuses to extend it, rather than quietly
     reviving a contract the chain would have archived."""
     env = deployed_env()
     env.storage().instance().extend_ttl(U32(0), U32(10))
     env.advance(11)
-    with pytest.raises(MissingValue, match="extend"):
+    with pytest.raises(StorageTrap, match="MissingValue"):
         env.storage().instance().extend_ttl(U32(0), U32(100))
 
 
@@ -305,10 +403,16 @@ def test_the_instance_live_until_is_separate_from_the_other_buckets() -> None:
 
 
 def test_the_instance_algebra_is_the_same_algebra() -> None:
-    """Never-reduce and the threshold guard, bucket-wide."""
+    """The threshold guard, bucket-wide -- and the same window refusal.
+
+    Never-reduce is not driven here for the reason
+    `test_an_extension_never_reduces_as_an_algebra` states: the call that would
+    reach it is one the host refuses. What IS driven is that a blocked
+    extension leaves the first grant standing, which is the observable half.
+    """
     env = deployed_env()
     env.storage().instance().extend_ttl(U32(0), U32(1_000))
-    env.storage().instance().extend_ttl(U32(4_000_000_000), U32(10))
+    env.storage().instance().extend_ttl(U32(10), U32(10))  # blocked: 1_000 remaining
     env.storage().instance().set(KEY, U32(1))
     env.advance(1_000)
     assert env.storage().instance().has(KEY) == Bool(True)

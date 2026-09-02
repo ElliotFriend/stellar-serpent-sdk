@@ -75,9 +75,29 @@ that TRAPS on chain for a temporary entry. So:
 sequence; `extend_ttl` on all three buckets; the threshold guard (extend only
 when `live_until - sequence < threshold`); never-reduce
 (`live_until = max(live_until or 0, sequence + extend_to)`); lazy expiry in
-`get`/`has` once the sequence is strictly past `live_until`; and S8's
-dead-entry error for both deaths a tier-1 sequence can produce -- a key that
-was never written, and an entry that has expired.
+`get`/`has` once the sequence is strictly past `live_until`; S8's dead-entry
+error for both deaths a tier-1 sequence can produce -- a key that was never
+written, and an entry that has expired; and the host's own
+`threshold <= extend_to` window precondition.
+
+**The two refusals the REAL HOST taught this model** (findings F1/F2, ruled
+2026-09-02 "M1-F Task 5 rulings", measured by `tests/real_host/
+test_env_scenarios_real.py`'s first run): `extend_ttl` refuses
+`threshold > extend_to` (`Storage(InvalidInput)`) and traps rather than
+returning a contract error for an entry that is not there
+(`Storage(MissingValue)`). Both are `StorageTrap`. The first is an
+accepts-shrink -- a model that accepted what the host refuses cannot fail a
+test the host fails, and this one had put twelve `ENV_SCENARIOS` rows on
+`(threshold=2000, extend_to=1000)`, inputs no host will run.
+
+**One boundary this model is KNOWN to have one ledger off, unfixed pending a
+ruling:** the guard extends when `live_until - sequence < threshold`, and the
+host extends when `live_until - sequence <= threshold` -- so at exact equality
+tier 1 is a no-op and the host extends (measured; 999 and 1_001 agree, only
+equality differs). `tests/unit/test_env_ttl.py`'s
+`test_the_threshold_guard_at_exact_equality_is_a_known_model_host_difference`
+and the matching `host_diverges` declaration on `ENV_SCENARIOS`'
+`the_threshold_guard_blocks_at_exact_equality` are the enumerable record.
 
 **NOT modelled, named rather than approximated.** The clamp, the trap, and
 hence the whole persistent/temporary asymmetry: `extend_to` is applied exactly
@@ -109,12 +129,14 @@ proven, once `get_max_live_until_ledger` is reachable.
   re-set path; nothing observable distinguishes the two, since an expired entry
   reads absent through the whole surface.
 
-One code is reused rather than invented: the dead-entry error is `MissingValue`
-(`CODE_MISSING_VALUE`), which is honest about the shape of the failure -- the
-entry named is not there -- but is a TIER-1 signal only. The compiled form of
-`extend_ttl` raises no serpent code at all; the host itself errors, with its own
-`ScError`. What the two tiers promise each other here is the LOUDNESS, not the
-number.
+No code is invented for the dead-entry failure, and (since finding F2) none is
+reused either: `extend_ttl` of an entry that is not there raises `StorageTrap`,
+whose message carries the host's own `Storage(MissingValue)` words. It used to
+raise the `MissingValue` CONTRACT error, which was a silent false green -- the
+compiled form of `extend_ttl` raises no serpent code at all, because the
+emitter's E13 has-then-get guard wraps `get` only, so on chain the host traps
+and the invocation dies. What the two tiers promise each other here is the
+loudness AND the class: a trap on both.
 
 Two places tier 1 answers a question differently from the host, on purpose:
 
@@ -195,6 +217,7 @@ __all__ = [
     "Ledger",
     "PersistentStorage",
     "Storage",
+    "StorageTrap",
     "Struct",
     "TemporaryStorage",
 ]
@@ -610,6 +633,35 @@ class AuthorizationFailed(RuntimeError):
     """
 
 
+class StorageTrap(RuntimeError):
+    """A storage host function the real host REFUSES, mirrored at tier 1.
+
+    Added by the 2026-09-02 "M1-F Task 5 rulings" for the two `extend_ttl`
+    refusals the real leg measured (findings F1 and F2), and shaped like its two
+    neighbours above: the host TRAPS these calls, so this is a plain loud
+    `RuntimeError` with no reserved code rather than a `ContractError`. Giving it
+    a code would put a number in a tier-1 trace that no on-chain trace can
+    contain, and -- worse for F2 specifically -- would teach an author to write
+    `except MissingValue` around an `extend_ttl` that on chain kills the whole
+    invocation.
+
+    The message carries the host's own `(ScErrorType, ScErrorCode)` words, so a
+    tier-1 failure and a tier-2b failure read as the same event:
+
+    * `Storage(InvalidInput)`, "threshold must be <= extend_to" -- the window
+      precondition (F1). The host checks it BEFORE the entry exists, and so does
+      this model;
+    * `Storage(MissingValue)` -- `extend_ttl` of an entry that is not there
+      (never written, deleted, or lapsed). The compiled contract has no guard to
+      launder this into a contract code: the emitter's E13 has-then-get wrapper
+      covers `get` only, which is exactly why tier 1 laundering it was a silent
+      false green (F2).
+
+    Not in `_LAUNDERED_BY_THE_HOST`, for `AuthorizationFailed`'s reason: S12's
+    laundering covers RECOVERABLE errors, and a trap is not one.
+    """
+
+
 #: What `deploy` launders into `ConstructorFailed`, and nothing else.
 #:
 #: S12's rule is about "any **recoverable** error raised in the constructor", so
@@ -732,6 +784,29 @@ class _TtlState:
         self.sequence = sequence
         self.live_until: dict[_StoreKey, int] = {}
         self.instance_live_until: int | None = None
+
+
+def _refuse_an_inverted_extend_window(threshold: U32, extend_to: U32) -> None:
+    """The host's `threshold <= extend_to` precondition (F1), for all three buckets.
+
+    One function because all three `extend_ttl` forms share it, and called
+    FIRST -- before the entry is even looked up -- because that is the order the
+    host checks in: an absent key with an inverted window reports
+    `Storage(InvalidInput)`, not `Storage(MissingValue)` (measured 2026-09-02 on
+    the embedded host).
+
+    Why a model gains a refusal at all: an oracle that ACCEPTS what the host
+    refuses cannot fail a test the host would fail, and this one had put twelve
+    `ENV_SCENARIOS` rows on `(threshold=2000, extend_to=1000)` -- inputs no host
+    will run. Ruled an accepts-shrink under "M1-F Task 5 rulings".
+    """
+    if threshold.value > extend_to.value:
+        raise StorageTrap(
+            f"Storage(InvalidInput): threshold must be <= extend_to, not "
+            f"threshold={threshold.value} > extend_to={extend_to.value}. The host refuses "
+            "this call outright (there is no window to extend into), so no live-until "
+            "changes and the invocation traps."
+        )
 
 
 def _extended_live_until(
@@ -947,16 +1022,22 @@ class _StorageBucket:
 
         Both durabilities are extended per key and take the same algebra; the
         difference S8 states between them is the clamp/trap asymmetry, which
-        this model refuses to invent (module docstring). Raises `MissingValue`
-        for an entry that is not there -- S8's "extending a dead entry errors",
-        for both the never-written and the expired case.
+        this model refuses to invent (module docstring).
+
+        Two refusals, both the host's and both a `StorageTrap` (findings F1/F2,
+        ruled 2026-09-02): the window precondition first, then S8's
+        "extending a dead entry errors" for the never-written and the expired
+        case alike -- which is a TRAP on chain, not the `MissingValue` contract
+        error this used to raise.
         """
         _require_frame(self._env, f"a {self._DURABILITY_NAME} storage extend_ttl")
+        _refuse_an_inverted_extend_window(threshold, extend_to)
         entry = self._entry_key(key)
         if self._absent(entry):
-            raise MissingValue(
-                f"cannot extend the TTL of a {self._DURABILITY_NAME} storage entry "
-                f"that is not there (never written, or expired): {key!r}"
+            raise StorageTrap(
+                f"Storage(MissingValue): cannot extend the TTL of a "
+                f"{self._DURABILITY_NAME} storage entry that is not there (never "
+                f"written, deleted, or lapsed): {key!r}"
             )
         live_until = _extended_live_until(
             self._live_until_of(entry), self._ttl.sequence, threshold.value, extend_to.value
@@ -1147,20 +1228,23 @@ class InstanceStorage(_StorageBucket):
         live-until. (S7 also names an early flush on re-entrant self-call:
         unobservable in M1, which has no cross-contract call, and not modelled.)
 
-        Raises `MissingValue` once the instance's TTL has LAPSED, rather than
+        Raises `StorageTrap` once the instance's TTL has LAPSED, rather than
         quietly reviving a contract the chain would have archived -- S8's
-        dead-entry rule, for the one entry that has no key.
+        dead-entry rule, for the one entry that has no key -- and refuses the
+        same `threshold <= extend_to` window the keyed forms do (findings F1/F2,
+        ruled 2026-09-02; the keyless form was measured to enforce it too).
 
         The algebra is `_extended_live_until`'s: threshold guard, never-reduce,
         and no clamp (see the module docstring's TTL section).
         """
         _require_frame(self._env, "an instance storage extend_ttl")
+        _refuse_an_inverted_extend_window(threshold, extend_to)
         ttl = self._ttl
         live_until = ttl.instance_live_until
         if live_until is not None and ttl.sequence > live_until:
-            raise MissingValue(
-                "cannot extend the TTL of an instance entry whose TTL has lapsed "
-                f"(live until {live_until}, now {ttl.sequence})"
+            raise StorageTrap(
+                "Storage(MissingValue): cannot extend the TTL of an instance entry "
+                f"whose TTL has lapsed (live until {live_until}, now {ttl.sequence})"
             )
         extended = _extended_live_until(live_until, ttl.sequence, threshold.value, extend_to.value)
         if extended is not None:
@@ -1183,8 +1267,9 @@ class PersistentStorage(_StorageBucket):
         """Extend `key`'s TTL to `extend_to` if it falls below `threshold`
         ledgers remaining.
 
-        Threshold guard, never-reduce, and `MissingValue` for an entry that is
-        not there (never written, or expired). **NOT modelled: S8's clamp** --
+        Threshold guard, never-reduce, the F1 window refusal, and a
+        `StorageTrap` for an entry that is not there (never written, deleted, or
+        expired). **NOT modelled: S8's clamp** --
         an `extend_to` past the network maximum is taken as given here and
         clamped on chain. The maximum is `get_max_live_until_ledger`, an M2 host
         fact; sub-plan F owns the proof (module docstring's TTL section).

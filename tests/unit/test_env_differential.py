@@ -81,6 +81,7 @@ from serpent.env import (
     Env,
     PublishedEvent,
     RecordedAuth,
+    StorageTrap,
     deploy,
 )
 from serpent.spec.sections import _DATA_FORMATS, _PARAM_LOCATIONS
@@ -145,6 +146,10 @@ class Outcome:
     events: tuple[PublishedEvent, ...]
     auth_addresses: tuple[Address, ...]
     auths: tuple[RecordedAuth, ...] = ()
+    #: `kind="host_error"`: the call TRAPPED (finding F2). Kept apart from
+    #: `refused`, which is the AUTH trap: the two are different host actions
+    #: and a row that swapped them would still compare equal.
+    trapped: bool = False
 
 
 def _comparable(outcome: Outcome) -> Outcome:
@@ -214,6 +219,7 @@ def _tier_1(scenario: EnvScenario) -> Outcome:
     answer: ChainValue | None = None
     code: int | None = None
     refused = False
+    trapped = False
     with env.frame():
         if scenario.kind == "contract_error":
             code = _tier_1_code(method, env, *call.args)
@@ -221,6 +227,16 @@ def _tier_1(scenario: EnvScenario) -> Outcome:
             with pytest.raises(AuthorizationFailed):
                 method(env, *call.args)
             refused = True
+        elif scenario.kind == "host_error":
+            # Finding F2 (ruled 2026-09-02): the model mirrors the host's TRAP
+            # rather than laundering it into a contract code. The real leg
+            # asserts the same event through `RealHostError` plus the row's
+            # `host_error` diagnostic pair; what the two legs promise each other
+            # is the CLASS -- a trap on both -- since a tier-1 trap carries no
+            # `ScError` to compare.
+            with pytest.raises(StorageTrap):
+                method(env, *call.args)
+            trapped = True
         else:
             answer = method(env, *call.args)
     return Outcome(
@@ -231,6 +247,7 @@ def _tier_1(scenario: EnvScenario) -> Outcome:
         events=env.published_events,
         auth_addresses=tuple(address for address, _args in env.recorded_auths),
         auths=env.recorded_auths,
+        trapped=trapped,
     )
 
 
@@ -325,6 +342,8 @@ def test_env_scenario(scenario: EnvScenario) -> None:
         assert tier_1.answer is None, scenario.name
     elif scenario.kind == "contract_error":
         assert tier_1.code == scenario.code, scenario.name
+    elif scenario.kind == "host_error":
+        assert tier_1.trapped, scenario.name
     else:
         assert tier_1.refused, scenario.name
     assert tier_1.events == scenario.events, scenario.name
@@ -353,14 +372,18 @@ def test_a_row_carries_expect_or_code_exactly_when_its_kind_calls_for_it() -> No
         assert (scenario.code is not None) == (scenario.kind == "contract_error"), (
             f"{scenario.name}: code={scenario.code!r} but kind={scenario.kind!r}"
         )
-        # A declared divergence (E9) that declares the model's OWN events and
-        # no differing answer is not a divergence at all -- it would make the
-        # real-host runner assert a difference it can never find, which is a
-        # green test about nothing. One of the two halves has to differ.
-        assert (
-            scenario.host_diverges is None
-            or scenario.host_diverges.events != scenario.events
-            or scenario.host_diverges.answer is not None
+        assert (scenario.host_error is not None) == (scenario.kind == "host_error"), (
+            f"{scenario.name}: host_error={scenario.host_error!r} but kind={scenario.kind!r}"
+        )
+        # A declared divergence (E9) that matches the model in every facet is
+        # not a divergence at all -- it would make the real-host runner assert a
+        # difference it can never find, which is a green test about nothing. At
+        # least one of the three facets has to differ (F5 added the third).
+        divergence = scenario.host_diverges
+        assert divergence is None or (
+            divergence.events != scenario.events
+            or divergence.answer is not None
+            or divergence.auths is not None
         ), f"{scenario.name}: host_diverges declares no difference from the model"
 
 

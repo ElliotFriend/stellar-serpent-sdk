@@ -204,12 +204,24 @@ class HostDivergence:
     * `answer` is the real leg's expected answer where it differs too, and
       `None` where the answer agrees and only the events diverge. It exists
       because the archival divergence (M3) is an ANSWER difference with no
-      event in sight.
+      event in sight;
+    * `auths` is the real leg's expected authorization record, in the ROW's
+      vocabulary -- `None` args where only the address is claimed, exactly as
+      `EnvScenario.auths` is written -- and `None` for the whole field when the
+      auths agree with tier 1. Added for finding F5 (ruled 2026-09-02): a frame
+      that later fails records no auth on the host, where tier 1 keeps it, and
+      that is the auth half of the same S9 rollback the publish-then-raise row
+      declares for events.
+
+    At least one of the three has to differ from the row, which
+    `test_env_differential.py`'s row-coherence test asserts: a declaration that
+    matches the model everywhere declares nothing.
     """
 
     reason: str
     events: tuple[PublishedEvent, ...]
     answer: ChainValue | None = None
+    auths: tuple[RecordedAuth, ...] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -239,11 +251,24 @@ class EnvScenario:
     auth_allow_set: tuple[Address, ...] | None = None
     setup: tuple[Step, ...] = ()
     invoke: Call
-    kind: Literal["value", "void", "contract_error", "auth_failed"]
+    #: `"host_error"` is the fifth kind, added for finding F2 (ruled
+    #: 2026-09-02): the call TRAPS rather than answering or returning a
+    #: contract code. Each leg asserts it in its own vocabulary -- tier 1
+    #: raises `serpent.env.StorageTrap`, the real leg raises `RealHostError`
+    #: (never `RealContractError`) and matches `host_error` against the
+    #: underlying diagnostic pair. Every such row is `mini_host_gap`ped today,
+    #: because reaching a storage trap needs the TTL surface the mini host does
+    #: not model.
+    kind: Literal["value", "void", "contract_error", "auth_failed", "host_error"]
     #: The decoded answer, for `kind="value"`.
     expect: ChainValue | None = None
     #: The contract error code, for `kind="contract_error"`.
     code: int | None = None
+    #: The host's `(ScErrorType, ScErrorCode)` pair, for `kind="host_error"` --
+    #: the UNDERLYING diagnostic, because the frame-level pair is
+    #: `("Context", 6)` for every guest-side failure (review B5) and so carries
+    #: no information.
+    host_error: tuple[str, str] | None = None
     #: Every event the WHOLE sequence must have published, in order, and every
     #: authorization it must have recorded. Pinned exactly (the default is
     #: "none at all"), so a spurious extra record fails the row rather than
@@ -264,7 +289,32 @@ class EnvScenario:
     #: ever run, from a fact already on record -- a first run that "discovers"
     #: what to declare here is a differential fitted to its host.
     host_diverges: HostDivergence | None = None
+    #: Why the REAL leg cannot host this row at all, or `None` (finding F3,
+    #: ruled 2026-09-02). Not a divergence and not a gap in the row: the two
+    #: rows that carry it drive the ledger sequence to the top of the `U32`
+    #: range, which the model can do and no host can. The real leg SKIPS such a
+    #: row loudly -- counted in the summary, with this reason -- and
+    #: `tests/real_host/test_env_scenarios_real.py` pins exactly which rows
+    #: carry it, so a third one cannot appear quietly.
+    real_unrunnable: str | None = None
 
+
+#: **The F1 rewrite (ruled 2026-09-02, "M1-F Task 5 rulings").** Twelve rows
+#: below were written with `extend_ttl(threshold=2000, extend_to=1000)`-shaped
+#: calls, which the real host REFUSES outright: it requires
+#: `threshold <= extend_to` (`Storage(InvalidInput)`, "threshold must be <=
+#: extend_to"). The rows were unrunnable on every host, so their TTL
+#: PARAMETERS were rewritten to host-legal values that keep each row's claim,
+#: one ledgered `# F1 rewrite:` line per row. `(1000, 1000)` is the canonical
+#: replacement -- a fresh temporary entry has 15 ledgers of TTL on the host, so
+#: `15 < 1000` opens the guard and the grant lands on `sequence + 1000`, which
+#: is what the old `(2000, 1000)` meant to say.
+#:
+#: Two claims could not survive host semantics and are named where they were
+#: narrowed: NEVER-REDUCE is unreachable through any host-legal call (it needs
+#: `threshold <= extend_to < remaining < threshold`), and a keyed write does
+#: not clear a temporary entry's live-until on the host (measured: the TTL
+#: survives a re-write), which is a declared divergence rather than a rewrite.
 
 #: The M3 archival divergence, written once and shared by every row whose
 #: `Advance` lapses a PERSISTENT or INSTANCE entry and then reads it. Declared
@@ -280,7 +330,72 @@ ARCHIVAL_REASON = (
     "answers the STORED value, and the CHAIN archives the entry. The archival "
     "half is proven only at tier 3 and is carried to M2; neither the tier-1 "
     "model nor this row is edited to match the test host, because writing its "
-    "answer down as a host fact is the inversion M3 forbids."
+    "answer down as a host fact is the inversion M3 forbids. At the F1-rewritten "
+    "values two host facts compound: a fresh persistent or instance entry starts "
+    "with 4095 ledgers of TTL, so a `(threshold=1000, extend_to=1000)` extension "
+    "is a NO-OP on the host to begin with, and even past the TTL the entry would "
+    "be restored rather than gone."
+)
+
+#: Why the two U32-edge rows have no real-host leg (finding F3, ruled
+#: 2026-09-02). Measured: `RealEnv(sequence=2**32 - 1 - 10)` constructs, and
+#: `register` then PANICS with `Error(Context, InternalError)` -- the contract
+#: instance entry's own live-until would be `sequence + 4095`, past `u32::MAX`.
+#: The second row is further out of reach still: its `Advance(11)` would take
+#: the sequence itself past `u32::MAX`, and the host's ledger sequence is a
+#: `u32`. These rows exist to pin the MODEL's rough edge (see
+#: `test_env_differential.test_a_ledger_sequence_past_the_u32_range_is_the_
+#: models_own_rough_edge`), so "no host can host this" is the row being right
+#: about itself rather than a gap in it.
+U32_LEDGER_UNRUNNABLE = (
+    "the real host cannot hold a ledger sequence this close to u32::MAX: `register` "
+    "panics with Error(Context, InternalError) because the contract instance's "
+    "live-until would be sequence + 4095, past the u32 range (measured 2026-09-02), "
+    "and `advance` past 2**32 - 1 has nowhere to go at all. The row pins the tier-1 "
+    "model's own rough edge -- a state the model can reach and no host can (F3)"
+)
+
+#: The threshold guard's BOUNDARY, one ledger apart between the model and the
+#: host. Measured on the embedded host 2026-09-02, AFTER the F1 rulings were
+#: written (those recorded the guard as agreeing, on a first run that never
+#: probed equality): the host extends when `live_until - sequence <= threshold`
+#: and tier 1 extends when `live_until - sequence < threshold`, so at EXACT
+#: EQUALITY tier 1 is a no-op and the host extends. 999 blocks on both sides
+#: and 1_001 extends on both; equality is the only disagreement.
+#:
+#: Declared rather than fixed: a boundary change in the tier-1 oracle is a
+#: controller decision (E9's "wrong by omission ... fixing the model is an M2
+#: oracle edit once the evidence is in"), and this row plus
+#: `test_env_ttl.py`'s
+#: `test_the_threshold_guard_at_exact_equality_is_a_known_model_host_difference`
+#: are the two places the evidence now lives. **This one is not yet ruled on.**
+THRESHOLD_BOUNDARY_REASON = (
+    "the threshold guard's boundary is one ledger apart between the legs: tier 1 "
+    "extends when `live_until - sequence < threshold` and the host extends when "
+    "`live_until - sequence <= threshold`, so this row's exact-equality call is a "
+    "NO-OP at tier 1 and an EXTENSION on the host -- which leaves the entry alive "
+    "at +1001 there and expired here. Measured 2026-09-02 (999 blocks on both, "
+    "1_001 extends on both); a NEW finding after the F1/F2/F3/F5 rulings, declared "
+    "under E9 pending a controller decision on the model's boundary"
+)
+
+#: A keyed WRITE and the temporary entry's live-until: tier 1 CLEARS it (the
+#: entry is never-extended, and a never-extended entry is immortal here), the
+#: host leaves it exactly as granted. Measured 2026-09-02: an entry extended to
+#: 1_000 still reads a TTL of 1_000 after a re-write, and a temporary entry that
+#: lapses is deleted -- so the re-set value is gone one ledger past the original
+#: grant, where tier 1 still answers it. Recorded as a host fact in the Task 5
+#: rulings ("a fresh TEMPORARY entry has a 15-ledger TTL floor ... while tier 1's
+#: never-extended entry lives forever") and declared here rather than rewritten
+#: away, because the row's claim IS the model choice it names.
+KEYED_WRITE_REASON = (
+    "tier 1 models a keyed write as CLEARING the entry's live-until, which makes "
+    "the re-set entry never-extended and therefore immortal (`serpent.env`'s first "
+    "model choice). The host does no such thing: the entry keeps the live-until it "
+    "was granted (measured -- the TTL still reads 1_000 across a re-write), and a "
+    "lapsed temporary entry is deleted, so one ledger past the grant the real leg "
+    "reads the default. The host fact is recorded in the 2026-09-02 Task 5 rulings; "
+    "the model choice is an M2 oracle question (E9)"
 )
 
 #: The event both spellings publish, pinned ONCE and shared by the two rows
@@ -617,9 +732,11 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         # S8's expiry is STRICTLY past the live-until ledger.
         name="a_temporary_entry_is_alive_exactly_at_its_live_until",
         contract=ENV_SURFACE,
+        # F1 rewrite: was (2000, 1000); claim preserved exactly -- the grant
+        # still lands on sequence + 1000 and the Advance still stops on it.
         setup=(
             Call("put_temp", (_K, U32(7))),
-            Call("bump_temp", (_K, U32(2000), U32(1000))),
+            Call("bump_temp", (_K, U32(1000), U32(1000))),
             Advance(1000),
         ),
         invoke=Call("read_temp_or", (_K, U32(0))),
@@ -630,9 +747,10 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
     EnvScenario(
         name="a_temporary_entry_reads_absent_one_ledger_past_its_live_until",
         contract=ENV_SURFACE,
+        # F1 rewrite: was (2000, 1000); claim preserved exactly.
         setup=(
             Call("put_temp", (_K, U32(7))),
-            Call("bump_temp", (_K, U32(2000), U32(1000))),
+            Call("bump_temp", (_K, U32(1000), U32(1000))),
             Advance(1001),
         ),
         invoke=Call("read_temp_or", (_K, U32(0))),
@@ -643,9 +761,10 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
     EnvScenario(
         name="an_expired_entry_reads_absent_through_has_too",
         contract=ENV_SURFACE,
+        # F1 rewrite: was (2000, 1000); claim preserved exactly.
         setup=(
             Call("put_temp", (_K, U32(7))),
-            Call("bump_temp", (_K, U32(2000), U32(1000))),
+            Call("bump_temp", (_K, U32(1000), U32(1000))),
             Advance(1001),
         ),
         invoke=Call("has_temp", (_K,)),
@@ -654,14 +773,27 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
-        # NEVER-REDUCE: the second extension asks for 10 ledgers where 1000 are
-        # already granted, and the entry is still alive 1000 ledgers later.
+        # A SMALLER SECOND GRANT CANNOT SHORTEN THE ENTRY: 1000 ledgers are
+        # already granted, the second call asks for 10, and the entry is still
+        # alive 1000 ledgers later.
+        #
+        # F1 rewrite: was (2000, 1000) then (2000, 10); the claim is NARROWED
+        # and this is the narrowing. The old pair drove S8's NEVER-REDUCE rule
+        # (`max(live_until, sequence + extend_to)`), and no host-legal call can
+        # reach that rule: reducing needs `extend_to < remaining` to get past
+        # the max AND `remaining < threshold` to get past the guard AND
+        # `threshold <= extend_to` to be accepted at all, i.e.
+        # `threshold <= extend_to < remaining < threshold`. So what the row now
+        # pins is the observable half -- the second, smaller grant is a no-op
+        # via the THRESHOLD GUARD (1000 remaining is not below a threshold of
+        # 10) and the first grant stands. Never-reduce keeps its algebra pin at
+        # tier 1 (`test_env_ttl.test_an_extension_never_reduces_as_an_algebra`).
         name="a_smaller_extension_after_a_larger_one_never_reduces_the_live_until",
         contract=ENV_SURFACE,
         setup=(
             Call("put_temp", (_K, U32(7))),
-            Call("bump_temp", (_K, U32(2000), U32(1000))),
-            Call("bump_temp", (_K, U32(2000), U32(10))),
+            Call("bump_temp", (_K, U32(1000), U32(1000))),
+            Call("bump_temp", (_K, U32(10), U32(10))),
             Advance(1000),
         ),
         invoke=Call("read_temp_or", (_K, U32(0))),
@@ -675,11 +807,17 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         # threshold`, and the guard's `>=` makes it a NO-OP. A guard written
         # `>` would extend to sequence + 5000 and this entry would still be
         # alive below.
+        #
+        # F1 rewrite: the FIRST call was (2000, 1000); the second was already
+        # host-legal, and it is the one the claim is about, so the boundary is
+        # untouched. The real host answers differently here -- it extends at
+        # equality -- and that is the declared divergence below, the one finding
+        # in this round that arrived after the rulings.
         name="the_threshold_guard_blocks_at_exact_equality",
         contract=ENV_SURFACE,
         setup=(
             Call("put_temp", (_K, U32(7))),
-            Call("bump_temp", (_K, U32(2000), U32(1000))),
+            Call("bump_temp", (_K, U32(1000), U32(1000))),
             Call("bump_temp", (_K, U32(1000), U32(5000))),
             Advance(1001),
         ),
@@ -687,6 +825,7 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         kind="value",
         expect=U32(0),
         mini_host_gap=TTL_REASON,
+        host_diverges=HostDivergence(reason=THRESHOLD_BOUNDARY_REASON, events=(), answer=U32(7)),
     ),
     EnvScenario(
         # One ledger later the SAME two calls fall BELOW the threshold (999 <
@@ -694,9 +833,12 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         # grant's live-until.
         name="the_threshold_guard_lets_a_shorter_remaining_lifetime_through",
         contract=ENV_SURFACE,
+        # F1 rewrite: the first call was (2000, 1000); claim preserved exactly
+        # -- one ledger on, 999 remaining is below the threshold of 1000 on both
+        # legs, so the extension applies and the entry outlives the first grant.
         setup=(
             Call("put_temp", (_K, U32(7))),
-            Call("bump_temp", (_K, U32(2000), U32(1000))),
+            Call("bump_temp", (_K, U32(1000), U32(1000))),
             Advance(1),
             Call("bump_temp", (_K, U32(1000), U32(5000))),
             Advance(1001),
@@ -708,20 +850,28 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
     ),
     EnvScenario(
         # A keyed WRITE clears the entry's live-until (Task 8's empirical
-        # finding): 1000 ledgers after a 10-ledger grant, the re-set value is
-        # still there, because the write made the entry never-extended again.
+        # finding): one ledger past the grant, the re-set value is still there,
+        # because the write made the entry never-extended again.
+        #
+        # F1 rewrite: was (2000, 10) with Advance(1000); the grant is now
+        # (1000, 1000) and the Advance 1001, which is the same claim one ledger
+        # past the same grant. The claim itself is TIER-1 ONLY and stays as the
+        # model's, with the host's answer declared below: a write does not
+        # clear a live-until on any host, and a temporary entry cannot outlive
+        # its grant there.
         name="a_keyed_write_clears_the_live_until",
         contract=ENV_SURFACE,
         setup=(
             Call("put_temp", (_K, U32(7))),
-            Call("bump_temp", (_K, U32(2000), U32(10))),
+            Call("bump_temp", (_K, U32(1000), U32(1000))),
             Call("put_temp", (_K, U32(8))),
-            Advance(1000),
+            Advance(1001),
         ),
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(8),
         mini_host_gap=TTL_REASON,
+        host_diverges=HostDivergence(reason=KEYED_WRITE_REASON, events=(), answer=U32(0)),
     ),
     EnvScenario(
         # The INSTANCE bucket's live-until is bucket-wide, so a write does NOT
@@ -729,11 +879,14 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         # (`InstanceStorage._forget_live_until` is a deliberate no-op).
         name="an_instance_write_does_not_clear_the_bucket_wide_live_until",
         contract=ENV_SURFACE,
+        # F1 rewrite: was (2000, 100) with Advance(101); claim preserved --
+        # the write still lands between the grant and the lapse, and the
+        # Advance still stops one ledger past it.
         setup=(
             Call("put_instance", (_K, U32(7))),
-            Call("bump_instance", (U32(2000), U32(100))),
+            Call("bump_instance", (U32(1000), U32(1000))),
             Call("put_instance", (_K, U32(8))),
-            Advance(101),
+            Advance(1001),
         ),
         invoke=Call("read_instance_or", (_K, U32(0))),
         kind="value",
@@ -752,12 +905,14 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         # still alive exactly at it.
         name="the_instance_live_until_survives_a_del_of_one_key",
         contract=ENV_SURFACE,
+        # F1 rewrite: was (2000, 100) with Advance(100); claim preserved --
+        # the Advance still stops exactly ON the live-until.
         setup=(
             Call("put_instance", (_K, U32(1))),
             Call("put_instance", (_OTHER_KEY, U32(2))),
-            Call("bump_instance", (U32(2000), U32(100))),
+            Call("bump_instance", (U32(1000), U32(1000))),
             Call("drop_instance", (_K,)),
-            Advance(100),
+            Advance(1000),
         ),
         invoke=Call("read_instance_or", (_OTHER_KEY, U32(0))),
         kind="value",
@@ -767,12 +922,14 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
     EnvScenario(
         name="the_instance_live_until_still_governs_the_keys_a_del_left_behind",
         contract=ENV_SURFACE,
+        # F1 rewrite: was (2000, 100) with Advance(101); claim preserved --
+        # one ledger past the live-until, as before.
         setup=(
             Call("put_instance", (_K, U32(1))),
             Call("put_instance", (_OTHER_KEY, U32(2))),
-            Call("bump_instance", (U32(2000), U32(100))),
+            Call("bump_instance", (U32(1000), U32(1000))),
             Call("drop_instance", (_K,)),
-            Advance(101),
+            Advance(1001),
         ),
         invoke=Call("read_instance_or", (_OTHER_KEY, U32(0))),
         kind="value",
@@ -787,9 +944,10 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
     EnvScenario(
         name="a_persistent_struct_keyed_entry_expires_the_same_way",
         contract=ENV_SURFACE,
+        # F1 rewrite: was (2000, 1000); claim preserved exactly.
         setup=(
             Call("put_slot", (_OWNER, U32(5))),
-            Call("bump_slot", (_OWNER, U32(2000), U32(1000))),
+            Call("bump_slot", (_OWNER, U32(1000), U32(1000))),
             Advance(1001),
         ),
         invoke=Call("read_slot_or", (_OWNER, U32(0))),
@@ -802,26 +960,36 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         host_diverges=HostDivergence(reason=ARCHIVAL_REASON, events=(), answer=U32(5)),
     ),
     EnvScenario(
-        # S8's dead-entry rule, for the never-written death.
+        # S8's dead-entry rule, for the never-written death -- and it is a
+        # TRAP, not a contract code (finding F2, ruled 2026-09-02). The row used
+        # to pin `code=CODE_MISSING_VALUE`, which only tier 1 ever produced: the
+        # emitter's E13 has-then-get guard wraps `get` alone, so the compiled
+        # form lets the host's own `Storage(MissingValue)` kill the invocation.
+        # Tier 1 now raises `serpent.env.StorageTrap`; the real leg matches the
+        # underlying diagnostic pair below.
         name="extending_the_ttl_of_a_key_that_was_never_written_is_loud",
         contract=ENV_SURFACE,
         invoke=Call("bump_temp", (_K, U32(1000), U32(1000))),
-        kind="contract_error",
-        code=CODE_MISSING_VALUE,
+        kind="host_error",
+        host_error=("Storage", "MissingValue"),
         mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
-        # And for the expired death, which is the same answer from outside.
+        # And for the expired death, which is the same answer from outside --
+        # measured, not assumed: the host answers `Storage(MissingValue)` for a
+        # LAPSED temporary key exactly as for a never-written one (2026-09-02).
+        #
+        # F1 rewrite: the setup's bump was (2000, 1000).
         name="extending_the_ttl_of_an_expired_entry_is_loud",
         contract=ENV_SURFACE,
         setup=(
             Call("put_temp", (_K, U32(7))),
-            Call("bump_temp", (_K, U32(2000), U32(1000))),
+            Call("bump_temp", (_K, U32(1000), U32(1000))),
             Advance(1001),
         ),
         invoke=Call("bump_temp", (_K, U32(1000), U32(1000))),
-        kind="contract_error",
-        code=CODE_MISSING_VALUE,
+        kind="host_error",
+        host_error=("Storage", "MissingValue"),
         mini_host_gap=TTL_REASON,
     ),
     EnvScenario(
@@ -831,15 +999,20 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         name="an_entry_whose_live_until_is_the_last_u32_ledger_is_alive_there",
         contract=ENV_SURFACE,
         sequence=2**32 - 1 - 10,
+        # F1 rewrite: was (2000, 10); claim preserved exactly -- the grant is
+        # still ten ledgers, so the live-until still lands on 2**32 - 1, and a
+        # fresh entry's live-until is unconditional at tier 1 whatever the
+        # threshold.
         setup=(
             Call("put_temp", (_K, U32(7))),
-            Call("bump_temp", (_K, U32(2000), U32(10))),
+            Call("bump_temp", (_K, U32(10), U32(10))),
             Advance(10),
         ),
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(7),
         mini_host_gap=TTL_REASON,
+        real_unrunnable=U32_LEDGER_UNRUNNABLE,
     ),
     EnvScenario(
         # One ledger further the sequence leaves the U32 range entirely. The
@@ -850,15 +1023,17 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         name="expiry_still_answers_one_ledger_past_the_u32_range",
         contract=ENV_SURFACE,
         sequence=2**32 - 1 - 10,
+        # F1 rewrite: was (2000, 10); claim preserved exactly.
         setup=(
             Call("put_temp", (_K, U32(7))),
-            Call("bump_temp", (_K, U32(2000), U32(10))),
+            Call("bump_temp", (_K, U32(10), U32(10))),
             Advance(11),
         ),
         invoke=Call("read_temp_or", (_K, U32(0))),
         kind="value",
         expect=U32(0),
         mini_host_gap=TTL_REASON,
+        real_unrunnable=U32_LEDGER_UNRUNNABLE,
     ),
     # === token_style: a real contract shape, and the authoring spelling =====
     EnvScenario(
@@ -934,6 +1109,14 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
     EnvScenario(
         # The refusal writes nothing and publishes nothing -- the auth is
         # recorded, because `require_auth` runs before the balance check.
+        #
+        # And that last clause is a MODEL claim, not a host fact: on the host
+        # the failed frame is rolled back and takes its authorization with it
+        # (finding F5, measured -- `auths()` reports nothing after this exact
+        # call), so the real leg records only the setup mint's. Declared below,
+        # in the row's own vocabulary: the addresses are what both legs claim,
+        # and `None` args means "compare the address, not the args" exactly as
+        # `auths` above means it.
         name="token_style_transfer_over_the_balance_refuses_with_the_contracts_own_code",
         contract=TOKEN_STYLE,
         constructor=(_ADMIN, String("Serpent Token")),
@@ -942,6 +1125,19 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         kind="contract_error",
         code=1,
         auths=((_ADMIN, None), (_OWNER, None)),
+        host_diverges=HostDivergence(
+            reason=(
+                "S9 rollback, the AUTH half (finding F5, ruled 2026-09-02): "
+                "`require_auth` succeeds before the balance check, and then the frame "
+                "fails and the host discards the whole invocation's record -- so the "
+                "real leg records the setup mint's authorization and nothing from the "
+                "refused transfer, where tier 1 keeps both (it has no frame rollback, "
+                "the same gap the publish-then-raise row declares for events). Tier-1 "
+                "frame rollback for events AND auths is an M2 oracle edit (E9)."
+            ),
+            events=(),
+            auths=((_ADMIN, None),),
+        ),
     ),
     # === token_style_canonical: the canonical spelling on a real contract ====
     EnvScenario(
