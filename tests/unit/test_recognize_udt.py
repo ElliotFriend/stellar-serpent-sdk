@@ -40,6 +40,8 @@ from serpent.compiler.loader import LoadedModule, load_module
 from serpent.compiler.recognize import recognize_attribute, recognize_call
 from serpent.compiler.types_ import Ty
 from serpent.emitter import BuildResult, build_wasm
+from serpent.env import Env, deploy
+from serpent.types import U32, Bool, Symbol
 from tests.harness import engine
 from tests.harness.hostfns import FullHost
 
@@ -684,3 +686,161 @@ def test_an_enum_compared_against_a_u32_never_reaches_the_emitter() -> None:
     chain-integer one -- reported before any lowering runs."""
     _expect_module_reject("if c == U32(0):\n    return U32(1)\nreturn U32(0)", "SPT3018")
     _expect_module_reject("if c < Color.Red:\n    return U32(1)\nreturn U32(0)", "SPT3005")
+
+
+# --- the cross-tier re-typing (C1) and the raw-literal accepts (I1) ---------
+#
+# The final review's one SILENT divergence: `get`'s check is TAG-level, so a
+# stored `Color.Green` read back as `get(K, U32)` came out of the tier-1 store
+# as the `Color` object it went in as, and E9's no-coercion rule then made
+# `== U32(7)` False at tier 1 while the chain -- where the stored word IS the
+# number 7 -- says True. The chain has no case list and no spec lookup at a
+# storage read: it hands back the bare word, and the `ty` argument is what says
+# how to read it. Tier 1 now re-types the same way, in both directions and for
+# both kinds, so these three probes answer identically on the two legs.
+#
+# The union's OTHER direction (`get(K, Vec[U32])` over a stored union) has no
+# WASM leg to compare against: a container `ty` is refused in compiled code
+# (`SPT3013`), which is exactly what the container arm of that code now says.
+# It is pinned at tier 1 in `tests/unit/test_env_model.py` instead.
+#
+# The last two probes are the raw-literal accepts: both COMPILE and run as
+# WASM today, and both died at tier 1 (`TypeError: not a chain value`,
+# `AttributeError: 'int' object has no attribute 'value'`) until the payload
+# slot and the payload index adopted a literal the way every other typed
+# position does.
+
+_CROSS_SOURCE = """
+from serpent import (
+    Bool, ContractEnum, ContractUnion, Env, Symbol, U32, Vec, contract, contractenum,
+    contractunion, enumvalue, variant,
+)
+
+KEY = Symbol("K")
+
+
+@contractunion
+class Shape(ContractUnion):
+    Empty = variant()
+    Circle = variant(U32)
+
+
+@contractenum
+class Color(ContractEnum):
+    Red = enumvalue(0)
+    Green = enumvalue(7)
+
+
+@contract
+class Cross:
+    def enum_read_as_u32(self, env: Env) -> U32:
+        env.storage().temporary().set(KEY, Color.Green)
+        return env.storage().temporary().get(KEY, U32)
+
+    def u32_read_as_enum(self, env: Env) -> Bool:
+        env.storage().temporary().set(KEY, U32(7))
+        return env.storage().temporary().get(KEY, Color) == Color.Green
+
+    def vec_read_as_union(self, env: Env) -> Symbol:
+        env.storage().temporary().set(KEY, Vec(Symbol, [Symbol("Circle")]))
+        return env.storage().temporary().get(KEY, Shape).tag()
+
+    def literal_payload(self, env: Env) -> Symbol:
+        return Shape.Circle(1).tag()
+
+    def raw_payload_index(self, env: Env, s: Shape) -> U32:
+        return s.payload(0, U32)
+"""
+
+
+@pytest.fixture(scope="module")
+def cross() -> BuildResult:
+    return build_wasm(compile_module(_CROSS_SOURCE, PATH))
+
+
+def _cross_legs(built: BuildResult) -> tuple[Any, Env, FullHost, engine.MiniHost]:
+    """The two legs of `_CROSS_SOURCE`, both from the SAME source text.
+
+    The tier-1 leg is the loaded module's own declared classes (A18: the
+    oracle is the authoring surface's own Python), deployed into a fresh
+    `Env`; the WASM leg is the built module under the mini host.
+    """
+    namespace = load_module(_CROSS_SOURCE, PATH).namespace
+    env = Env()
+    instance = deploy(namespace["Cross"], env)
+    host = FullHost()
+    mini = engine.MiniHost(built.wasm, imports=host.bindings())
+    host.attach(mini)
+    return instance, env, host, mini
+
+
+def test_a_stored_int_enum_read_back_as_a_u32_agrees_on_both_legs(cross: BuildResult) -> None:
+    """Direction one of the divergence: store `Color.Green`, read `get(K,
+    U32)`. On chain the entry IS the word 7, so the read answers `U32(7)`."""
+    instance, env, host, mini = _cross_legs(cross)
+    with env.frame():
+        tier_1 = instance.enum_read_as_u32(env)
+    from_wasm = host.chain_value(_invoke(mini, "enum_read_as_u32"))
+    assert from_wasm == tier_1
+    assert tier_1 == U32(7)
+
+
+def test_a_stored_u32_read_back_as_an_int_enum_agrees_on_both_legs(cross: BuildResult) -> None:
+    """The reverse: store `U32(7)`, read `get(K, Color)`, compare against
+    `Color.Green`. E9's `ContractEnum != U32` rule is untouched -- what
+    changed is which TYPE the read hands back, not how two values compare."""
+    instance, env, host, mini = _cross_legs(cross)
+    with env.frame():
+        tier_1 = instance.u32_read_as_enum(env)
+    from_wasm = host.chain_value(_invoke(mini, "u32_read_as_enum"))
+    assert from_wasm == tier_1
+    assert tier_1 == Bool(True)
+
+
+def test_a_stored_plain_vec_read_back_as_a_union_agrees_on_both_legs(cross: BuildResult) -> None:
+    """The union half: a `Vec` that was never built as a `Shape`, read as one
+    and asked for its `tag()`. The WASM leg answers `Symbol("Circle")` (a
+    union IS an `ScVec`, and `tag()` is `vec_get` at 0); tier 1 raised
+    `AttributeError: 'Vec' object has no attribute 'tag'` until the read
+    re-typed the stored vec into the union it was asked for."""
+    instance, env, host, mini = _cross_legs(cross)
+    with env.frame():
+        tier_1 = instance.vec_read_as_union(env)
+    from_wasm = host.chain_value(_invoke(mini, "vec_read_as_union"))
+    assert from_wasm == tier_1
+    assert tier_1 == Symbol("Circle")
+
+
+def test_a_raw_literal_payload_agrees_on_both_legs(cross: BuildResult) -> None:
+    """`Shape.Circle(1)`: M1-C's literal adoption, in a variant payload slot.
+    The compiler adopts the literal through the slot's declared type, so the
+    WASM leg has always built a `Circle` carrying `U32(1)`; tier 1 refused the
+    raw `1` outright."""
+    instance, env, host, mini = _cross_legs(cross)
+    with env.frame():
+        tier_1 = instance.literal_payload(env)
+    from_wasm = host.chain_value(_invoke(mini, "literal_payload"))
+    assert from_wasm == tier_1
+    assert tier_1 == Symbol("Circle")
+
+
+def test_a_raw_payload_index_agrees_on_both_legs(cross: BuildResult) -> None:
+    """`s.payload(0, U32)`: the index is a literal the compiler reads
+    statically, so the WASM leg never sees an index object at all, while tier 1
+    raised `AttributeError: 'int' object has no attribute 'value'`.
+
+    The union argument is built as the host holds one -- `ScVec[Symbol("Circle"),
+    U32(9)]` -- so both legs are handed the same value.
+    """
+    from serpent import val
+
+    instance, env, host, mini = _cross_legs(cross)
+    shape = load_module(_CROSS_SOURCE, PATH).namespace["Shape"]
+    with env.frame():
+        tier_1 = instance.raw_payload_index(env, shape.Circle(U32(9)))
+    handle = host.vec_push_back(
+        host.vec_push_back(host.vec_new(), val.symbol_small("Circle")), val.pack_u32val(9)
+    )
+    from_wasm = host.chain_value(_invoke(mini, "raw_payload_index", handle))
+    assert from_wasm == tier_1
+    assert tier_1 == U32(9)

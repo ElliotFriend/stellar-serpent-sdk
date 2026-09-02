@@ -80,6 +80,14 @@ __all__ = ["ContractEnum", "ContractUnion", "enumvalue", "variant"]
 #: no arity check of its own to make.
 MAX_PAYLOAD_ARITY = 12
 
+#: The raw Python literals a variant payload slot ADOPTS through its declared
+#: type, exactly as `env.get`'s `default=` adopts one through its `ty`: the
+#: compiler adopts a literal in a typed position (M1-C), so a tier 1 that
+#: refused one would refuse what the chain runs. `bool` is listed for
+#: readability -- it is an `int` subclass, so `isinstance` would match it
+#: either way -- and `Bool(True)` is what it adopts to.
+_RAW_LITERALS: tuple[type[Any], ...] = (int, str, bytes, bool)
+
 #: The owner class an access goes through. METHOD-scoped on every `__get__`
 #: below, never a class parameter: it is what types `Shape.Empty` as `Shape`
 #: and `Shape.Circle` as `(U32) -> Shape` without either descriptor having to
@@ -180,7 +188,7 @@ class ContractUnion:
         """This value's case name -- element 0 of the on-chain `ScVec`."""
         return cast("Symbol", self._vec.get(0))
 
-    def payload(self, index: U32, ty: type[_T]) -> _T:
+    def payload(self, index: U32 | int, ty: type[_T]) -> _T:
         """Payload slot `index`, decoded as `ty`.
 
         `index` is **0-based over the PAYLOAD**: slot 0 is the element after
@@ -190,15 +198,24 @@ class ContractUnion:
         `get` of the wrong type would (`env._require_ty`, called for its raise
         -- it returns `None`).
 
-        The held element comes back WITHOUT a copy, which is `Vec.get`'s own
-        rule; the union is immutable, so the only way to observe that is
-        through a mutable payload.
-        """
-        from serpent.env import _require_ty  # deferred: see the module docstring
+        A raw `int` index is accepted alongside a `U32` because the COMPILER
+        accepts one (`s.payload(0, U32)` is a literal it reads statically, and
+        the compiled form carries no index object at all), so refusing it here
+        would leave a compiler accept unrunnable at tier 1.
 
-        value = self._vec.get(index.value + 1)
+        The decoded value is RE-TYPED to `ty` the way a storage `get` is
+        (`env._retyped_as`): `ty` is what the program reads the slot as, and
+        the two reads must not disagree about that. The held element otherwise
+        comes back WITHOUT a copy, which is `Vec.get`'s own rule -- a
+        same-class request (every ordinary read) passes through untouched; the
+        union is immutable, so the only way to observe that is through a
+        mutable payload.
+        """
+        from serpent.env import _require_ty, _retyped_as  # deferred: see the module docstring
+
+        value = self._vec.get(index.value + 1 if isinstance(index, U32) else index + 1)
         _require_ty(value, ty)
-        return cast("_T", value)
+        return cast("_T", _retyped_as(value, ty))
 
     # --- value semantics -----------------------------------------------------
 
@@ -334,15 +351,43 @@ class _BoundCase:
     `_Variant12`), which differ only in what `__get__` says statically. The
     instance is built through the DECLARING class, so a case always constructs
     the union it was declared in.
+
+    It also carries the case's DECLARED payload types, which is what lets
+    `_make` adopt a raw literal through the slot it is being passed into.
     """
 
-    __slots__ = ("_case", "_owner")
+    __slots__ = ("_case", "_owner", "_slots")
 
-    def __init__(self, case: str, owner: type[ContractUnion]) -> None:
+    def __init__(
+        self, case: str, owner: type[ContractUnion], slots: tuple[object, ...] = ()
+    ) -> None:
         self._case = case
         self._owner = owner
+        self._slots = slots
 
     def _make(self, *payload: Any) -> ContractUnion:
+        """Build the case, ADOPTING a raw literal through its slot's own type.
+
+        `Shape.Circle(1)` is a compiler accept -- a literal in a typed position
+        is adopted through that position's type (M1-C), so the compiled form
+        builds a `Circle` carrying `U32(1)` -- and tier 1 refused it outright
+        until this ("not a chain value"). One adoption door serves both
+        positions: `env._adopt`, which `get`'s raw-literal `default=` uses.
+
+        Only the four raw literal kinds are adopted, and only when the arity
+        matches the declaration: anything else (a list, a `None`, an object)
+        stays exactly as it was passed and meets `_construct`'s own
+        `require_map_value` refusal, which names what is wrong with it.
+        """
+        from serpent.env import _adopt  # deferred: see the module docstring
+
+        if len(payload) == len(self._slots):
+            payload = tuple(
+                _adopt(value, slot)
+                if isinstance(value, _RAW_LITERALS) and isinstance(slot, type)
+                else value
+                for value, slot in zip(payload, self._slots, strict=True)
+            )
         return self._owner._construct(self._case, payload)
 
     def __repr__(self) -> str:
@@ -533,7 +578,7 @@ def _bind_variant(case: str, owner: type[ContractUnion], spec: _VariantSpec) -> 
     """
     if len(spec.payload) > MAX_PAYLOAD_ARITY:
         _reject_wide_payload(len(spec.payload))
-    return _VARIANT_CLASSES[len(spec.payload)](case, owner)
+    return _VARIANT_CLASSES[len(spec.payload)](case, owner, spec.payload)
 
 
 def _is_payload_type(entry: object) -> bool:

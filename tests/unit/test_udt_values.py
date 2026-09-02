@@ -148,6 +148,20 @@ def test_a_payload_read_tag_checks_like_the_storage_get_does() -> None:
         circle.payload(U32(0), Symbol)
 
 
+def test_a_payload_read_is_re_typed_like_a_storage_read() -> None:
+    """`payload()` and `get()` decode a held word the same way (the M1-E2
+    final-review ruling): the slot is an `ScVec` element on chain, and `ty` is
+    what the program reads it as, so an int-enum slot read as `U32` answers
+    the bare `u32` it is and a `u32` slot read as an int enum answers that
+    member. `env._retyped_as` is the ONE helper both reads call."""
+    shape = _shape_module().Shape
+    color = _shape_module().Color
+    assert shape.Circle(U32(1)).payload(U32(0), color) == color.Green
+    untyped: Callable[..., object] = shape.Circle
+    held = cast("ContractUnion", untyped(color.Green))
+    assert held.payload(U32(0), U32) == U32(1)
+
+
 def test_a_payload_read_past_the_payload_is_an_index_error() -> None:
     """Host-shaped, like every other `Vec` read: the name `Symbol` at slot 0 is
     not reachable through `payload`, and a unit variant has none at all."""
@@ -366,10 +380,12 @@ def test_binding_an_over_wide_spec_says_so_instead_of_indexing_off_the_end() -> 
 
 def test_a_payload_must_be_a_chain_value_or_a_struct() -> None:
     """The invariant `Vec`/`Map` enforce on the way in (`require_map_value`):
-    the descriptor already refuses a raw `3` statically, and at runtime an
-    unvalidated one would sit in the held `Vec` and produce a garbage storage
-    key later, somewhere else. A `@contracttype` struct payload IS admitted --
-    E2 (b)'s widened bound, which a variant payload shares.
+    an unvalidated payload would sit in the held `Vec` and produce a garbage
+    storage key later, somewhere else. A `@contracttype` struct payload IS
+    admitted -- E2 (b)'s widened bound, which a variant payload shares.
+
+    What is NOT refused any more is a raw LITERAL (see the adoption test
+    below); a value with no chain type to adopt it through still is.
     """
     assert storage_key(Wrapped.At(Point(x=U32(1)))) == (
         "vec",
@@ -377,7 +393,38 @@ def test_a_payload_must_be_a_chain_value_or_a_struct() -> None:
     )
     untyped: Callable[..., object] = Shape.Circle
     with pytest.raises(TypeError, match="not a chain value"):
-        untyped(3)
+        untyped([1])
+    with pytest.raises(TypeError, match="not a chain value"):
+        untyped(None)
+
+
+def test_a_raw_literal_payload_is_adopted_through_its_declared_slot() -> None:
+    """M1-C's literal adoption, in a variant payload slot (the M1-E2
+    final-review ruling): `Shape.Circle(1)` is a compiler ACCEPT -- the
+    frontend adopts the literal through the slot's declared type -- so tier 1
+    builds exactly what the compiled form does rather than refusing it.
+
+    Adoption is the declared slot's own constructor, so its error is the one an
+    out-of-range literal gets, in the same place the frontend reports SPT3004.
+    """
+    shape = _shape_module().Shape
+    untyped: Callable[..., object] = shape.Circle
+    assert untyped(1) == shape.Circle(U32(1))
+    adopted = cast("ContractUnion", untyped(1))
+    assert adopted.payload(U32(0), U32) == U32(1)
+    with pytest.raises(ValueError, match="out of range"):
+        untyped(-1)
+
+
+def test_a_payload_index_may_be_a_raw_int() -> None:
+    """The other half of the same ruling: `s.payload(0, U32)` compiles (the
+    index is a literal the frontend reads statically), so it runs at tier 1
+    too, and answers what the `U32` spelling answers."""
+    rect = _shape_module().Shape.Rect(U32(1), U32(2))
+    assert rect.payload(0, U32) == rect.payload(U32(0), U32)
+    assert rect.payload(1, U32) == U32(2)
+    with pytest.raises(IndexError):
+        rect.payload(2, U32)
 
 
 def test_variant_refuses_a_payload_that_is_not_a_type() -> None:

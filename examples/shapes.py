@@ -74,14 +74,17 @@ if you want a map keyed by shape, key it on a `@contracttype` struct instead
 and let the struct's fields carry the shape's data.
 
 **`get(key, Shape)` accepts a stored plain `Vec`, and `get(key, Color)` a
-stored plain `U32`.** The check `get` makes is TAG-level -- "is this an
-`ScVec`?", "is this a `u32`?" -- so a vec that was never built as a `Shape`
-reads back as itself rather than being rejected or reconstructed. That is the
-same latitude a `@contracttype` struct already has against a stored `Map`
-(a union IS an `ScVec` on chain and a struct IS a `Map`, so there is nothing
-finer to check without a spec lookup the host does not do). Read it as: the
-type argument tells `get` what you MEANT, and the host confirms only the
-shape.
+stored plain `U32` -- and reads each one back AS the type you asked for.** The
+check `get` makes is TAG-level ("is this an `ScVec`?", "is this a `u32`?"),
+because that is the only check the host makes: it hands back a bare word and
+looks up no spec, so the `ty` argument is what says how to read it. A vec that
+was never built as a `Shape` therefore comes back as a `Shape`, and a stored
+`Color.Blue` read as `get(key, U32)` comes back as the `U32(2)` it IS on chain.
+That is the same latitude a `@contracttype` struct already has against a stored
+`Map` (a union IS an `ScVec` on chain and a struct IS a `Map`, so there is
+nothing finer to check without a spec lookup the host does not do). Read it as:
+the type argument tells `get` what you MEANT, the host confirms only the shape,
+and what you get back is the word, read your way.
 
 ## Every entry point here answers a `Symbol`, a `U32` or a `Bool`
 

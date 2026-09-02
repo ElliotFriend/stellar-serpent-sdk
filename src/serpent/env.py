@@ -351,6 +351,28 @@ def _is_chain_value(value: object) -> bool:
     return isinstance(value, (_ChainValue, Vec, Map, Struct, ContractUnion, ContractEnum))
 
 
+def _adopt(value: object, ty: object) -> Any:
+    """`value` as the type `ty` names: a chain value passes through, anything
+    else is ADOPTED through `ty` (M1-C's literal adoption).
+
+    The ONE adoption door in the model, so the rule is stated once. `get`'s
+    raw-literal `default=` is the position it was written for; `types._udt`'s
+    variant payload slots reach it through the same deferred import
+    `payload()` uses, because a literal in a typed payload slot is the same
+    mistake-that-is-not-a-mistake as `default=0` in a typed `get` -- the
+    compiler adopts it through the declared type, so a model that refused it
+    would refuse what the chain runs.
+
+    `ty`'s own error propagates unsoftened: `U32(-1)` raises `ValueError`
+    here exactly where the frontend reports `SPT3004`.
+    """
+    if _is_chain_value(value):
+        return value
+    # `ty` is a chain-type class, whose `__init__` signature is unknown to the
+    # checker; the adoption is exactly the compiled tier's.
+    return cast("Callable[[object], Any]", ty)(value)
+
+
 def _ty_members(ty: object) -> tuple[object, ...]:
     """`ty`'s non-`None` members: the union's arms, or `ty` itself."""
     origin = get_origin(ty)
@@ -444,6 +466,80 @@ def _require_ty(value: ChainValue, ty: object) -> None:
                 f"stored value is {len(cast('Bytes', value))} bytes, "
                 f"not the {'/'.join(str(length) for length in sorted(lengths))} {name} wants"
             )
+
+
+def _retyped_as(value: ChainValue, ty: object) -> ChainValue:
+    """`value` re-typed to the type `ty` names, across the union/int-enum family.
+
+    Called immediately after `_require_ty` passes, by every read that decodes a
+    held value under a caller-supplied `ty`: `_StorageBucket.get` and
+    `ContractUnion.payload`.
+
+    **Why a tag-level check is not the whole answer here** (the M1-E2
+    final-review ruling that amends D6 x E9). The check `get` makes is TAG
+    level -- "is this an `ScVec`?", "is this a `u32`?" -- because that is the
+    only check the CHAIN makes: the host hands back a bare word and looks up no
+    spec. But the chain does not hand back a *typed object* either, and the
+    `ty` argument is what the program reads the word as. Tier 1 holds real
+    Python objects, so without this step a stored `Color.Green` read as
+    `get(K, U32)` came back as the `Color` object it went in as, and E9's
+    no-coercion rule (`ContractEnum != U32`, deliberately kept) then answered
+    `== U32(7)` False at tier 1 and True on chain. Re-typing to what was ASKED
+    for is what makes the two tiers say the same thing; E9's rule about
+    comparing two values is untouched.
+
+    The four crossings, each exactly what the word alone supports:
+
+    * a `ContractEnum` subclass requested over a stored `U32` (or over another
+      enum's member): the requested class's member for that discriminant. The
+      discriminant is NOT checked against the class's declared cases, because
+      the chain cannot check it either -- there is no case list at a storage
+      read, and refusing here would reject at tier 1 a read the chain performs
+      happily. An undeclared discriminant therefore reads back as a member the
+      class never declared, whose `repr` says so (`<Color discriminant 9>`);
+    * a `ContractEnum` stored, anything else requested (the family check has
+      already narrowed that to `U32`): the bare `U32` it is on chain;
+    * a `ContractUnion` subclass requested over a stored `Vec` led by a
+      `Symbol` (or over another union's value): the requested class, rebuilt
+      through its own construction path from that name and the remaining
+      elements. The name is likewise NOT checked against the declared cases;
+      a `Symbol` naming no variant rebuilds anyway, and `tag()` then answers
+      it, which is what the compiled `vec_get` at 0 does;
+    * a `ContractUnion` stored, a container requested: a copy of the `ScVec` it
+      IS on chain (a copy, because the union's own vec is never handed out).
+
+    A vec that does not LEAD with a `Symbol` (or is empty) names no case at
+    all, so there is nothing to rebuild: it stays the plain `Vec` it is, and
+    the union readers fail on it at tier 1 exactly where the chain's own
+    `tag()` read fails its `Symbol` narrow. Everything else -- a same-class
+    request above all, which is every ordinary read -- passes through
+    UNCHANGED, so ruling E5's identity properties are untouched.
+    """
+    members = _ty_members(ty)
+    if len(members) != 1:
+        return value
+    origin = get_origin(members[0])
+    cls = origin if origin is not None else members[0]
+    if isinstance(cls, type) and issubclass(cls, ContractEnum):
+        if isinstance(value, cls):
+            return value
+        discriminant = (
+            value._discriminant if isinstance(value, ContractEnum) else cast("U32", value).value
+        )
+        return cls._construct(discriminant)
+    if isinstance(cls, type) and issubclass(cls, ContractUnion):
+        if isinstance(value, cls):
+            return value
+        vec = value._vec if isinstance(value, ContractUnion) else cast("Vec[Any]", value)
+        case = vec.get(0) if len(vec) else None
+        if not isinstance(case, Symbol):
+            return value
+        return cls._construct(case.text, tuple(vec)[1:])
+    if isinstance(value, ContractEnum):
+        return U32(value._discriminant)
+    if isinstance(value, ContractUnion):
+        return Vec(value._vec.element_type, list(value._vec))
+    return value
 
 
 class ConstructorFailed(RuntimeError):
@@ -904,7 +1000,11 @@ class _StorageBucket:
           EXPIRED entry is a miss (`_absent`): TTL expiry is answered lazily,
           here, rather than by sweeping the store on `advance`;
         * a hit is TAG-CHECKED against `ty` (`_require_ty`), failing with
-          `AbiCheckFailed` exactly where the emitter's narrow check fails.
+          `AbiCheckFailed` exactly where the emitter's narrow check fails, and
+          is then RE-TYPED to `ty` (`_retyped_as`): the host hands back a bare
+          word and `ty` is what the program reads it as, so a stored int-enum
+          member read as `U32` comes back as the `U32` it is on chain, and a
+          stored `Vec` read as a union comes back as that union.
 
         A miss WITH a `default` has two halves, because the compiled form is an
         `IfExp` whose `orelse` IS the default EXPRESSION -- no host call and no
@@ -937,15 +1037,10 @@ class _StorageBucket:
         if self._absent(entry):
             if default is None:
                 raise MissingValue(f"no {self._DURABILITY_NAME} storage entry for {key!r}")
-            if _is_chain_value(default):
-                return default
-            # `ty` is `type[_T]`, whose __init__ signature is unknown to the
-            # checker; the adoption is exactly the compiled tier's, and the
-            # constructor's own error is left to propagate.
-            return cast("Callable[[object], _T]", ty)(default)
+            return cast("_T", _adopt(default, ty))
         stored = self._store[entry]
         _require_ty(stored, ty)
-        return cast("_T", copy.deepcopy(stored))
+        return cast("_T", copy.deepcopy(_retyped_as(stored, ty)))
 
     def set(self, key: ChainValue, value: ChainValue) -> None:
         """Write `value` under `key`.

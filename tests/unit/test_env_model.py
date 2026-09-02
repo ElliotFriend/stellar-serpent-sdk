@@ -505,6 +505,71 @@ def test_a_union_and_an_int_enum_round_trip_through_storage_by_value() -> None:
         bucket.get(Symbol("shape"), Color)
 
 
+def test_a_stored_value_is_re_typed_to_the_ty_the_read_asks_for() -> None:
+    """The M1-E2 final-review ruling, at tier 1 (the two-leg pins live in
+    `tests/unit/test_recognize_udt.py`).
+
+    The host hands a storage read back as a bare WORD -- an int enum IS a
+    `u32`, a union IS an `ScVec` -- and the `ty` argument is what the program
+    reads that word as. The tag check is therefore not the whole answer at
+    tier 1, where the store holds real objects: without the re-typing a stored
+    `Color.Green` came back out of a `get(K, U32)` as the `Color` object, and
+    E9's no-coercion rule then made `== U32(1)` False here and True on chain.
+
+    Both directions, both kinds. E9's comparison rule is untouched: what
+    changed is which TYPE the read hands back.
+    """
+    from tests.unit.test_udt_values import Color, Shape
+
+    bucket = deployed_env().storage().temporary()
+
+    bucket.set(Symbol("color"), Color.Green)
+    assert bucket.get(Symbol("color"), U32) == U32(1)
+    bucket.set(Symbol("word"), U32(1))
+    assert bucket.get(Symbol("word"), Color) == Color.Green
+
+    bucket.set(Symbol("vec"), Vec(Symbol, [Symbol("Empty")]))
+    read = bucket.get(Symbol("vec"), Shape)
+    assert isinstance(read, Shape)
+    assert read.tag() == Symbol("Empty")
+    assert read == Shape.Empty
+
+    bucket.set(Symbol("shape"), Shape.Circle(U32(3)))
+    as_vec = bucket.get(Symbol("shape"), Vec)
+    assert type(as_vec) is Vec
+    assert list(as_vec) == [Symbol("Circle"), U32(3)]
+
+
+def test_the_re_typing_mirrors_the_chain_where_the_chain_knows_nothing() -> None:
+    """The two honest edges of the same rule.
+
+    A storage read consults no spec: the host has no case list to check the
+    word against, so neither does this. A discriminant no member declares
+    reads back as a member of the requested enum anyway (its `repr` is what
+    says so), and a leading `Symbol` naming no variant rebuilds the union
+    anyway -- refusing either would reject at tier 1 a read the chain
+    performs.
+
+    A vec that does not LEAD with a `Symbol` names no case at all, so there is
+    nothing to rebuild: it stays the plain `Vec` it is, and the union readers
+    fail on it here exactly where the compiled `tag()` fails its `Symbol`
+    narrow.
+    """
+    from tests.unit.test_udt_values import Color, Shape
+
+    bucket = deployed_env().storage().temporary()
+
+    bucket.set(Symbol("word"), U32(4242))
+    assert repr(bucket.get(Symbol("word"), Color)) == "<Color discriminant 4242>"
+
+    bucket.set(Symbol("vec"), Vec(Symbol, [Symbol("Nope")]))
+    assert bucket.get(Symbol("vec"), Shape).tag() == Symbol("Nope")
+
+    bucket.set(Symbol("headless"), Vec(U32, [U32(1)]))
+    headless: object = bucket.get(Symbol("headless"), Shape)
+    assert type(headless) is Vec
+
+
 def test_a_union_default_passes_through_instead_of_being_re_adopted() -> None:
     """Ruling E5's default rule, for the two new kinds: a default that already
     IS a chain value comes back as the caller's own object, un-copied and
