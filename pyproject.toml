@@ -79,6 +79,12 @@ extend-exclude = ["tests/must_reject"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# `host/serpent_host.pyi` is the Rust extension's typed contract (review m8).
+# Putting `host/` on the search path -- rather than in `files` -- means
+# `serpent.testing._real` type-checks against the stub in BOTH environments,
+# built or not, so the gate gives one answer and no `# type: ignore` is needed
+# on either side of the boundary.
+mypy_path = ["host"]
 # `examples/` is in scope (M1-E ruling E6): the shipped examples are the
 # executable proof of the zero-plugin `mypy --strict` pitch, so an example that
 # only type-checks with a plugin -- or not at all -- must fail the gate. It is a
