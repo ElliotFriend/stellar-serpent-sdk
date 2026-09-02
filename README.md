@@ -2,6 +2,10 @@
 
 Write Soroban smart contracts in Python. Experimental.
 
+> [!CAUTION]
+> **Experimental**
+> This is experimental and should not be used for anything other than toy experiments.
+
 ## Status
 
 M1 (the compiler + host-interface milestone) is in progress; this repo has no
