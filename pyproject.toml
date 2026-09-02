@@ -16,6 +16,12 @@ dependencies = []
 # from there.
 [project.optional-dependencies]
 spec = ["stellar-sdk>=15,<16"]
+# `serpent[testing]`: the tier-2b/3 test surface (`serpent.testing`). It needs
+# stellar-sdk for ScVal marshalling and RPC (ruling E2/E14) and pytest for the
+# `real_host` marker. The Rust extension `serpent-host` is NOT a dependency in
+# M1 -- it is built from source into the repo venv (ruling U1/E5; host/README.md)
+# and joins here as a wheel dependency in M3.
+testing = ["stellar-sdk>=15,<16", "pytest>=8"]
 
 [dependency-groups]
 dev = [

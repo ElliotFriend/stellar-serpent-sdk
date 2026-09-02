@@ -1045,6 +1045,10 @@ source = { editable = "." }
 spec = [
     { name = "stellar-sdk" },
 ]
+testing = [
+    { name = "pytest" },
+    { name = "stellar-sdk" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1058,8 +1062,12 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "stellar-sdk", marker = "extra == 'spec'", specifier = ">=15,<16" }]
-provides-extras = ["spec"]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'testing'", specifier = ">=8" },
+    { name = "stellar-sdk", marker = "extra == 'spec'", specifier = ">=15,<16" },
+    { name = "stellar-sdk", marker = "extra == 'testing'", specifier = ">=15,<16" },
+]
+provides-extras = ["spec", "testing"]
 
 [package.metadata.requires-dev]
 dev = [

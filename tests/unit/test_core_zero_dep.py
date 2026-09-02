@@ -5,11 +5,13 @@ dependencies, so every module under `src/serpent/` -- `__init__.py`,
 `val`/`types`/`errors`/`decorators`/`env`, AND the generated `_host` bindings --
 may import nothing but the standard library and other serpent modules.
 
-`serpent/spec/` is the one, recorded exception (plan Global Constraints): it
-REQUIRES `stellar_sdk` for XDR section emission, is build-time-only, and is
-therefore excluded from the walk below. The exclusion is only safe because the
-root package never re-exports it -- `import serpent` must not be able to drag
-`stellar_sdk` in -- which is the second half of this file.
+`serpent/spec/` and `serpent/testing/` are the two recorded exceptions (plan
+Global Constraints; M1-F ruling E2): `spec/` REQUIRES `stellar_sdk` for XDR
+section emission and is build-time-only, `testing/` requires it for ScVal
+marshalling and RPC and is test-time-only, and both are therefore excluded from
+the walk below. Each exclusion is only safe because the root package never
+re-exports it -- `import serpent` must not be able to drag `stellar_sdk` in --
+which is the second half of this file.
 
 The walk is static (`ast`), not import-based: importing a module would only
 prove that *its* imports resolve in an environment where stellar_sdk happens to
@@ -21,15 +23,20 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 import serpent
 
 SRC = pathlib.Path(serpent.__file__).parent
-#: The recorded exception; everything else under SRC is walked.
-EXEMPT = SRC / "spec"
+#: The recorded exceptions; everything else under SRC is walked. `spec/`
+#: (stellar_sdk for XDR sections, build-time only) and `testing/` (stellar_sdk
+#: for ScVal marshalling + RPC, test-time only, ruling E2). Neither is
+#: re-exported by the root package -- the second half of this file.
+EXEMPT = (SRC / "spec", SRC / "testing")
 
 
 def _core_modules() -> list[pathlib.Path]:
-    return sorted(p for p in SRC.rglob("*.py") if EXEMPT not in p.parents)
+    return sorted(p for p in SRC.rglob("*.py") if not any(e in p.parents for e in EXEMPT))
 
 
 def _imported_roots(path: pathlib.Path) -> set[str]:
@@ -61,10 +68,11 @@ def test_the_walk_actually_covers_the_core_modules() -> None:
     assert "val.py" in walked
     assert "decorators.py" in walked
     assert "types/__init__.py" in walked
-    assert not any(name.startswith("spec/") for name in walked)
-    # ... and that the exempt subpackage really exists, so the exclusion is
+    assert not any(name.startswith(("spec/", "testing/")) for name in walked)
+    # ... and that each exempt subpackage really exists, so the exclusions are
     # meaningful rather than vacuous.
-    assert (EXEMPT / "typemap.py").is_file()
+    for exempt, probe in ((SRC / "spec", "typemap.py"), (SRC / "testing", "_scval.py")):
+        assert (exempt / probe).is_file()
 
 
 def test_core_modules_import_only_stdlib_and_serpent() -> None:
@@ -103,6 +111,21 @@ def test_serpent_spec_is_not_reachable_from_the_package_root() -> None:
     assert "from serpent import spec" not in source
 
 
+def test_serpent_testing_is_not_reachable_from_the_package_root() -> None:
+    """The same five checks for the SECOND exemption (`serpent.testing`, M1-F
+    ruling E2), which imports stellar_sdk at module import exactly as
+    `serpent.spec` does. Spelled out rather than parametrized over the two
+    names, because each assertion is a distinct source spelling and a failure
+    should name the one that slipped through."""
+    assert "testing" not in serpent.__all__
+    source = (SRC / "__init__.py").read_text(encoding="utf-8")
+    assert "from serpent.testing" not in source
+    assert "import serpent.testing" not in source
+    assert "from .testing" not in source
+    assert "from . import testing" not in source
+    assert "from serpent import testing" not in source
+
+
 def test_importing_serpent_does_not_load_stellar_sdk() -> None:
     """The dynamic half of the boundary, in a fresh interpreter: this test
     process has already imported `serpent.spec` (test_typemap does), which sets
@@ -112,6 +135,7 @@ def test_importing_serpent_does_not_load_stellar_sdk() -> None:
         "import sys, serpent;"
         "assert 'stellar_sdk' not in sys.modules, 'serpent core pulled in stellar_sdk';"
         "assert 'serpent.spec' not in sys.modules, 'serpent core pulled in serpent.spec';"
+        "assert 'serpent.testing' not in sys.modules, 'serpent core pulled in serpent.testing';"
         "print('ok')"
     )
     result = subprocess.run(
@@ -121,10 +145,18 @@ def test_importing_serpent_does_not_load_stellar_sdk() -> None:
     assert result.stdout.strip() == "ok"
 
 
-def test_spec_subpackage_does_import_stellar_sdk() -> None:
-    """The exemption is real, not a formality: if `serpent.spec` ever stops
-    needing `stellar_sdk`, delete the exemption instead of keeping it."""
+@pytest.mark.parametrize("exempt", EXEMPT, ids=lambda d: d.name)
+def test_each_exempt_subpackage_does_import_stellar_sdk(exempt: pathlib.Path) -> None:
+    """Each exemption is real, not a formality: if `serpent.spec` or
+    `serpent.testing` ever stops needing `stellar_sdk`, delete THAT exemption
+    instead of keeping it.
+
+    One assertion PER directory (review B7), not one over their union: a
+    `testing/` that had quietly stopped importing `stellar_sdk` would still be
+    covered by `spec/`'s import if the two were pooled, and the exemption it no
+    longer needs would go on standing.
+    """
     roots: set[str] = set()
-    for path in sorted(EXEMPT.rglob("*.py")):
+    for path in sorted(exempt.rglob("*.py")):
         roots |= _imported_roots(path)
     assert "stellar_sdk" in roots
