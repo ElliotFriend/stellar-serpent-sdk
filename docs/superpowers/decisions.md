@@ -844,3 +844,90 @@ entry.
 - Reversal cost: per-item low before the plan's tasks consume them; E6 is
   a spec re-reading Elliot can overturn by striking it (footprint model
   in the mock would then be a G/M2 task); E1's rc pin is a one-line bump.
+
+## 2026-09-02 M1-F plan-review rulings (all 39 findings adopted, two corrected)
+- Context: adversarial review of the M1-F plan (10 blockers, 13 majors, 16
+  minors, all probe-evidenced against a real soroban-sdk 28.0.0-rc.1 build
+  and one read-only testnet simulation; triage record:
+  .superpowers/sdd/2026-09-02-m1f-testing-tiers/plan-review.md). Zero
+  disputes; plan v2 integrates every fix. Findings with lasting consequence:
+- B1 (E16 AMENDED, a shipped emitter bug): the emitter lowers every Symbol
+  `==`/`<` to `obj_cmp`; the real host refuses `obj_cmp` when BOTH operands
+  are non-objects (SymbolSmall, <= 9 chars) with Error(Value,
+  UnexpectedType) escalated to a VM trap. The mini host accepted it (it
+  decodes to tier-1 val_cmp), so tier 2a was silently green: the exact
+  S1/M7 failure class F exists to catch. Reproduced on testnet: the
+  deployed shapes contract (CDEU7Q4D...) answers `kind`/`palette`/
+  `is_pinned` and TRAPS on `area`. Decision: F gains a Task 0 (Opus,
+  semantics-critical) fixing the lowering -- equality of two small Vals is
+  a plain i64 compare (canonical packing), ordering of two small Symbols
+  goes through a new guest runtime part mirroring soroban-env-common's
+  SymbolSmall ordering EXACTLY as read from the pinned source, mixed or
+  object operands keep obj_cmp -- with printer goldens regenerated and the
+  real-host differential as the proof. E16's fence becomes "no emitter
+  change EXCEPT Task 0". The deployed contract stays as it is until the
+  M1-end deployment (a hard stop, Elliot's approval); Elliot is told now.
+- B1 consequence for tier 3: the fixed build's bytes will differ from the
+  deployed contract's, so tier-3 fixtures record the DEPLOYED wasm (4,171
+  B, sha256 6a9dd135...6e33, committed as a fixture artifact) and the real
+  leg replays THOSE bytes (same-bytes, Phase 0's rule); the fixed build is
+  compared to the deployed bytes by a separate assertion that is expected
+  to differ until the next approved deployment.
+- B2 (allow-set authorizers): the sdk test Env's `mock_auths` registers a
+  MockAuthContract AT the authorizer's address and panics for an account
+  (G...) strkey; account authorization on the real host needs real ed25519
+  signatures (M2). Decision: `RealEnv(auths=...)` accepts CONTRACT
+  authorizers only in M1 (documented); the E-owned ENV_SCENARIOS constant
+  `_ADMIN` changes from the account strkey to a contract strkey (the shapes
+  contract id, a real decodable strkey) -- a constant-level edit to the
+  frozen table whose rows treat the authorizer as opaque, ruled here because
+  it changes pinned expectation VALUES; and the Rust `mock_auths` drops the
+  unvalidated `Address::from_string` fallback (a P3 panic path).
+- B5 (two-level errors): the real host reports ONE frame-level error for
+  every guest-side failure (Error(Context, InvalidAction), code 6); the
+  true (ScErrorType, ScErrorCode) lives in diagnostic events. Decision: the
+  Rust surface exposes diagnostics; `RealHostError` carries `error_type`/
+  `code` (frame level, documented as the catch-all) AND `underlying:
+  (type, code) | None` from the innermost error diagnostic; every host-fact
+  assertion asserts the UNDERLYING pair; a meta-test forbids an all-identical
+  map. E15's pinned 128-bit `//0` classification is the underlying
+  (Object, ArithDomain), probe-confirmed.
+- M3 (archival): the sdk test Env does not model persistent archival (a
+  lapsed persistent entry stays readable). Decision: the HOST_FACTS row is a
+  two-sided declared divergence (tier 1 absent, test host present, chain
+  archived = `chain_unproven`), never a "fact" transcribed from the test
+  host; test_env_ttl's skips say so. Archival is proven only at tier 3
+  (carried).
+- M2 (container ordering, E12 refined): observed directly from the host via
+  its `Compare` trait (not `obj_cmp`, which refuses two small Vals), as
+  HOST_FACTS data over Vec/Map/union/small-Symbol vectors -- this ALSO
+  answers O12 independently of Task 0.
+- m1 (E14 AMENDED): testnet `simulateTransaction` accepts a never-funded
+  source account (probe: a random key simulated `kind` successfully).
+  Recording needs no human-supplied account: a documented fixed dummy public
+  key is the default, `SERPENT_TESTNET_SOURCE` an override. Recording stays
+  read-only; the D1 hard stop (no signing, no submission) is untouched.
+- B10 (TTL semantics): the testutils `get_ttl` is RELATIVE (ledgers
+  remaining, excluding the current ledger), panics on absent/expired
+  entries, and the instance form takes no key; the clamp lands on
+  `max_ttl()` == max_entry_ttl - 1 (observed 6,311,999). The façade
+  exposes `ttl(key) -> int | None` and `live_until(key)`, and pins
+  `max_ttl()` as a HOST_FACTS row instead of hand-computing the `-1`.
+- Also adopted (mechanical): deploy from a source PATH (loaded example
+  modules are not in sys.modules); the require-real-host policy fails via a
+  `pytest_runtest_setup` `pytest.fail` (xfail(run=False) exits 0); direct
+  `soroban-env-host =28.0.2` dependency (the sdk's `env` module is private,
+  `Ledger::protocol_version` is deprecated); `mock_auths` REPLACES the entry
+  set (the façade owns the full list and re-sets it per invoke; a mocked
+  address must never be the deployed contract's own); `register` records a
+  CreateContractV2HostFn auth that `auths()` must skip; `resources()`
+  destructures exhaustively; table-only meta-tests are never `real_host`-
+  marked; the zero-dep gate's fourth site; `test_frontend_fuzz`'s exact
+  fixture inventory; `build_test_module` gains `custom_sections` and every
+  hand-assembled module carries a real contractenvmetav0; the promise net
+  walks examples/ and docs/ with all three O33 needles and the existing E
+  net migrates to text keys; a committed `host/serpent_host.pyi`.
+- Reversal cost: Task 0 is an emitter behavior change pinned by goldens and
+  the real-host differential (reverting re-breaks every small-Symbol
+  compare on chain); the `_ADMIN` strkey edit is one constant; the E14
+  amendment is one default.

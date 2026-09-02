@@ -1,4 +1,4 @@
-# M1-F: Testing Tiers Implementation Plan (v1, pre-adversarial-review)
+# M1-F: Testing Tiers Implementation Plan (v2, post-adversarial-review)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -50,7 +50,31 @@ deployed shapes contract `CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7G
 is 4,171 bytes, sha256 `6a9dd135…6e33`, byte-identical to
 `build_file(Path("examples/shapes.py")).wasm` at main tip.
 
-> **First-run pins.** A handful of table cells (`EXPECTED_HOST_ERROR_TYPE`
+> **v2 note.** The adversarial plan review returned **10 Blockers, 13 Majors,
+> 16 Minors, verdict AMEND THEN EXECUTE** — triage in
+> `.superpowers/sdd/2026-09-02-m1f-testing-tiers/plan-review.md`; rulings in
+> decisions.md 2026-09-02 "M1-F plan-review rulings". The controller adopted
+> ALL findings (two with corrections: M2 observes container order through the
+> host's `Compare` trait, not `obj_cmp`; tier 3 replays the DEPLOYED bytes as a
+> committed artifact). The review's own summary is worth carrying: the one-
+> pyclass / ScVal-XDR / `catch_unwind` / `HostFailure` surface compiles verbatim
+> on pyo3 0.29, the sdk `Env` at 28.0.0-rc.1 runs serpent's protocol-20/22
+> artifacts unmodified, and every name Tasks 4-9 import exists under the name
+> used. What failed: **B1, a shipped emitter bug the real host finds
+> immediately** — every `Symbol` compare lowers to `obj_cmp`, which the host
+> refuses for two small operands; the mini host accepted it; the deployed
+> shapes contract traps on `area` on testnet today. v2 adds **Task 0** for the
+> fix (E16 amended). The other structural changes: the host reports ONE frame-
+> level error for every guest failure, so evidence lives in the UNDERLYING
+> `(type, code)` from diagnostics (B5); allow-set authorizers must be CONTRACT
+> addresses on the test host (B2); `deploy` takes a source PATH (B3); the TTL
+> readout is relative and the clamp lands on `max_ttl()` (B9/B10); the require-
+> real-host policy fails through `pytest_runtest_setup` (B4); a direct
+> `soroban-env-host` dependency (B6); the test host does not model archival
+> (M3); tier 3 seeds the contract-INSTANCE entry (M4). The produces-before-
+> consumes trace was re-verified after inserting Task 0.
+
+> **First-run pins.** A handful of table cells (`EXPECTED_UNDERLYING_ERROR`
 > in Task 4, every `HostErr(type, None)` code in Task 6, the archived-persistent
 > outcome) are host FACTS this repo does not have until the real host runs.
 > They are the plan's only deliberate blanks: the task fills them from the first
@@ -66,26 +90,47 @@ is 4,171 bytes, sha256 `6a9dd135…6e33`, byte-identical to
   new optional fields, docstrings, the three reason constants' text) and is
   listed in the licensed-edits contract below. `src/serpent/compiler/codes.py`
   and `docs/superpowers/decisions.md` are controller-owned (D12): F ADDS NO
-  SPT CODE; an implementer who thinks one is needed returns BLOCKED. No
-  emitter or frontend change is in any task (E16); an emitter bug the real
-  host reveals is an out-of-plan fix under Opus review, ledgered.
+  SPT CODE; an implementer who thinks one is needed returns BLOCKED. **No
+  emitter or frontend change is in any task EXCEPT Task 0** (E16 as amended
+  by the plan-review rulings: the small-Symbol `obj_cmp` lowering fix); any
+  OTHER emitter bug the real host reveals is an out-of-plan fix under Opus
+  review, ledgered.
 - **Licensed edits (the exhaustive list of pre-existing files any task may
-  modify; anything else is BLOCKED):** `pyproject.toml` (Task 2: `testing`
-  extra; Task 3: `[tool.pytest.ini_options] markers`; Task 8: nothing),
-  `.gitignore` (Task 1), `tests/unit/test_core_zero_dep.py` (Task 2: the
-  exemption grows to `spec/` AND `testing/`), `tests/semantics/env_scenarios.py`
-  (Task 5, metadata only), `tests/unit/test_env_differential.py` (Task 5:
-  the rename + import of the new field; Task 8: `_built` → the shared
-  cache), `tests/harness/objects.py` (Task 8: `chain_value_as`, `val_word`
+  modify; anything else is BLOCKED):** `src/serpent/emitter/**` and
+  `tests/goldens/wasm/*` + `tests/unit/test_emitter_*.py` pins (Task 0 ONLY:
+  the Symbol-compare lowering, its runtime part, the regenerated
+  disassembly goldens and size tripwires); `pyproject.toml` (Task 2:
+  `testing` extra; Task 3: `[tool.pytest.ini_options] markers`, `[tool.mypy]
+  mypy_path` for the `.pyi`), `.gitignore` (Task 1),
+  `tests/unit/test_core_zero_dep.py` (Task 2: the exemption grows to `spec/`
+  AND `testing/`, FOUR sites), `tests/semantics/env_scenarios.py` (Task 5:
+  metadata + the `_ADMIN` constant per the B2 ruling), `tests/unit/
+  test_env_differential.py` (Task 5: the rename; Task 8: `_built` → the
+  shared cache), `tests/unit/test_no_stale_promises.py` (Task 5: the E net's
+  allowlist migrates to text keys; Task 10: the F net), `tests/unit/
+  test_frontend_fuzz.py` (Task 6: the EXACT fixture inventory gains
+  `host_facts.py`), `tests/harness/testmod.py` (Task 6: `custom_sections`),
+  `tests/harness/objects.py` (Task 8: `chain_value_as`, `val_word`
   containers), `tests/harness/i256.py` (Task 8: `DIV_ERROR_VAL` names the
-  pinned host code), `tests/harness/hostfns.py` + `tests/harness/engine.py`
-  (Task 8 + Task 10: docstring repoints only), `tests/unit/test_examples.py`
-  (Task 8: `_built`/`start` → the shared cache), `tests/fixtures/udt_style.py`
-  (Task 7: union-returning methods IF absent), `src/serpent/env.py`,
-  `src/serpent/errors.py`, `tests/unit/test_env_ttl.py`,
-  `tests/unit/test_no_stale_promises.py`, `README.md`,
+  pinned UNDERLYING host code), `tests/harness/hostfns.py` + `tests/harness/
+  engine.py` (Task 8 + Task 10: docstring repoints only), `tests/unit/
+  test_examples.py` + `tests/unit/test_emitter_end_to_end.py` (Task 8:
+  `_built`/`build_fixture` → the shared cache), `tests/fixtures/udt_style.py`
+  (Task 7: `current_shape`), `src/serpent/env.py`, `src/serpent/errors.py`,
+  `tests/unit/test_env_ttl.py`, `README.md`, `examples/shapes.py` (Task 10:
+  module docstring only — probe-verified NOT to change the emitted bytes),
   `docs/superpowers/specs/2026-08-26-serpent-python-soroban-sdk-design.md`
   (Task 10: prose only), `docs/superpowers/process.md` (Completion).
+- **A test that reads only tables or metadata is NEVER `real_host`-marked**
+  (review M12): real-leg modules mark per-test, never module-level, so the
+  coverage/coherence/non-vacuity meta-tests run on a Rust-less checkout.
+- **Errors have two levels (B5).** The real host reports a FRAME-level
+  `(error_type, code)` that is `("Context", 6)` for every guest-side failure
+  except a contract's own `fail_with_error`; the true classification is the
+  innermost `Error(Type(Code))` DIAGNOSTIC event, exposed as
+  `RealHostError.underlying`. Every host-fact assertion asserts `underlying`;
+  `error_type`/`code` are asserted only for the Contract/non-Contract split
+  (P4). No map of expected errors may have all-identical values.
 - **Gates on every task, non-negotiable:** `uv run pytest -q`,
   `uv run mypy --strict src tests` (mypy's `files` already includes
   `examples`; `src/serpent/testing/` is under `src` so it is strict by
@@ -124,7 +169,10 @@ is 4,171 bytes, sha256 `6a9dd135…6e33`, byte-identical to
   5_000_000`, `DEFAULT_NETWORK_ID = bytes(32)`), named once, imported
   everywhere.
 - **Drift pins (E11):** `serpent_host.RealEnv(...).protocol_version() ==
-  28 == int(PINNED_TAG.removeprefix("v").split(".")[0])`; every tier-3
+  host_protocol_ceiling() == 28 == int(PINNED_TAG.removeprefix("v").split(".")[0])`
+  (`==`, not `>=`: a p29 host would silently skew K2); the ledger protocol
+  is read through `env.ledger().get().protocol_version` (the trait method is
+  deprecated and fails `-D warnings`); every tier-3
   fixture header's `protocol` equals the same number; `host/Cargo.lock` is
   committed; `pyo3 = "0.29"`, `soroban-sdk = "=28.0.0-rc.1"`.
 - **Conventions:** conventional commits, no emoji, no em dashes, Oxford
@@ -134,7 +182,8 @@ is 4,171 bytes, sha256 `6a9dd135…6e33`, byte-identical to
   from main. Docstrings explain WHY and cite the dossier ID; every "not
   modelled"/"not proven" sentence names where the proof lives (O33's
   three outcomes: IMPLEMENTED / REPOINTED / REMOVED).
-- **Produces-before-consumes trace:** Task 1 produces `serpent_host` (the
+- **Produces-before-consumes trace:** Task 0 produces the corrected Symbol
+  lowering (no new names; regenerated goldens) → Task 1 produces `serpent_host` (the
   raw class + `HostFailure`) → Task 2 produces `_scval.encode/decode` (needs
   nothing from Task 1) → Task 3 consumes both, produces `RealEnv`,
   `RealContract`, the exception hierarchy, the marker, the conftest skip,
@@ -149,10 +198,14 @@ is 4,171 bytes, sha256 `6a9dd135…6e33`, byte-identical to
 ## File Structure
 
 ```
+src/serpent/emitter/...                 Task 0 ONLY — the Symbol-compare lowering + one runtime part
+tests/goldens/wasm/*.wat                Task 0 — regenerated disassembly snapshots (READ THE DIFF)
 host/                                   NEW — the serpent-host distribution
   Cargo.toml, Cargo.lock, pyproject.toml, .cargo/config.toml, README.md
+  serpent_host.pyi                      the typed surface mypy sees (m8); listed in [tool.mypy] mypy_path
   src/lib.rs                            RealEnv pyclass, HostFailure, catch_unwind, validation
   src/errors.rs                         classify(soroban_sdk::Error) -> (type name, code, is_contract)
+  src/diagnostics.rs                    innermost Error(Type(Code)) from get_diagnostic_events (B5)
   src/validate.rs                       symbol / strkey / wasm pre-validation (pure, unit-tested)
 src/serpent/testing/                    NEW — public test surface (imports stellar_sdk lazily)
   __init__.py                           __all__: RealEnv, RealContract, errors, marker name
@@ -177,8 +230,87 @@ tests/semantics/host_facts.py           NEW — the F-owned HOST_FACTS table (Ta
 tests/fixtures/host_facts.py            NEW — the contract HOST_FACTS drives (Task 6)
 tests/unit/test_scval.py                Task 2
 tests/unit/test_host_facts_tier1.py     Task 6 (tier-1 leg of the modelled rows)
+tests/unit/test_harness_objects.py      NEW — Task 8 (chain_value_as, val_word containers, cache)
 tests/harness/cache.py                  NEW — built(path) compiled-module cache (Task 8)
+tests/real_host/fixtures/testnet/shapes/deployed.wasm   Task 9 — the 4,171 deployed bytes (K6)
 docs/testing.md                         NEW — Task 10
+```
+
+---
+
+### Task 0: The small-Symbol compare lowering (review B1; E16 as amended)
+
+**Files:**
+- Modify: `src/serpent/emitter/` — the compare lowering (`_lower_compare` and
+  the `_via_obj_cmp` route in `arith.py`/`lower.py`; the implementer locates
+  the exact functions from `serpent/emitter`'s dispatch) and the runtime-part
+  inventory (one new part `symsmall_cmp`)
+- Modify: `tests/goldens/wasm/*.wat` for every `FIXTURE_SOURCES` entry whose
+  bytes change (regenerate with the command in `tests/unit/test_emitter_printer.py`'s
+  header and READ THE DIFF); the size tripwires in `tests/unit/test_emitter_fuzz.py`
+  if a fixture crosses one
+- Test: `tests/unit/test_emitter_symbol_compare.py` (new), plus the existing
+  `test_emitter_semantics.py` (mini-host leg) and Task 4's real leg as the proof
+
+**Interfaces:**
+- Consumes: `serpent.val` (`TAG_SYMBOL_SMALL`, `symbol_char_code`,
+  `SYMBOL_CHARS`, `is_object`); the pinned `soroban-env-common` source at
+  v28.0.2 (`src/symbol.rs` `impl Ord for SymbolSmall`, `src/compare.rs` the
+  `Compare<Val>` symbol special case) — READ BOTH before writing a byte.
+- Produces: no new Python names. The lowering contract: for `Symbol ==`/`!=`
+  the emitted code is `if is_object(a) || is_object(b) then obj_cmp(a, b) == 0
+  else a == b` (canonical small packing makes word equality exact); for
+  `Symbol <, <=, >, >=` it is `if is_object(a) || is_object(b) then obj_cmp
+  else symsmall_cmp(a, b)`, where `symsmall_cmp` is a guest runtime part that
+  reproduces `SymbolSmall`'s ordering EXACTLY as the pinned source defines it
+  (the review's reading: `Iterator::cmp` over DECODED characters, i.e. ASCII
+  order; if the source says packed-body order instead, THAT is what the part
+  implements — the part mirrors the host, never tier 1). Every other type's
+  compare lowering is untouched.
+
+- [ ] **Step 1: Read the ground truth and write it down.** Open the two pinned
+  files (curl the raw GitHub URLs at tag `v28.0.2`), quote the `SymbolSmall`
+  ordering definition and the host's small-vs-small / small-vs-object branch
+  verbatim into the new test module's docstring with the URL and tag. If the
+  host's small-vs-small order is NOT decoded-ASCII, STOP and return BLOCKED:
+  tier 1 (`Symbol.__lt__`, ASCII) would then be wrong and that is a controller
+  decision on the frozen table (E10/O12), not this task's.
+
+- [ ] **Step 2: Failing tests.** `tests/unit/test_emitter_symbol_compare.py`:
+  build a contract with `def eq(self, env, a: Symbol, b: Symbol) -> Bool: return Bool(a == b)`
+  and `def lt(...) -> Bool: return Bool(a < b)`; disassemble via
+  `serpent.emitter.printer.disassemble`; assert the `eq` body contains NO
+  unconditional `call $obj_cmp` before an `i64.eq` on the operands (a
+  structural assertion on the instruction list: the `obj_cmp` call is inside
+  a branch guarded by the object-tag test), and that `lt` links the
+  `symsmall_cmp` part (`built.runtime_parts_linked`). Then the BEHAVIORAL pins
+  under the mini host via `FullHost`: `eq(Symbol("ab"), Symbol("ab"))` is
+  `True`, `eq(Symbol("ab"), Symbol("abcdefghijk"))` is `False`,
+  `lt(Symbol("A"), Symbol("_"))` per Step 1's order, and — the point — a
+  `FullHost` whose `obj_cmp` REFUSES two non-object words (add a strict mode
+  flag to the test's host subclass, not to `tests/harness`) runs all four
+  without calling `obj_cmp`. Run: FAIL (the current lowering calls `obj_cmp`
+  unconditionally; the strict host raises).
+
+- [ ] **Step 3: Implement.** The tag test is `(word & 0xFF) >= 64` per
+  `val.is_object`; the `symsmall_cmp` part decodes both bodies six bits at a
+  time from the high end (A3's SymbolSmall layout: 9 chars × 6 bits, high-
+  order-first, zero-padded) and compares per the Step 1 order, returning
+  -1/0/1 as an i64; register it in the runtime-part namespace beside
+  `tagcheck_bytes_n` (D's E3 ruling says parts are emitted from the same
+  encoder as user code — no WAT). Keep `runtime_parts_needed ⊆ linked`.
+
+- [ ] **Step 4: Regenerate goldens and run the suite.** `uv run pytest -q`;
+  regenerate each changed `.wat` golden; read every diff and confirm only
+  Symbol-compare sites and the new part moved. `examples/shapes.py`'s bytes
+  WILL change (its `area` compares `tag()` results): note the new sha256 in
+  the commit message — Task 9 pins the DEPLOYED hash separately.
+
+- [ ] **Step 5: Gates, then commit**
+
+```bash
+git add src/serpent/emitter tests/goldens tests/unit/test_emitter_symbol_compare.py tests/unit/test_emitter_fuzz.py
+git commit -m "fix(emitter): compare two small Symbols without obj_cmp, which the host refuses"
 ```
 
 ---
@@ -201,24 +333,39 @@ class RealEnv:  # #[pyclass(unsendable)]
     def __init__(self, *, protocol_version: int, sequence_number: int, timestamp: int,
                  network_id: bytes, base_reserve: int, min_temp_entry_ttl: int,
                  min_persistent_entry_ttl: int, max_entry_ttl: int) -> None: ...
-    def protocol_version(self) -> int: ...          # the host's CURRENT ledger protocol
-    def host_protocol_ceiling(self) -> int: ...     # soroban_env_host meta: the compiled-in max
+    def protocol_version(self) -> int: ...          # env.ledger().get().protocol_version (NOT the deprecated trait method)
+    def host_protocol_ceiling(self) -> int: ...     # soroban_env_host::Host::current_test_protocol()
+    def diagnostics(self) -> list[bytes]: ...        # xdr.DiagnosticEvent bytes, the LAST invocation's (B5)
+    def compare(self, a_xdr: bytes, b_xdr: bytes) -> int: ...
+        # the host's Compare<Val> verdict (-1/0/1) for ANY two Vals, small or object -- NOT obj_cmp,
+        # which refuses two small operands (review M2); the O12/E12 ordering evidence
+    def max_ttl(self) -> int: ...                    # env.storage().max_ttl(); observed 6_311_999
     def set_ledger(self, *, sequence_number: int | None = None, timestamp: int | None = None) -> None: ...
     def register(self, wasm: bytes, constructor_args_xdr: list[bytes]) -> str: ...   # strkey C...
     def invoke(self, contract: str, function: str, args_xdr: list[bytes]) -> bytes: ...  # ScVal XDR
     def mock_all_auths(self) -> None: ...
     def mock_auths(self, entries: list[tuple[str, str, str, list[bytes]]]) -> None: ...
-        # (address strkey, contract strkey, function name, args ScVal XDR)
+        # (authorizer CONTRACT strkey, contract strkey, function name, args ScVal XDR).
+        # REPLACES the whole entry set (sdk semantics, review M6); the authorizer MUST be a
+        # contract strkey (the sdk registers a MockAuthContract AT that address and panics
+        # for a G... account, review B2) and must never be the deployed contract's own address.
     def events(self) -> list[bytes]: ...             # xdr.ContractEvent bytes, the LAST invocation's
     def auths(self) -> list[tuple[str, str, str, list[bytes]]]: ...
-        # (address, contract, function, args ScVal XDR) for the LAST invocation's ROOT auths
+        # (address, contract, function, args ScVal XDR) for the LAST invocation's ROOT
+        # CONTRACT auths; non-contract functions (register's CreateContractV2HostFn,
+        # review M8) are SKIPPED, never an error
     def storage_get(self, contract: str, durability: str, key_xdr: bytes) -> bytes | None: ...
         # durability in {"persistent", "temporary", "instance"}
     def storage_has(self, contract: str, durability: str, key_xdr: bytes) -> bool: ...
     def storage_set(self, contract: str, durability: str, key_xdr: bytes, value_xdr: bytes) -> None: ...
-    def storage_ttl(self, contract: str, durability: str, key_xdr: bytes) -> int: ...  # live_until ledger
+    def storage_ttl(self, contract: str, durability: str, key_xdr: bytes) -> int | None: ...
+        # RELATIVE: ledgers remaining EXCLUDING the current ledger (testutils::storage), None when
+        # absent/expired (the sdk method panics there; contained + mapped). live_until = sequence + ttl.
+        # durability "instance" takes NO key: pass b"" or get invalid_input.
     def budget(self) -> tuple[int, int]: ...         # (cpu instructions, memory bytes), last invocation
-    def resources(self) -> dict[str, int]: ...       # every InvocationResources field by its Rust name
+    def resources(self) -> dict[str, int] | None: ...
+        # every InvocationResources field by its Rust name (exhaustive destructure, review M10);
+        # None before the first invocation (the sdk panics there, review m14)
 
 class HostFailure(Exception):
     # args == (kind, error_type, code, message)
@@ -255,6 +402,11 @@ pyo3 = { version = "0.29", features = ["abi3-py311"] }
 # soroban-env-host =28.0.2, the same release as src/serpent/_host/_codegen.py's
 # PINNED_TAG. Bumping either without the other is the drift Task 3 pins.
 soroban-sdk = { version = "=28.0.0-rc.1", features = ["testutils"] }
+# The sdk's `env` module is PRIVATE (review B6), so the raw Host API the
+# dossier's E1 escape hatch needs (`current_test_protocol`, diagnostics, the
+# `Compare` trait) comes from a direct dependency on the SAME release the sdk
+# pins -- nothing new enters the lock graph.
+soroban-env-host = { version = "=28.0.2", features = ["testutils"] }
 # The sdk pins the same version; a direct dep so `validate.rs` can call the
 # Result-returning strkey parser without going through Address::from_string.
 stellar-strkey = "=0.0.16"
@@ -540,7 +692,7 @@ fn symbol_of(env: &Env, name: &str) -> PyResult<Symbol> {
 }
 
 #[pyclass(unsendable)]
-struct RealEnv { env: Env }
+struct RealEnv { env: Env, invoked: std::cell::Cell<bool> }
 
 #[pymethods]
 impl RealEnv {
@@ -560,17 +712,50 @@ impl RealEnv {
                 protocol_version, sequence_number, timestamp, network_id: id, base_reserve,
                 min_temp_entry_ttl, min_persistent_entry_ttl, max_entry_ttl,
             });
-            Ok(RealEnv { env })
+            Ok(RealEnv { env, invoked: std::cell::Cell::new(false) })
         })
     }
 
-    fn protocol_version(&self) -> u32 { self.env.ledger().protocol_version() }
+    /// `Ledger::protocol_version()` is `#[deprecated]` and fails `-D warnings`
+    /// (review B6); the `LedgerInfo` read is the supported form.
+    fn protocol_version(&self) -> u32 { self.env.ledger().get().protocol_version }
 
-    /// The compiled-in ceiling (P10): `soroban_env_host::meta::INTERFACE_VERSION`'s
-    /// protocol half. Implementer: the exact accessor is verified from the pin
-    /// (`soroban_sdk::env::internal::meta::get_ledger_protocol_version(
-    /// INTERFACE_VERSION)` or `Host::current_test_protocol()`).
-    fn host_protocol_ceiling(&self) -> u32 { soroban_sdk::env::internal::Host::current_test_protocol() }
+    /// The compiled-in ceiling (P10), from the env-host crate directly (the
+    /// sdk's `env::internal` is private, review B6).
+    fn host_protocol_ceiling(&self) -> u32 { soroban_env_host::Host::current_test_protocol() }
+
+    /// The LAST invocation's diagnostic events as XDR (review B5): the innermost
+    /// `topics: [error, Error(Type(Code))]` is the real classification the frame-
+    /// level error hides behind `Context(InvalidAction)`.
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyBytes>>> {
+        contained(|| {
+            let host: &soroban_env_host::Host = self.env.host();
+            let events = host.get_diagnostic_events()
+                .map_err(|e| conversion(format!("diagnostics: {e:?}")))?;
+            events.0.iter().map(|ev| {
+                let b = ev.event.to_xdr(Limits::none()).map_err(|e| conversion(format!("{e:?}")))?;
+                Ok(PyBytes::new(py, &b))
+            }).collect()
+        })
+    }
+
+    /// The host's own `Compare<Val>` verdict for any two Vals (review M2) --
+    /// `obj_cmp` refuses two small operands, this does not.
+    fn compare(&self, a_xdr: &[u8], b_xdr: &[u8]) -> PyResult<i32> {
+        contained(|| {
+            use soroban_env_host::Compare;
+            let a = to_val(&self.env, a_xdr, "a")?;
+            let b = to_val(&self.env, b_xdr, "b")?;
+            let host: &soroban_env_host::Host = self.env.host();
+            let ord = host.compare(&a, &b).map_err(|e| {
+                let c = errors::classify(e.error.into());
+                failure("host", c.type_name, c.code, c.message)
+            })?;
+            Ok(ord as i32)
+        })
+    }
+
+    fn max_ttl(&self) -> u32 { self.env.storage().max_ttl() }
 
     #[pyo3(signature = (*, sequence_number=None, timestamp=None))]
     fn set_ledger(&self, sequence_number: Option<u32>, timestamp: Option<u64>) -> PyResult<()> {
@@ -613,6 +798,7 @@ impl RealEnv {
             for (i, b) in args_xdr.iter().enumerate() {
                 args.push_back(to_val(env, b, &format!("arg {i}"))?);
             }
+            self.invoked.set(true);
             match env.try_invoke_contract::<Val, soroban_sdk::Error>(&addr, &sym, args) {
                 Ok(Ok(val)) => {
                     let scval = ScVal::try_from_val(env, &val)
@@ -638,10 +824,10 @@ impl RealEnv {
             // Build owned Addresses/Vecs first; MockAuth borrows them.
             let mut owned = Vec::new();
             for (who, contract, fn_name, args_xdr) in &entries {
-                let who = address_of(env, who).or_else(|_| {
-                    // an ACCOUNT strkey (G...) is also a valid authorizer
-                    Ok::<Address, PyErr>(Address::from_string(&soroban_sdk::String::from_str(env, who)))
-                })?;
+                // CONTRACT strkeys only (review B2): the sdk registers a MockAuthContract at
+                // `who`, which panics for an account address; account auth needs real
+                // signatures and is M2. `address_of` pre-validates, so this is invalid_input.
+                let who = address_of(env, who)?;
                 let contract = address_of(env, contract)?;
                 let mut args: std::vec::Vec<Val> = std::vec::Vec::new();
                 for (i, b) in args_xdr.iter().enumerate() {
@@ -673,17 +859,19 @@ impl RealEnv {
             use soroban_sdk::testutils::AuthorizedFunction;
             let env = &self.env;
             env.auths().into_iter().map(|(who, inv)| {
+                // `register` itself records a CreateContractV2HostFn authorization
+                // (review M8): skip non-contract functions, never error on them.
                 let (contract, name, args) = match inv.function {
                     AuthorizedFunction::Contract((c, f, a)) => (c.to_string().to_string(),
                         f.to_string(), a),
-                    other => return Err(conversion(format!("non-contract auth in M1: {other:?}"))),
+                    _ => return Ok(None),
                 };
                 let args = args.iter().map(|v| {
                     let sc = ScVal::try_from_val(env, &v).map_err(|e| conversion(format!("{e:?}")))?;
                     xdr_bytes(py, &sc)
                 }).collect::<PyResult<Vec<_>>>()?;
-                Ok((who.to_string().to_string(), contract, name, args))
-            }).collect()
+                Ok(Some((who.to_string().to_string(), contract, name, args)))
+            }).filter_map(|r| r.transpose()).collect()
         })
     }
 
@@ -711,10 +899,14 @@ impl RealEnv {
         })
     }
 
-    // storage_has / storage_set / storage_ttl follow storage_get's shape exactly:
-    // `has(&key)`, `set(&key, &val)`, and the testutils `get_ttl(&key)` trait
-    // method on each durability, inside `as_contract`. (Implementer writes all
-    // three; the Python tests below exercise each.)
+    // storage_has / storage_set follow storage_get's shape exactly: `has(&key)`,
+    // `set(&key, &val)` inside `as_contract`. storage_ttl (review B10): the
+    // testutils `get_ttl` is RELATIVE and PANICS on an absent or expired entry,
+    // and the instance form is `env.storage().instance().get_ttl()` with NO key
+    // -- so: pre-check `has` (persistent/temporary) and return None when absent;
+    // wrap the call in its own catch_unwind and map a panic to None (expired);
+    // for "instance", require `key_xdr.is_empty()` (else invalid_input). The
+    // Python tests below exercise each branch.
 
     fn budget(&self) -> PyResult<(u64, u64)> {
         contained(|| {
@@ -723,23 +915,33 @@ impl RealEnv {
         })
     }
 
-    fn resources<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    fn resources<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, pyo3::types::PyDict>>> {
+        // `cost_estimate().resources()` PANICS before the first invocation (review
+        // m14); the façade tracks whether an invoke has happened and this returns
+        // None until then. Exhaustive destructure (review M10): a field the host
+        // adds is a COMPILE error here, never a silent omission.
+        if !self.invoked.get() { return Ok(None); }
         contained(|| {
-            let r = self.env.cost_estimate().resources();
+            let soroban_env_host::InvocationResources {
+                instructions, mem_bytes, disk_read_entries, memory_read_entries, write_entries,
+                disk_read_bytes, write_bytes, contract_events_size_bytes,
+                persistent_rent_ledger_bytes, persistent_entry_rent_bumps,
+                temporary_rent_ledger_bytes, temporary_entry_rent_bumps,
+            } = self.env.cost_estimate().resources();
             let d = pyo3::types::PyDict::new(py);
-            d.set_item("instructions", r.instructions)?;
-            d.set_item("mem_bytes", r.mem_bytes)?;
-            d.set_item("disk_read_entries", r.disk_read_entries)?;
-            d.set_item("memory_read_entries", r.memory_read_entries)?;
-            d.set_item("write_entries", r.write_entries)?;
-            d.set_item("disk_read_bytes", r.disk_read_bytes)?;
-            d.set_item("write_bytes", r.write_bytes)?;
-            d.set_item("contract_events_size_bytes", r.contract_events_size_bytes)?;
-            d.set_item("persistent_rent_ledger_bytes", r.persistent_rent_ledger_bytes)?;
-            d.set_item("persistent_entry_rent_bumps", r.persistent_entry_rent_bumps)?;
-            d.set_item("temporary_rent_ledger_bytes", r.temporary_rent_ledger_bytes)?;
-            d.set_item("temporary_entry_rent_bumps", r.temporary_entry_rent_bumps)?;
-            Ok(d)
+            d.set_item("instructions", instructions)?;
+            d.set_item("mem_bytes", mem_bytes)?;
+            d.set_item("disk_read_entries", disk_read_entries)?;
+            d.set_item("memory_read_entries", memory_read_entries)?;
+            d.set_item("write_entries", write_entries)?;
+            d.set_item("disk_read_bytes", disk_read_bytes)?;
+            d.set_item("write_bytes", write_bytes)?;
+            d.set_item("contract_events_size_bytes", contract_events_size_bytes)?;
+            d.set_item("persistent_rent_ledger_bytes", persistent_rent_ledger_bytes)?;
+            d.set_item("persistent_entry_rent_bumps", persistent_entry_rent_bumps)?;
+            d.set_item("temporary_rent_ledger_bytes", temporary_rent_ledger_bytes)?;
+            d.set_item("temporary_entry_rent_bumps", temporary_entry_rent_bumps)?;
+            Ok(Some(d))
         })
     }
 }
@@ -755,11 +957,15 @@ fn serpent_host(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 (Implementer notes: `network_id: &[u8]` binds a Python `bytes`; `Vec<Vec<u8>>`
 binds `list[bytes]`; returns are `PyBytes`, never `Vec<u8>` (which would
-become `list[int]`). `env.cost_estimate()` / `Budget::cpu_instruction_cost`
-/ `memory_bytes_cost` / `InvocationResources` field names are verified from
-the pinned sdk source at implementation time; the field LIST above is the
-28.0.2 struct (dossier B.3) and `resources()` must expose every field so a
-future host-added field is a loud test failure, not a silent omission.)
+become `list[int]`). The review's pyo3 0.29 `cargo check` accepted this
+entire signature set verbatim, and `InvocationResources`' twelve fields are
+exactly the list above at 28.0.2. `env.register(garbage)` PANICS with a
+String payload inside the sdk; `contained` reports it as kind "panic" with
+the message — Step 7's test pins that. Also ship `host/serpent_host.pyi`
+declaring every method above with these Python types (review m8), and add
+`mypy_path = ["host"]` under `[tool.mypy]` in Task 3, so `_real.py` is typed
+against it in BOTH environments (extension present or absent) and no
+`# type: ignore` is needed anywhere.)
 
 - [ ] **Step 5: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` in `host/`**
 
@@ -797,7 +1003,7 @@ from serpent.env import DEFAULT_LEDGER_SEQUENCE, DEFAULT_LEDGER_TIMESTAMP
 
 serpent_host = pytest.importorskip("serpent_host")
 
-pytestmark = pytest.mark.real_host
+pytestmark = pytest.mark.real_host  # every test here drives the extension; no table-only tests live in this module
 
 _ROOT = Path(__file__).resolve().parents[2]
 COUNTER = _ROOT / "examples" / "counter.py"
@@ -833,10 +1039,35 @@ def test_the_counter_example_runs_on_the_real_host() -> None:
     assert _u32(env.invoke(cid, "total", [])) == 2
 
 
-def test_protocol_is_28_and_within_the_compiled_in_ceiling() -> None:
+def test_protocol_is_28_and_equals_the_compiled_in_ceiling() -> None:
     env = _env()
     assert env.protocol_version() == 28
-    assert env.host_protocol_ceiling() >= 28
+    assert env.host_protocol_ceiling() == 28  # `==`: a p29 host would skew every tier-3 comparison (K2)
+
+
+def test_the_extension_lives_in_the_repo_venv() -> None:
+    """F.1.7: a stale system-wide install must not shadow the repo's build."""
+    assert ".venv" in serpent_host.__file__, serpent_host.__file__
+
+
+def test_a_missing_function_carries_an_underlying_diagnostic() -> None:
+    """B5: the frame-level error is Context/InvalidAction for EVERY guest failure;
+    the real classification is in the diagnostics."""
+    env = _env()
+    cid = env.register(build_file(COUNTER).wasm, [])
+    with pytest.raises(serpent_host.HostFailure):
+        env.invoke(cid, "no_such_export", [])
+    assert env.diagnostics(), "the host emitted no diagnostic events (diagnostic level not Debug?)"
+
+
+def test_compare_orders_two_small_symbols_where_obj_cmp_refuses() -> None:
+    """M2: the Compare trait answers for two small Vals; obj_cmp would trap."""
+    env = _env()
+    a = scval.to_symbol("A").to_xdr_bytes()
+    u = scval.to_symbol("_").to_xdr_bytes()
+    assert env.compare(a, a) == 0
+    assert env.compare(a, u) in (-1, 1)
+    assert env.compare(a, u) == -env.compare(u, a)
 
 
 def test_a_contract_error_is_kind_contract_with_its_code() -> None:
@@ -918,8 +1149,18 @@ def test_budget_and_resources_report_the_last_invocation() -> None:
     cpu, mem = env.budget()
     assert cpu > 0 and mem > 0
     r = env.resources()
+    assert r is not None
     assert r["write_entries"] >= 1  # the counter writes its slot
-    assert set(r) >= {"instructions", "mem_bytes", "write_entries", "memory_read_entries"}
+    assert set(r) == {
+        "instructions", "mem_bytes", "disk_read_entries", "memory_read_entries", "write_entries",
+        "disk_read_bytes", "write_bytes", "contract_events_size_bytes",
+        "persistent_rent_ledger_bytes", "persistent_entry_rent_bumps",
+        "temporary_rent_ledger_bytes", "temporary_entry_rent_bumps",
+    }
+
+
+def test_resources_is_none_before_the_first_invocation() -> None:
+    assert _env().resources() is None
 ```
 
 - [ ] **Step 8: Run the smoke tests (they need Task 3's conftest to SKIP when absent; until then `importorskip` covers the same)**
@@ -931,7 +1172,10 @@ Expected: all PASS. (The `real_host` marker is unregistered until Task 3; pytest
 
 - [ ] **Step 10: Gates, then commit**
 
-Run the four Python gates (ruff sees `tests/real_host`; mypy sees it too — `serpent_host` has no stubs, so `tests/real_host/test_serpent_host_module.py` types `_env()` as `object` and calls through `Any`-typed locals; implementer adds a `host/serpent_host.pyi`? NO — Task 3 ships the typed façade and this file stays `object`/`Any`-typed with a `# type: ignore[import-not-found]` on the import line inside `importorskip`'s result being `Any` already).
+Run the four Python gates. mypy: `host/serpent_host.pyi` (Step 4's note) is
+on `mypy_path` from Task 3 onward; in THIS task `tests/real_host/
+test_serpent_host_module.py` types `_env()` as `Any` via `importorskip`'s
+return type, which is already `Any`, so no ignore is needed.
 
 ```bash
 git add host/ .gitignore tests/real_host/__init__.py tests/real_host/test_serpent_host_module.py
@@ -953,7 +1197,11 @@ git commit -m "feat(host): add the serpent-host PyO3 crate embedding the protoco
 - Consumes: `serpent.types` (`U32, I32, U64, I64, U128, I128, Bool, Symbol,
   String, Bytes, Bytes32, Bytes64, bytes_n, Address, Timepoint, Duration, Vec,
   Map, ContractUnion, ContractEnum`), `serpent.decorators._METADATA_ATTR`
-  (`"_serpent_type_"`, metadata `{"kind": "union"|"enum"|"struct"|..., "cases": [...]}`),
+  (`"_serpent_type_"`; probe-verified shapes: union `{"kind": "union", "cases":
+  [(name, payload_annotations_tuple), ...]}`, int enum `{"kind": "enum",
+  "cases": [(name, discriminant), ...]}`, error enum `{"kind": "error_enum",
+  "cases": [...]}`, struct `{"kind": "struct", "fields": [(name, annotation),
+  ...]}` — structs use `fields`, not `cases`),
   `serpent.types._ordering.Struct` (the `__dataclass_fields__` protocol),
   `stellar_sdk.xdr.SCVal`, `stellar_sdk.scval`.
 - Produces:
@@ -1065,7 +1313,7 @@ def test_scalar_encoding_matches_stellar_sdk(value: object, expected: SCVal) -> 
 def test_a_struct_is_a_map_with_sorted_symbol_keys() -> None:
     sc = encode(Point(x=U32(1), y=I64(-2)))
     assert sc.type == SCValType.SCV_MAP
-    keys = [scval.to_symbol(e.key) for e in sc.map.sc_map]
+    keys = [scval.from_symbol(e.key) for e in sc.map.sc_map]
     assert keys == sorted(keys) == ["x", "y"]
     assert decode(sc, Point) == Point(x=U32(1), y=I64(-2))
     loose = decode_loose(sc)
@@ -1075,7 +1323,7 @@ def test_a_struct_is_a_map_with_sorted_symbol_keys() -> None:
 def test_a_union_is_a_vec_led_by_the_case_symbol() -> None:
     sc = encode(Shape.Rect(U32(2), U32(3)))
     assert sc.type == SCValType.SCV_VEC
-    assert scval.to_symbol(sc.vec.sc_vec[0]) == "Rect"
+    assert scval.from_symbol(sc.vec.sc_vec[0]) == "Rect"
     assert decode(sc, Shape) == Shape.Rect(U32(2), U32(3))
     assert decode(encode(Shape.Empty), Shape) == Shape.Empty
     assert isinstance(decode_loose(sc), Vec)
@@ -1134,11 +1382,18 @@ def test_every_generated_chain_value_round_trips_through_its_own_type(value: obj
 
 
 def _ty_of(value: object) -> object:
-    """The `ty` a caller would pass for `value` -- element types read off containers."""
+    """The `ty` a caller would pass for `value` -- element types read off containers.
+
+    `element_type`/`key_type`/`value_type` are PROPERTIES (review M5). `CHAIN_VALUES`
+    generates nested containers whose element type is the BARE class (`Vec[Vec]`,
+    `Vec[Map]` -- `Vec(Vec[U32], ...)` is itself a TypeError), so the alias may
+    carry a bare `Vec`/`Map`; `decode` accepts that and decodes such elements
+    loosely, which is exact because container equality is by content.
+    """
     if isinstance(value, Vec):
-        return Vec[value.element_type()]  # type: ignore[misc]
+        return Vec[value.element_type]  # type: ignore[misc]
     if isinstance(value, Map):
-        return Map[value.key_type(), value.value_type()]  # type: ignore[misc]
+        return Map[value.key_type, value.value_type]  # type: ignore[misc]
     return type(value)
 
 
@@ -1257,7 +1512,12 @@ check the exact `SCValType` (`U32`↔`SCV_U32`, `U64`↔`SCV_U64`, `Timepoint`�
 the class constructor, `Address`↔`SCV_ADDRESS`, …) and construct. Every
 mismatch raises `ScValError(f"expected {ty!r}, got ScVal {sc.type.name}")`.
 `decode_loose` maps by `sc.type` alone: `SCV_VEC` → `Vec(<elem type of first
-decoded item or U32 when empty>, items)`, `SCV_MAP` → `Map(...)`. Access the
+decoded item or U32 when empty>, items)`, `SCV_MAP` → `Map(...)`. A BARE
+`Vec`/`Map` as `ty` (or as a generic alias's element) means "elements by
+`decode_loose`" (review M5) — state in the docstring that this is exact
+because `Vec(U32, []) == Vec(Bool, [])` and content equality keeps scalar
+kinds distinct. The dataclass branch must recurse into a generic-alias field
+annotation (`CHAIN_VALUES`' `Holder` has `items: Vec[U32]`). Access the
 union's internal items through the public readers `tag()`/`payload()`? No —
 `payload(i, ty)` needs a type; use `value._payload_items()` (a private but
 stable accessor on `ContractUnion`, `_udt.py:265`) and `value.tag().text`;
@@ -1300,7 +1560,24 @@ and in `test_the_walk_actually_covers_the_core_modules`:
         assert (exempt / probe).is_file()
 ```
 
-Then extend the existing `import serpent`-does-not-drag-`stellar_sdk` subprocess test (read it; it asserts `"stellar_sdk" not in sys.modules` after `import serpent`) so it ALSO asserts `"serpent.testing" not in sys.modules`.
+The FOURTH site (review B7 — `test_spec_subpackage_does_import_stellar_sdk`
+iterates `EXEMPT.rglob`, which a tuple lacks): one assertion PER exempt
+directory, so a `testing/` that stopped needing `stellar_sdk` is caught:
+
+```python
+@pytest.mark.parametrize("exempt", EXEMPT, ids=lambda d: d.name)
+def test_each_exempt_subpackage_does_import_stellar_sdk(exempt: pathlib.Path) -> None:
+    roots: set[str] = set()
+    for path in sorted(exempt.rglob("*.py")):
+        roots |= _imported_roots(path)
+    assert "stellar_sdk" in roots
+```
+
+Then mirror `test_serpent_spec_is_not_reachable_from_the_package_root`'s
+five source-string checks for `testing` (`from serpent.testing`, `import
+serpent.testing`, `from .testing`, `from . import testing`, `from serpent
+import testing`) and extend the subprocess probe to assert
+`'serpent.testing' not in sys.modules`.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -1337,11 +1614,17 @@ git commit -m "feat(testing): add the ScVal marshalling layer driven by the requ
 ```python
 # _errors.py
 class RealHostError(Exception):
-    """Any failure the real host reported. `.error_type` is the ScErrorType name
-    ("Contract", "WasmVm", "Context", "Storage", "Object", "Crypto", "Events",
-    "Budget", "Value", "Auth"), `.code` the u32 code."""
+    """Any failure the real host reported. TWO LEVELS (review B5):
+    `.error_type`/`.code` are the FRAME-level classification -- `("Context", 6)`
+    for every guest-side failure except a contract's own fail_with_error, so they
+    answer only "contract or not" (P4); `.underlying` is the innermost
+    `Error(Type(Code))` DIAGNOSTIC as `(type_name, code_name_or_int)`, e.g.
+    `("Object", "ArithDomain")`, `("Auth", "InvalidAction")`, `("Storage",
+    "ExceededLimit")` -- the real classification every host-fact assertion uses.
+    None when the host emitted no error diagnostic."""
     error_type: str
     code: int
+    underlying: tuple[str, str] | None
 class RealContractError(RealHostError):
     """error_type == "Contract". `.member` is the deployed class's @contracterror
     member (an exception CLASS) when the class declares that code, else None."""
@@ -1372,15 +1655,27 @@ class RealEnv:
     def __init__(self, *, timestamp: int = DEFAULT_LEDGER_TIMESTAMP,
                  sequence: int = DEFAULT_LEDGER_SEQUENCE,
                  auths: Iterable[Address] | None = None) -> None
-        # auths=None -> mock_all_auths (tier-1 parity); a tuple -> the allow-set:
-        # RealEnv records it and `RealContract.invoke` mocks, for every allowed
-        # address, one entry (address, contract, method, args) per call it makes.
+        # auths=None -> mock_all_auths (tier-1 parity); a tuple -> the allow-set. Every
+        # allowed address MUST be a CONTRACT strkey (B2 ruling: the test host mocks auth by
+        # registering a MockAuthContract at the authorizer; account authorizers need real
+        # signatures, M2) -- an account strkey raises ValueError at construction with that
+        # sentence. RealEnv OWNS the complete mock-entry list and RE-SETS it before every
+        # invoke (`mock_auths` REPLACES, review M6): per-call entries (address, contract,
+        # method, args) for every allowed address, unioned with the pending custom entries
+        # `RealContract.add_mock_auths` registered.
     def protocol_version(self) -> int
+    def compare(self, a: object, b: object) -> int    # the host's Compare<Val> verdict (M2)
+    def max_ttl(self) -> int
     def advance(self, n: int) -> None                 # sequence += n (same verb as tier 1)
     def set_ledger(self, *, sequence: int | None = None, timestamp: int | None = None) -> None
+    def deploy_source(self, path: Path, *args: object) -> RealContract
+        # THE primary form (review B3: path-loaded example modules are not in sys.modules, so
+        # inspect.getsourcefile(cls) raises): build_file(path), discover the one @contract
+        # class in the module loaded from path (test_env_differential._contract_class's rule),
+        # register with encode(arg) per constructor arg, hand RealContract the MODULE object
     def deploy(self, cls: type, *args: object) -> RealContract
-        # builds cls's SOURCE FILE with build_file(inspect.getsourcefile(cls)), registers it
-        # with encode(arg) for each constructor arg, returns the handle
+        # convenience: resolves the path from sys.modules[cls.__module__].__file__ and falls
+        # back to inspect.getsourcefile; raises ValueError naming deploy_source when neither works
     def deploy_wasm(self, wasm: bytes, *args: object) -> RealContract   # no class: decode falls back to decode_loose
     def register_raw(self, wasm: bytes, constructor_args: Sequence[object]) -> str
     def invoke_raw(self, address: str, method: str, args: Sequence[object]) -> bytes
@@ -1398,12 +1693,17 @@ class RealContract:
         # @contracterror classes by code.
     def events(self) -> tuple[PublishedEvent, ...]    # last invocation; topics/data via decode_loose
     def auths(self) -> tuple[RecordedAuth, ...]       # last invocation; (Address, Vec[Any]) -- ALWAYS a Vec:
-                                                      # the host records the invocation args for require_auth
+                                                      # the host records the invocation args for require_auth.
+                                                      # Non-contract auths (register's CreateContractV2HostFn)
+                                                      # never appear; accumulation starts AFTER deploy (M8).
     def storage(self, durability: Durability) -> RealStorage
     def budget(self) -> tuple[int, int]
-    def resources(self) -> dict[str, int]
+    def resources(self) -> dict[str, int] | None      # None before the first invoke (m14)
+    def diagnostics(self) -> tuple[xdr.DiagnosticEvent, ...]   # last invocation, decoded XDR
     # Added by Task 5 (declared here so the surface is in one place):
     def add_mock_auths(self, entries: Sequence[tuple[Address, Vec[Any]]]) -> None
+        # REGISTERS pending (authorizer, args) entries the façade includes in every later
+        # mock_auths set for this contract (M6); never a direct host call
     def events_for_sequence(self) -> tuple[PublishedEvent, ...]   # accumulated since deploy
     def auths_for_sequence(self) -> tuple[RecordedAuth, ...]      # accumulated since deploy
 
@@ -1411,7 +1711,10 @@ class RealStorage:
     def get(self, key: object, ty: object) -> object   # None when absent
     def has(self, key: object) -> bool
     def set(self, key: object, value: object) -> None  # seeding (tier 3, Task 9)
-    def ttl(self, key: object) -> int                   # live_until ledger
+    def ttl(self, key: object) -> int | None           # RELATIVE: ledgers remaining excl. the current
+                                                       # one (the host's own quantity, B10); None absent/expired
+    def live_until(self, key: object) -> int | None    # env.sequence + ttl -- the quantity tier-1
+                                                       # _TtlState speaks; the differential compares THIS
 ```
 
 - [ ] **Step 1: Register the marker and write the root conftest**
@@ -1455,23 +1758,26 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if not marked:
         return
     if os.environ.get(REQUIRE_ENV_VAR) == "1":
-        fail = pytest.mark.xfail(
-            run=False, strict=True,
-            reason=f"{REQUIRE_ENV_VAR}=1 but serpent_host is not importable. {unavailable_reason()}",
-        )
-        # xfail(run=False, strict=True) on an un-run test REPORTS AS FAILED -- the
-        # loud outcome the variable asks for, without importing the module.
-        for item in marked:
-            item.add_marker(fail)
+        # Probed (review B4): xfail(run=False, strict=True) reports XFAIL [NOTRUN] with
+        # exit code 0 -- NOT a failure. So the required-mode outcome is produced by
+        # `pytest_runtest_setup` below, which fails each marked item for real.
+        config.stash[_REQUIRED_BUT_ABSENT] = True
         return
     skip = pytest.mark.skip(reason=unavailable_reason())
     for item in marked:
         item.add_marker(skip)
-```
 
-(Implementer: verify the xfail-unrun-strict reporting claim on the pinned
-pytest; if it reports as xfailed rather than failed, replace with a
-`pytest_runtest_setup` hook that `pytest.fail(...)`s for marked items.)
+
+_REQUIRED_BUT_ABSENT = pytest.StashKey[bool]()
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    if item.config.stash.get(_REQUIRED_BUT_ABSENT, False) and item.get_closest_marker(REAL_HOST_MARKER):
+        pytest.fail(
+            f"{REQUIRE_ENV_VAR}=1 but serpent_host is not importable. {unavailable_reason()}",
+            pytrace=False,
+        )
+```
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1522,10 +1828,11 @@ def test_a_rust_less_checkout_skips_loudly_and_a_required_run_fails(tmp_path: Pa
     assert "skipped" in skipped.stdout, skipped.stdout
     assert "maturin develop" in skipped.stdout, "the skip reason must carry the rebuild command"
     required = subprocess.run(
-        [sys.executable, "-m", "pytest", *probe, "-rx"],
+        [sys.executable, "-m", "pytest", *probe, "-rf"],
         capture_output=True, text=True, env={**env, REQUIRE_ENV_VAR: "1"},
     )
     assert required.returncode != 0, required.stdout
+    assert "failed" in required.stdout, "the required mode must produce real FAILED lines, not xfails"
 
 
 # --- the real-host half -----------------------------------------------------------
@@ -1541,10 +1848,13 @@ def test_counter_deploy_invoke_and_storage_read_back() -> None:
     assert c.invoke("increment", U32(2)) == U32(2)
     assert c.invoke("increment", U32(3)) == U32(5)
     assert c.invoke("total") == U32(5)
-    # the example keys its slot on a Symbol the implementer reads from counter.py
-    assert c.storage("instance").get(Symbol("COUNT"), U32) == U32(5)
-    assert c.storage("instance").has(Symbol("COUNT"))
-    assert c.storage("persistent").get(Symbol("COUNT"), U32) is None
+    # counter.py keys `TOTAL` in PERSISTENT storage (examples/counter.py:56-66); the
+    # other bucket is asserted absent so the durability ROUTING is tested, not just the key.
+    assert c.storage("persistent").get(Symbol("TOTAL"), U32) == U32(5)
+    assert c.storage("persistent").has(Symbol("TOTAL"))
+    assert c.storage("instance").get(Symbol("TOTAL"), U32) is None
+    assert c.storage("persistent").ttl(Symbol("TOTAL")) is not None
+    assert c.storage("temporary").ttl(Symbol("TOTAL")) is None
 
 
 @pytestmark_real
@@ -1574,25 +1884,37 @@ def test_advance_moves_the_sequence_the_contract_reads() -> None:
     from tests.semantics.env_scenarios import ENV_SURFACE
     surface = load_example(ENV_SURFACE)
     env = RealEnv(sequence=1_000_000)
-    c = env.deploy(_contract_class(surface))
+    c = env.deploy_source(ENV_SURFACE)
     assert c.invoke("ledger_seq") == U32(1_000_000)
     env.advance(5)
     assert c.invoke("ledger_seq") == U32(1_000_005)
 
 
+SHAPES_ID = "CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW"  # a real CONTRACT strkey
+
+
 @pytestmark_real
 def test_the_allow_set_refuses_an_address_not_in_it() -> None:
+    """B2: authorizers are CONTRACT strkeys on the test host; the refusal is a
+    frame-level Context error whose UNDERLYING diagnostic is Auth (B5)."""
     from tests.semantics.env_scenarios import ENV_SURFACE
-    surface = load_example(ENV_SURFACE)
+    allowed = Address(SHAPES_ID)
     other = Address("CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI")
-    env = RealEnv(auths=(Address(ACCOUNT),))
-    c = env.deploy(_contract_class(surface))
-    c.invoke("guard", Address(ACCOUNT))              # allowed: recorded
-    assert c.auths()[0][0] == Address(ACCOUNT)
+    env = RealEnv(auths=(allowed,))
+    c = env.deploy_source(ENV_SURFACE)
+    c.invoke("guard", allowed)                        # allowed: recorded
+    assert c.auths()[0][0] == allowed
     with pytest.raises(RealHostError) as info:
-        c.invoke("guard", other)                      # refused: an Auth-typed host error
-    assert info.value.error_type == "Auth"
+        c.invoke("guard", other)                      # refused
+    assert not isinstance(info.value, RealContractError)
+    assert info.value.underlying is not None and info.value.underlying[0] == "Auth"
     assert c.auths() == ()
+
+
+def test_an_account_authorizer_is_refused_at_construction() -> None:
+    """B2, the honest fence: account auth needs real signatures (M2)."""
+    with pytest.raises(ValueError, match="contract"):
+        RealEnv(auths=(Address(ACCOUNT),))
 
 
 def test_realenv_without_the_extension_raises_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1618,16 +1940,18 @@ Expected: FAIL with `ImportError: cannot import name 'RealEnv' from 'serpent.tes
 - [ ] **Step 4: Implement `_errors.py`, `_marker.py`, `_real.py`, `__init__.py`**
 
 `_errors.py` — the five classes above; `RealHostError.__init__(self,
-error_type: str, code: int, message: str)` stores both and passes `message`
-to `Exception`; `RealContractError` adds `member`. A module-level helper
-`raise_from_failure(exc: BaseException, cls: type | None) -> NoReturn` maps a
-`serpent_host.HostFailure` by `args[0]`: `"contract"` → `RealContractError`
-with `member = _member_for(cls, code)` (walk `vars(cls)`'s module? No: walk
-the CLASSES the contract module declares with `_serpent_type_["kind"] ==
-"error_enum"` — the contract class does not reference its error class, so
-`RealContract` stores the MODULE (`sys.modules[cls.__module__]`) and
-`_member_for` scans it for `error_enum` metadata whose `cases` contain the
-code, returning the member (an exception class per M1-A's ruling));
+error_type: str, code: int, message: str, underlying: tuple[str, str] | None)`
+stores all and passes `message` to `Exception`; `RealContractError` adds
+`member`. A module-level helper `raise_from_failure(exc: BaseException,
+module: ModuleType | None, diagnostics: Sequence[xdr.DiagnosticEvent]) ->
+NoReturn` maps a `serpent_host.HostFailure` by `args[0]`: `"contract"` →
+`RealContractError` with `member = _member_for(module, code)` (scan the
+MODULE OBJECT the façade was handed — B3: it is not in `sys.modules` — for
+classes whose `_serpent_type_["kind"] == "error_enum"` and whose `cases`
+contain the code; the member is an exception class per M1-A's ruling);
+`underlying` comes from `_innermost_error(diagnostics)`: the LAST diagnostic
+whose topics are `[Symbol("error"), Error(...)]`, rendered as `(ScErrorType
+name, ScErrorCode name)` via `stellar_sdk.xdr.SCError`;
 `"host"` → `RealHostError`; `"panic"` → `HostPanic`; `"invalid_input"` /
 `"conversion"` → `ValueError` (caller bugs, not host answers).
 
@@ -1662,19 +1986,39 @@ class RealEnv:
         self._sequence += n
         self._raw.set_ledger(sequence_number=self._sequence)
 
-    def deploy(self, cls: type, *args: object) -> RealContract:
-        source = inspect.getsourcefile(cls)
-        assert source is not None, f"{cls!r} has no source file to build"
-        wasm = build_file(Path(source)).wasm
+    def deploy_source(self, path: Path, *args: object) -> RealContract:
+        module = _load_by_path(path)             # spec_from_file_location, like test_examples.load_example
+        cls = _the_contract_class(module)        # exactly one @contract class (frontend-enforced)
+        wasm = build_file(path).wasm
         address = self._raw.register(wasm, [to_xdr(a) for a in args])
-        return RealContract(self, Address(address), cls, sys.modules.get(cls.__module__))
+        return RealContract(self, Address(address), cls, module)
+
+    def deploy(self, cls: type, *args: object) -> RealContract:
+        module = sys.modules.get(cls.__module__)
+        path = getattr(module, "__file__", None)
+        if path is None:
+            try:
+                path = inspect.getsourcefile(cls)
+            except TypeError:
+                path = None
+        if path is None:
+            raise ValueError(f"{cls!r} was loaded by path; use RealEnv.deploy_source(path, ...)")
+        return self.deploy_source(Path(path), *args)
 ```
 
-`RealContract.invoke`: when `env._allow` is not None, first call
-`env._raw.mock_auths([(who.strkey, self.address.strkey, method, [to_xdr(a) for a in args]) for who in env._allow])`
-(one entry per allowed address for THIS call; `require_auth_for_args` rows
-add their own entries in Task 5); then `raw.invoke(...)`, catching
-`serpent_host.HostFailure` → `raise_from_failure`. Decode: `ty =
+(`RealEnv.__init__` validates every allow-set address with
+`stellar_sdk.strkey.StrKey.is_valid_contract` and raises `ValueError` naming
+the B2 rule otherwise. The façade keeps `self._pending: dict[str,
+list[...]]` of custom entries per contract and, before EVERY invoke on a
+contract, calls `raw.mock_auths(per_call_entries + pending)` — one complete
+set, because the sdk REPLACES.)
+
+`RealContract.invoke`: when `env._allow` is not None, first re-set the
+COMPLETE mock set (per-call entries `(who.strkey, self.address.strkey,
+method, [to_xdr(a) ...])` for every allowed `who`, plus this contract's
+pending custom entries); then `raw.invoke(...)`, catching
+`serpent_host.HostFailure` → `raise_from_failure(exc, self._module,
+self.env.diagnostics())`. Decode: `ty =
 typing.get_type_hints(getattr(cls, method)).get("return", type(None))`;
 `type(None)` → assert the ScVal is Void and return `None`; else
 `from_xdr(result, ty)`.
@@ -1685,7 +2029,10 @@ for each, `body.v0.topics` → `tuple(decode_loose(t) ...)`, `body.v0.data` →
 `auths()`: `[(Address(who), Vec(<elem type via decode_loose of items>, items))
 for who, _contract, _fn, args in raw.auths()]` — a `Vec` ALWAYS (the host
 records the invocation args); Task 5's runner reconciles with tier 1's
-`None`.
+`None`. `events()`: decode `xdr.ContractEvent`; note (review m7) the sdk's
+`Events::all()` already filters `failed_call` events — the rollback
+evidence is the host's `failed_call` flag one layer down, and the
+`host_diverges` reason text says so.
 
 `__init__.py`:
 
@@ -1713,7 +2060,9 @@ __all__ = [
 ```
 
 (`serpent.__all__` is NOT touched: `serpent.testing` is a subpackage import
-like `serpent.spec`; `test_public_api.py` stays as is.)
+like `serpent.spec`; `test_public_api.py` stays as is. `pyproject.toml`
+gains `mypy_path = ["host"]` under `[tool.mypy]` so `host/serpent_host.pyi`
+types the extension in both environments, m8.)
 
 - [ ] **Step 5: Run the tests**
 
@@ -1780,7 +2129,7 @@ from tests.unit.test_emitter_semantics import (
     IN_SCOPE, IN_SCOPE_COUNT, annotation_of, observed_ty, wrap_returning,  # name verified at impl time
 )
 
-pytestmark = pytest.mark.real_host
+real = pytest.mark.real_host  # per-test (review M12): the meta-tests below run everywhere
 
 
 def _run(case: SemCase) -> tuple[object, object]:
@@ -1802,6 +2151,7 @@ _ERROR = [c for c in IN_SCOPE if c.kind == "contract_error"]
 _TRAP = [c for c in IN_SCOPE if c.kind == "trap"]
 
 
+@real
 @pytest.mark.parametrize("case", _VALUE, ids=[c.name for c in _VALUE])
 def test_a_value_case_answers_as_tier_1_does(case: SemCase) -> None:
     ty, raw = _run(case)
@@ -1815,19 +2165,40 @@ def test_a_value_case_answers_as_tier_1_does(case: SemCase) -> None:
     assert real == case.expect
 
 
+@real
 def test_the_symbol_ordering_vector_on_the_real_host() -> None:
-    """THE top differential vector (O12): `Symbol("_") < Symbol("A")`."""
+    """THE top differential vector (O12): `Symbol("_") < Symbol("A")`.
+
+    Two failure modes are kept apart (review B1): the host REFUSING the compare is
+    an emitter bug (Task 0's territory -- BLOCKED under E16, not a table matter);
+    the host ANSWERING differently is the frozen-table escalation (E10).
+    """
     (case,) = [c for c in IN_SCOPE if c.name == "symbol_underscore_vs_A_ascii_order"]
-    ty, raw = _run(case)
-    real = from_xdr(raw, _authoring_type(ty))
+    try:
+        ty, raw = _run(case)
+    except RealHostError as exc:
+        raise AssertionError(
+            f"the host refused the Symbol compare ({exc.underlying}): an emitter bug, not a table "
+            "disagreement -- Task 0 must have landed first"
+        ) from exc
+    answered = from_xdr(raw, _authoring_type(ty))
     assert val.symbol_char_code("_") < val.symbol_char_code("A")  # the 6-bit codes DO disagree with ASCII
-    if real != case.expect:
+    if answered != case.expect:
         raise FrozenTableDisagreement(
-            f"symbol ordering: real host says {real!r}, the frozen table says {case.expect!r}; "
+            f"symbol ordering: real host says {answered!r}, the frozen table says {case.expect!r}; "
             "controller decision on the frozen table required (dossier O12, ruling E10)"
         )
 
 
+@real
+def test_the_hosts_compare_trait_agrees_with_the_compiled_answer() -> None:
+    """M2: the same question asked of the host directly, no contract in between."""
+    (case,) = [c for c in IN_SCOPE if c.name == "symbol_underscore_vs_A_ascii_order"]
+    verdict = RealEnv().compare(Symbol("_"), Symbol("A"))
+    assert (verdict < 0) == bool(case.expect), f"compare says {verdict}, the table says {case.expect!r}"
+
+
+@real
 @pytest.mark.parametrize("case", _ERROR, ids=[c.name for c in _ERROR])
 def test_a_contract_error_case_aborts_with_the_same_code(case: SemCase) -> None:
     ty = observed_ty(case)
@@ -1841,9 +2212,12 @@ def test_a_contract_error_case_aborts_with_the_same_code(case: SemCase) -> None:
     assert info.value.error_type == "Contract"
 
 
+@real
 @pytest.mark.parametrize("case", _TRAP, ids=[c.name for c in _TRAP])
 def test_a_trap_case_is_a_non_contract_host_error(case: SemCase) -> None:
-    """A trap on chain is a HOST error (WasmVm/Object/Value/...), never a contract code."""
+    """A trap on chain is a HOST error, never a contract code. The frame-level
+    type is Context/InvalidAction for EVERY guest failure (review B5), so the
+    evidence is the UNDERLYING diagnostic."""
     ty = observed_ty(case)
     source = wrap_returning(case.source, annotation_of(ty))
     wasm = build_wasm(compile_module(source, f"semantics_real/{case.name}.py")).wasm
@@ -1851,25 +2225,31 @@ def test_a_trap_case_is_a_non_contract_host_error(case: SemCase) -> None:
     with pytest.raises(RealHostError) as info:
         c.invoke("go")
     assert not isinstance(info.value, RealContractError)
-    assert info.value.error_type in EXPECTED_HOST_ERROR_TYPE[case.name], (
-        f"{case.name}: the host reported {info.value.error_type}/{info.value.code}"
+    assert info.value.underlying == EXPECTED_UNDERLYING_ERROR[case.name], (
+        f"{case.name}: the host reported frame {info.value.error_type}/{info.value.code}, "
+        f"underlying {info.value.underlying}"
     )
 
 
-#: The ScErrorType the real host reports per trap case. FILLED FROM THE FIRST
-#: RUN and then frozen: the values are host facts this repo did not have before
-#: (dossier O11/O25), so they are recorded here as evidence with the run date.
-#: A wasm-level trap (i32 division by zero, out-of-bounds memory) reports as
-#: WasmVm; a host-function trap (vec_get past the end) as Object; the exact
-#: set per case is what the implementer writes down. Never a single wildcard.
-EXPECTED_HOST_ERROR_TYPE: dict[str, frozenset[str]] = {
-    # filled by the implementer, one row per _TRAP case, e.g.
-    # "u32_div_by_zero_traps": frozenset({"WasmVm"}),
+#: The UNDERLYING (ScErrorType, ScErrorCode) the real host's diagnostics report
+#: per trap case. FILLED FROM THE FIRST RUN and then frozen, with the run date in
+#: a comment: these are host facts this repo did not have before (dossier
+#: O11/O25). A wasm-level trap (i32 division by zero, out-of-bounds memory) is
+#: expected as ("WasmVm", ...), a host-function trap (vec_get past the end) as
+#: ("Object", "IndexBounds"), 128-bit //0 as ("Object", "ArithDomain") -- the
+#: probe-confirmed value.
+EXPECTED_UNDERLYING_ERROR: dict[str, tuple[str, str]] = {
+    # filled by the implementer, one row per _TRAP case
 }
 
 
-def test_expected_host_error_type_covers_exactly_the_trap_cases() -> None:
-    assert set(EXPECTED_HOST_ERROR_TYPE) == {c.name for c in _TRAP}
+def test_expected_underlying_error_covers_exactly_the_trap_cases() -> None:
+    assert set(EXPECTED_UNDERLYING_ERROR) == {c.name for c in _TRAP}
+
+
+def test_the_expected_underlying_errors_are_not_all_identical() -> None:
+    """B5's vacuity guard: a map of twelve identical rows is not evidence."""
+    assert len(set(EXPECTED_UNDERLYING_ERROR.values())) > 1
 
 
 def _authoring_type(ty: object) -> object:
@@ -1882,11 +2262,11 @@ def _authoring_type(ty: object) -> object:
 - [ ] **Step 2: Run to verify failure**
 
 Run: `SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q tests/real_host/test_semantics_real.py`
-Expected: FAIL — `EXPECTED_HOST_ERROR_TYPE` is empty (the coverage test fails; each trap test fails on the KeyError).
+Expected: FAIL — `EXPECTED_UNDERLYING_ERROR` is empty (the coverage test fails; each trap test fails on the KeyError).
 
-- [ ] **Step 3: Run once to collect the host facts, then fill `EXPECTED_HOST_ERROR_TYPE`**
+- [ ] **Step 3: Run once to collect the host facts, then fill `EXPECTED_UNDERLYING_ERROR`**
 
-Run each trap case with `-x -k <name>` and record `info.value.error_type`/`.code` per case into the dict with a dated comment. If ANY value case raises `FrozenTableDisagreement`, STOP: return BLOCKED with the row name and both answers — do not proceed to Step 4.
+Run each trap case with `-x -k <name>` and record `info.value.underlying` per case into the dict with a dated comment. If ANY value case raises `FrozenTableDisagreement`, STOP: return BLOCKED with the row name and both answers — do not proceed to Step 4. If the ordering vector raises the "host refused" AssertionError, Task 0 did not land or did not cover this shape: BLOCKED.
 
 - [ ] **Step 4: Run to verify all pass**
 
@@ -1905,21 +2285,30 @@ git commit -m "test(real-host): run the 35 in-scope semantics cases on the embed
 ### Task 5: `ENV_SCENARIOS` on the real leg; `mini_host_gap` and `host_diverges` (O15–O19; rulings E8/E9)
 
 **Files:**
-- Modify: `tests/semantics/env_scenarios.py` (METADATA ONLY: rename
-  `tier1_only_reason` → `mini_host_gap`; add `host_diverges: HostDivergence |
-  None = None`; add the `HostDivergence` dataclass; correct the three reason
-  constants and the `Advance` docstring; set `host_diverges` on exactly the
-  publish-then-raise row(s))
+- Modify: `tests/semantics/env_scenarios.py` (rename `tier1_only_reason` →
+  `mini_host_gap`; add `host_diverges: HostDivergence | None = None`; add the
+  `HostDivergence` dataclass; correct the three reason constants and the
+  `Advance` docstring; set `host_diverges` on exactly the publish-then-raise
+  row(s) AND, pre-declared, on every row whose `Advance` lapses a PERSISTENT
+  entry (M3); and — the ONE value-level edit, ruled 2026-09-02 (B2) —
+  `_ADMIN` becomes `Address(SHAPES_CONTRACT)` where `SHAPES_CONTRACT =
+  "CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW"`, a real contract
+  strkey, because the test host can only mock CONTRACT authorizers; the rows
+  treat the authorizer as opaque, so their meaning is unchanged)
 - Modify: `tests/unit/test_env_differential.py` (the rename, everywhere it
-  reads the field)
+  reads the field), `tests/unit/test_no_stale_promises.py` (the E net's
+  `_ALLOWLIST` migrates from `(path, line)` to `(path, stripped line text)`
+  keys — review m15 / the G item B2, paid for the last time here)
 - Create: `tests/real_host/test_env_scenarios_real.py`
 
 **Interfaces:**
 - Consumes: `tests.semantics.env_scenarios` (`ENV_SCENARIOS`, `EnvScenario`,
   `Call`, `Advance`, `HostDivergence`); `tests.unit.test_env_differential`
-  (`Outcome`, `_tier_1(scenario) -> Outcome`, `_contract_class(path)`,
-  `TTL_METHODS`, `AUTH_ARGS_METHODS`); `serpent.testing.RealEnv`,
-  `RealContractError`, `RealHostError`, `FrozenTableDisagreement`.
+  (`Outcome`, `_tier_1(scenario) -> Outcome`, `TTL_METHODS`,
+  `AUTH_ARGS_METHODS`); `serpent.testing.RealEnv` (`deploy_source`,
+  `advance`, `compare`), `RealContract` (`invoke`, `add_mock_auths`,
+  `events_for_sequence`, `auths_for_sequence`), `RealContractError`,
+  `RealHostError`, `FrozenTableDisagreement`.
 - Produces:
 
 ```python
@@ -1959,7 +2348,8 @@ the publish-then-raise row(s) (grep `log_then_refuse`; the E-owned row
         reason=(
             "S9: events roll back with a failed frame on chain. Both MODELS keep the "
             "event (the mini host mirrors tier 1 by construction, E1); the real host "
-            "discards it. Pinned as a declared divergence (ruling E9) until the tier-1 "
+            "records it with `failed_call: true` and the sdk's Events::all() drops it "
+            "(review m7). Pinned as a declared divergence (ruling E9) until the tier-1 "
             "model gains frame rollback (an M2 oracle edit)."
         ),
         events=(),  # the real host: nothing survives the refused frame
@@ -2006,16 +2396,16 @@ from serpent.testing import (
 from tests.semantics.env_scenarios import ENV_SCENARIOS, Advance, Call, EnvScenario
 from tests.unit.test_env_differential import Outcome, _contract_class, _tier_1
 
-pytestmark = pytest.mark.real_host
+real = pytest.mark.real_host  # per-test (M12): the table meta-tests run on every checkout
 
 
 def _real(scenario: EnvScenario) -> Outcome:
     env = RealEnv(
-        **({} if scenario.timestamp is None else {"timestamp": scenario.timestamp}),
-        **({} if scenario.sequence is None else {"sequence": scenario.sequence}),
+        timestamp=DEFAULT_LEDGER_TIMESTAMP if scenario.timestamp is None else scenario.timestamp,
+        sequence=DEFAULT_LEDGER_SEQUENCE if scenario.sequence is None else scenario.sequence,
         auths=scenario.auth_allow_set,
     )
-    c = env.deploy(_contract_class(scenario.contract), *scenario.constructor)
+    c = env.deploy_source(scenario.contract, *scenario.constructor)
     if scenario.auth_allow_set is not None:
         # `require_auth_for_args` rows authorize CUSTOM args: mock exactly the auths the
         # row expects to be recorded, on top of the per-call entries RealContract adds.
@@ -2036,7 +2426,8 @@ def _real(scenario: EnvScenario) -> Outcome:
     elif scenario.kind == "auth_failed":
         with pytest.raises(RealHostError) as info:
             c.invoke(call.method, *call.args)
-        assert info.value.error_type == "Auth", info.value
+        assert not isinstance(info.value, RealContractError)
+        assert info.value.underlying is not None and info.value.underlying[0] == "Auth", info.value
         refused = True
     else:
         answer = c.invoke(call.method, *call.args)
@@ -2047,12 +2438,22 @@ def _real(scenario: EnvScenario) -> Outcome:
     )
 
 
-def _comparable_to_tier1(real: Outcome, tier1: Outcome) -> tuple[Outcome, Outcome]:
+def _comparable_to_tier1(scenario: EnvScenario, real: Outcome, tier1: Outcome) -> tuple[Outcome, Outcome]:
     """Tier 1 records `None` args for a bare `require_auth`; the host records the
     invocation's own args there. Compare addresses always; compare args only where
     tier 1 recorded some (a `require_auth_for_args` call), by blanking the real
-    leg's args wherever tier 1's are `None`. Lengths must already agree."""
-    assert len(real.auths) == len(tier1.auths), (real.auths, tier1.auths)
+    leg's args wherever tier 1's are `None`.
+
+    Both legs record one entry per successful `require_auth*` call in invocation
+    order, deploy excluded (M8) and refused calls excluded (O19) -- so the lengths
+    agree unless the accumulation itself diverges, which is a table matter, not a
+    helper's assert (review M13).
+    """
+    if len(real.auths) != len(tier1.auths):
+        raise FrozenTableDisagreement(
+            f"{scenario.name}: real recorded {len(real.auths)} auths {real.auths!r}, tier 1 "
+            f"recorded {len(tier1.auths)} {tier1.auths!r}; controller decision required (O17/O19)"
+        )
     blanked: tuple[RecordedAuth, ...] = tuple(
         (address, None if tier1_args is None else real_args)
         for (address, real_args), (_, tier1_args) in zip(real.auths, tier1.auths, strict=True)
@@ -2060,31 +2461,33 @@ def _comparable_to_tier1(real: Outcome, tier1: Outcome) -> tuple[Outcome, Outcom
     return replace(real, auths=blanked), tier1
 
 
+@real
 @pytest.mark.parametrize("scenario", ENV_SCENARIOS, ids=[s.name for s in ENV_SCENARIOS])
 def test_a_row_answers_on_the_real_host_as_tier_1_does(scenario: EnvScenario) -> None:
-    real = _real(scenario)
+    real_outcome = _real(scenario)
     tier1 = _tier_1(scenario)
     if scenario.host_diverges is None:
-        r, t = _comparable_to_tier1(real, tier1)
+        r, t = _comparable_to_tier1(scenario, real_outcome, tier1)
         if r != t:
             raise FrozenTableDisagreement(
-                f"{scenario.name}: real {real!r} != tier 1 {tier1!r}; controller decision required"
+                f"{scenario.name}: real {real_outcome!r} != tier 1 {tier1!r}; controller decision required"
             )
     else:
-        assert real.events == scenario.host_diverges.events, scenario.host_diverges.reason
-        assert real.events != tier1.events, "declared divergence did not occur; retire the declaration"
+        assert real_outcome.events == scenario.host_diverges.events, scenario.host_diverges.reason
+        assert real_outcome.events != tier1.events, "declared divergence did not occur; retire the declaration"
     if scenario.kind == "value":
-        assert real.answer == scenario.expect and type(real.answer).__name__ == real.answer_type
+        assert real_outcome.answer == scenario.expect
+        assert type(real_outcome.answer).__name__ == real_outcome.answer_type
     elif scenario.kind == "contract_error":
-        assert real.code == scenario.code
+        assert real_outcome.code == scenario.code
     elif scenario.kind == "auth_failed":
-        assert real.refused
+        assert real_outcome.refused
     if scenario.host_diverges is None:
-        assert real.events == scenario.events
-    assert real.auth_addresses == tuple(a for a, _ in scenario.auths)
+        assert real_outcome.events == scenario.events
+    assert real_outcome.auth_addresses == tuple(a for a, _ in scenario.auths)
 
 
-def test_every_row_runs_here_including_the_mini_host_gap_rows() -> None:
+def test_every_row_runs_here_including_the_mini_host_gap_rows() -> None:  # unmarked: table-only
     """The point of the leg: zero rows opt out."""
     gapped = [s.name for s in ENV_SCENARIOS if s.mini_host_gap is not None]
     assert gapped, "the table has gap rows; if it stops having them, delete this assertion"
@@ -2097,27 +2500,34 @@ def test_at_least_one_declared_divergence_exists() -> None:
     assert any(s.host_diverges is not None for s in ENV_SCENARIOS)
 ```
 
-Two façade additions this test needs (add to Task 3's `RealContract`, in
-this task, with unit coverage in this module's first run):
-`add_mock_auths(entries: Sequence[tuple[Address, Vec[Any]]])` (mock
-`(who, self.address, <every method the sequence will call>, args)` — the
-implementer uses the row's `setup`+`invoke` method names; simplest: the
-façade records pending custom auths and `invoke` mocks them alongside the
-per-call entry for the method being invoked), and `events_for_sequence()` /
-`auths_for_sequence()` (accumulated across every `invoke` on this contract
-since deploy; `events()`/`auths()` stay last-invocation).
+Three façade additions this test needs (declared in Task 3's interface,
+implemented here with coverage from this module's first run):
+`add_mock_auths(entries)` REGISTERS pending `(who, args)` entries; every
+later `invoke` on the contract builds ONE complete set — the per-call entry
+for the method being invoked for each allowed address, plus every pending
+entry paired with that same method — and passes it to `raw.mock_auths`
+(which REPLACES, M6). `events_for_sequence()` / `auths_for_sequence()`
+accumulate across every `invoke` on this contract since deploy (deploy's
+own CreateContractV2HostFn auth is never recorded, M8); `events()`/`auths()`
+stay last-invocation.
 
 - [ ] **Step 3: Run; collect; escalate or pin**
 
 Run: `SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q tests/real_host/test_env_scenarios_real.py -x`
-Expected first run: the publish-then-raise row passes via its declaration;
-TTL rows exercise REAL expiry (an `Advance` past `live_until` makes a
-temporary entry absent and a persistent entry ARCHIVED — if a persistent
-read after lapse raises a `Storage`-typed host error rather than answering
-"absent", that row is a `FrozenTableDisagreement` → BLOCKED; the controller
-expects this on the `bump_slot`/persistent-expiry rows and will rule, most
-likely a second `host_diverges` declaration citing S9/O14). Any other
-mismatch → BLOCKED with both outcomes.
+Expected first run: the publish-then-raise row passes via its declaration.
+TTL rows exercise REAL expiry for TEMPORARY entries (probe-confirmed: a
+lapsed temporary entry reads absent). The test host does NOT model
+persistent archival (review M3: a lapsed persistent entry stays readable),
+so any row whose `Advance` lapses a PERSISTENT entry and then reads it is
+PRE-DECLARED in Step 1 — before the run — as `host_diverges` with the M3
+reason ("the sdk test Env does not model archival; tier 1 reads absent, the
+test host reads present, the chain archives — proven only at tier 3,
+carried") and the real leg's expected events/answer (`HostDivergence` gains
+an optional `answer` field for this). The implementer identifies those rows
+from `TTL_METHODS` + `Advance` steps + the durability the method touches
+(`bump_slot`/`read_slot*` are persistent; `bump_temp`/`read_temp_or`
+temporary; `bump_instance` instance). Any OTHER mismatch → BLOCKED with both
+outcomes.
 
 - [ ] **Step 4: Run to verify all 62 pass, then the whole suite**
 
@@ -2141,10 +2551,14 @@ git commit -m "test(real-host): run all 62 ENV_SCENARIOS rows on the embedded ho
 - Create: `tests/fixtures/host_facts.py` (the contract), `tests/semantics/host_facts.py`
   (the table), `tests/real_host/test_host_facts_real.py`,
   `tests/real_host/test_feature_set_real.py`, `tests/unit/test_host_facts_tier1.py`
-- Modify: NOTHING pre-existing (the fixture joins `FIXTURES`/`_FIXTURES`/`CORPUS`
-  inventories? NO — it is driven by its own table, not the whole-contract
-  sweeps; it deliberately does not join them, stated in its docstring, so a
-  reviewer does not flag the omission).
+- Modify: `tests/unit/test_frontend_fuzz.py` — the EXACT fixture inventory
+  (`test_the_corpus_is_the_whole_fixture_inventory`, ~line 1060) gains
+  `"fixtures/host_facts.py"` (review B8: `CORPUS` globs `tests/fixtures/*.py`,
+  so the new file is mutation-fuzzed by construction and must be a fully
+  valid module); `tests/harness/testmod.py` — `build_test_module` gains
+  `custom_sections: Mapping[str, bytes] = {}` (review M1). The three literal
+  inventories (`FIXTURES`, `_FIXTURES`, `FIXTURE_SOURCES`) are NOT joined,
+  stated in the fixture's docstring.
 
 **Interfaces:**
 - Consumes: `serpent.testing.RealEnv/RealContract/RealHostError/RealContractError`;
@@ -2162,8 +2576,10 @@ class HostFact:
     sequence: int | None = None
     setup: tuple[Call | Advance, ...] = ()
     invoke: Call
-    real: Expectation               # what the REAL host does
+    real: Expectation               # what the REAL (test) host does
     tier1: Expectation | Unmodelled # what the model does, or why it cannot say
+    chain_unproven: str | None = None     # M3: set when the TEST host is known to differ from the CHAIN
+                                          # (archival); such a row is evidence about the test host only
     write_entries: int | None = None      # E6: footprint counts the real leg asserts
     read_entries: int | None = None       # memory_read_entries + disk_read_entries
 
@@ -2172,14 +2588,22 @@ class Value:      value: ChainValue | None
 @dataclass(frozen=True)
 class ContractErr: code: int
 @dataclass(frozen=True)
-class HostErr:    error_type: str; code: int | None = None   # None: any code of that type
+class HostErr:
+    """A non-contract host failure. `underlying` is the (ScErrorType, ScErrorCode)
+    NAMES from the diagnostics (B5) -- the frame level is always ("Context",
+    "InvalidAction") and is not worth a field. None until the first run pins it."""
+    underlying: tuple[str, str] | None = None
 @dataclass(frozen=True)
 class Unmodelled: reason: str
 Expectation = Value | ContractErr | HostErr
 
 HOST_FACTS: tuple[HostFact, ...]
-#: The pinned XDR classification of 128-bit `//0` on the real host (E15; consumed by Task 8).
-DIV128_BY_ZERO_HOST_ERROR: HostErr   # e.g. HostErr("Object", <ScErrorCode.ArithDomain discriminant>) -- FROM THE FIRST RUN
+#: The pinned UNDERLYING classification of 128-bit `//0` on the real host (E15; consumed
+#: by Task 8). Probe-confirmed 2026-09-02: ("Object", "ArithDomain").
+DIV128_BY_ZERO_HOST_ERROR: HostErr = HostErr(("Object", "ArithDomain"))
+#: Ordering vectors the real leg asks the host's Compare trait directly (M2/E12/O12):
+#: (a, b, expected_sign) with expected_sign None until the first run pins it.
+COMPARE_VECTORS: tuple[tuple[ChainValue, ChainValue, int | None], ...]
 ```
 
 - [ ] **Step 1: Write the fixture contract** `tests/fixtures/host_facts.py`
@@ -2249,19 +2673,15 @@ class HostFacts:
     def div_u128(self, env: Env, a: U128, b: U128) -> U128:
         return a // b
 
-    # --- container ordering (E12) -------------------------------------------------
-    def vec_lt(self, env: Env, a: Vec[U32], b: Vec[U32]) -> Bool:
-        return Bool(a < b)
 ```
 
-(Implementer verifies each method compiles with `compile_module` before
-writing rows; `extend_ttl`'s exact tier-1/compiled spelling and the
-`Vec[U32]` parameter form are read from `env_surface.py`/`cases.py`. If
-`a < b` on `Vec` is a compile reject today (SPT3005 for containers), the
-`vec_lt` row is written with `tier1=Unmodelled(...)` AND `real=` omitted in
-favour of a `frontend_rejects=True` flag — the fact recorded is then "not
-expressible in M1", and E12 is discharged as "M2, with the host order
-unobserved"; the plan prefers the observable row.)
+(The review compiled this fixture: every method above compiles and builds
+(3,055 bytes) — a `vec_lt` returning `Bool(a < b)` does NOT (`SPT3005`,
+containers have no `<` in the subset) and is therefore not in the fixture;
+container ordering is observed through the host's `Compare` trait instead
+(`RealEnv.compare`, review M2) via `COMPARE_VECTORS`, and the fixture stays a
+valid mutation-corpus member (B8). `extend_ttl`'s spelling is read from
+`env_surface.py`.)
 
 - [ ] **Step 2: Write the table** `tests/semantics/host_facts.py` — the dataclasses above and these rows (values FILLED where the fact is known, `HostErr(type, None)` where the first run pins the code):
 
@@ -2272,13 +2692,32 @@ unobserved"; the plan prefers the observable row.)
 #                                      DEFAULT_MIN_TEMP_ENTRY_TTL)
 #   from serpent.types import I128, U32, U128, Address, Bool, Vec
 HOST_FACTS: tuple[HostFact, ...] = (
+    # `extend_ttl(threshold, extend_to)` extends ONLY when the current TTL is below
+    # `threshold` (review B9: threshold 0 is a no-op that returns Void and pins
+    # nothing). The negative-control row pins that semantics itself.
+    HostFact(
+        name="an_extension_whose_threshold_is_below_the_current_ttl_is_a_no_op",
+        fact="B9: extend_ttl is conditional on threshold; threshold 0 changes nothing",
+        sequence=1_000_000,
+        setup=(Call("put_p", (U32(1),)),),
+        invoke=Call("extend_p", (U32(0), U32(DEFAULT_MAX_ENTRY_TTL + 10_000))),
+        real=Value(None),                 # the real test ALSO asserts ttl(KEY) unchanged (4095)
+        tier1=Value(None),
+    ),
+    HostFact(
+        name="max_live_until_is_max_entry_ttl_minus_one",
+        fact="S9's `-1`: max_ttl() == max_entry_ttl - 1 (observed 6_311_999, review m12)",
+        invoke=Call("del_absent", ()),     # any call; the real test asserts env.max_ttl()
+        real=Value(Bool(True)),
+        tier1=Unmodelled("no max live-until at tier 1 (D6/E4)"),
+    ),
     HostFact(
         name="persistent_extension_past_the_maximum_clamps",
         fact="S9: persistent extension past max CLAMPS (O14; test_env_ttl skip 349)",
         sequence=1_000_000,
         setup=(Call("put_p", (U32(1),)),),
-        invoke=Call("extend_p", (U32(0), U32(DEFAULT_MAX_ENTRY_TTL + 10_000))),
-        real=Value(None),                 # no error; Task 6's real test ALSO asserts ttl == sequence + max - 1
+        invoke=Call("extend_p", (U32(DEFAULT_MAX_ENTRY_TTL), U32(DEFAULT_MAX_ENTRY_TTL + 88_000))),
+        real=Value(None),                 # the real test ALSO asserts ttl(KEY) == env.max_ttl()
         tier1=Unmodelled("no max live-until at tier 1 (D6/E4)"),
     ),
     HostFact(
@@ -2286,16 +2725,25 @@ HOST_FACTS: tuple[HostFact, ...] = (
         fact="S9: temporary extension past max TRAPS (O14; test_env_ttl skip 357)",
         sequence=1_000_000,
         setup=(Call("put_t", (U32(1),)),),
-        invoke=Call("extend_t", (U32(0), U32(DEFAULT_MAX_ENTRY_TTL + 10_000))),
-        real=HostErr("Storage"),          # code pinned from the first run
+        invoke=Call("extend_t", (U32(DEFAULT_MAX_ENTRY_TTL), U32(DEFAULT_MAX_ENTRY_TTL + 88_000))),
+        real=HostErr(),                   # underlying pinned from the first run (probe: frame Context/6)
         tier1=Unmodelled("no max live-until at tier 1 (D6/E4)"),
+    ),
+    HostFact(
+        name="extend_to_below_threshold_is_itself_an_error",
+        fact="B9 probe: extend_p(threshold=1_000_000, extend_to=100_000) errors",
+        sequence=1_000_000,
+        setup=(Call("put_p", (U32(1),)),),
+        invoke=Call("extend_p", (U32(1_000_000), U32(100_000))),
+        real=HostErr(),
+        tier1=HostErr(),                  # tier 1's own refusal; the tier-1 runner maps it
     ),
     HostFact(
         name="extending_a_never_written_key_errors",
         fact="S9: extending a dead entry errors (O14)",
-        invoke=Call("extend_p", (U32(0), U32(100))),
-        real=HostErr("Storage"),
-        tier1=HostErr("Storage"),         # tier 1 raises its own MissingValue-class error; the runner maps
+        invoke=Call("extend_p", (U32(DEFAULT_MAX_ENTRY_TTL), U32(100))),
+        real=HostErr(),
+        tier1=HostErr(),                  # tier 1 raises its own MissingValue-class error; the runner maps
     ),
     HostFact(
         name="a_lapsed_temporary_entry_reads_absent",
@@ -2307,13 +2755,17 @@ HOST_FACTS: tuple[HostFact, ...] = (
         tier1=Value(U32(0)),
     ),
     HostFact(
-        name="a_lapsed_persistent_entry_is_archived_not_absent",
-        fact="O14: on chain a lapsed persistent entry is ARCHIVED; the model reads it absent",
+        name="a_lapsed_persistent_entry_stays_readable_on_the_test_host",
+        fact="O14/M3: chain ARCHIVES a lapsed persistent entry; the sdk test Env does NOT model that",
         sequence=1_000_000,
         setup=(Call("put_p", (U32(7),)), Advance(DEFAULT_MIN_PERSISTENT_ENTRY_TTL + 1)),
         invoke=Call("get_p_or", (U32(0),)),
-        real=HostErr("Storage"),          # FIRST RUN decides: archived-entry access error, or U32(0)
-        tier1=Value(U32(0)),
+        real=Value(U32(7)),               # probe-confirmed: STILL READABLE past live_until (test host)
+        tier1=Value(U32(0)),              # the model reads it absent
+        chain_unproven=(
+            "archival is ledger-level behaviour the sdk test Env does not model: tier 1 says absent, "
+            "the test host says present, the chain says archived -- proven only at tier 3, carried to M2"
+        ),
     ),
     HostFact(
         name="del_of_an_absent_key_is_a_no_op",
@@ -2321,7 +2773,15 @@ HOST_FACTS: tuple[HostFact, ...] = (
         invoke=Call("del_absent", ()),
         real=Value(Bool(True)),
         tier1=Value(Bool(True)),
-        write_entries=0,
+        write_entries=1,                  # probe: the contract INSTANCE entry counts as a write even here (M9)
+    ),
+    HostFact(
+        name="a_single_slot_write_is_one_write_entry_plus_the_instance",
+        fact="E6: a derivable footprint count -- put_p writes the slot AND the instance entry",
+        invoke=Call("put_p", (U32(1),)),
+        real=Value(None),
+        tier1=Value(None),
+        write_entries=2,                  # a PREDICTION, not a transcription (M9); first run confirms or BLOCKS
     ),
     HostFact(
         name="an_event_published_before_a_raise_is_rolled_back",
@@ -2332,10 +2792,10 @@ HOST_FACTS: tuple[HostFact, ...] = (
     ),
     HostFact(
         name="a_refused_auth_is_an_auth_trap_and_records_nothing",
-        fact="O19/O26: refusal traps (Auth); nothing is recorded",
-        invoke=Call("guard", (Address(OTHER),)),   # with RealEnv(auths=(ACCOUNT,)) -- see the runner
-        real=HostErr("Auth"),
-        tier1=HostErr("Auth"),            # tier 1's AuthorizationFailed
+        fact="O19/O26: refusal traps (underlying Auth); nothing is recorded",
+        invoke=Call("guard", (Address(OTHER),)),   # with RealEnv(auths=(ALLOWED,)) -- see the runner
+        real=HostErr(("Auth", "InvalidAction")),   # underlying; first run confirms the code name
+        tier1=HostErr(("Auth", "InvalidAction")),  # tier 1's AuthorizationFailed maps here
     ),
     HostFact(name="i128_floordiv_truncates_toward_zero", fact="O10 (D3): rounding of i256_div",
              invoke=Call("div_i128", (I128(-7), I128(2))), real=Value(I128(-3)), tier1=Value(I128(-3))),
@@ -2344,37 +2804,61 @@ HOST_FACTS: tuple[HostFact, ...] = (
     HostFact(name="i128_min_mod_minus_one_is_zero", fact="O10: MIN % -1 == 0 without overflow",
              invoke=Call("mod_i128", (I128(-(2**127)), I128(-1))), real=Value(I128(0)), tier1=Value(I128(0))),
     HostFact(name="i128_div_by_zero_is_a_host_error_not_a_trap_code", fact="O11 (E15): the real XDR code",
-             invoke=Call("div_i128", (I128(1), I128(0))), real=HostErr("Object"), tier1=HostErr("Object")),
+             invoke=Call("div_i128", (I128(1), I128(0))), real=DIV128_BY_ZERO_HOST_ERROR,
+             tier1=DIV128_BY_ZERO_HOST_ERROR),   # tier 1's ZeroDivisionError maps here
     HostFact(name="u128_div_by_zero_is_the_same_host_error", fact="O11",
-             invoke=Call("div_u128", (U128(1), U128(0))), real=HostErr("Object"), tier1=HostErr("Object")),
-    HostFact(name="vec_ordering_is_lexicographic_then_shorter_first", fact="E12/A15: the host's container order",
-             invoke=Call("vec_lt", (Vec(U32, [U32(1)]), Vec(U32, [U32(1), U32(0)]))),
-             real=Value(Bool(True)), tier1=Unmodelled("A15: tier 1 defers container ordering")),
+             invoke=Call("div_u128", (U128(1), U128(0))), real=DIV128_BY_ZERO_HOST_ERROR,
+             tier1=DIV128_BY_ZERO_HOST_ERROR),
+)
+
+#: Asked of the host's Compare trait directly (RealEnv.compare), no contract in
+#: between (M2). Vectors chosen to separate lexicographic-then-length from
+#: length-then-lexicographic, and to answer O12 for small Symbols. The
+#: expected sign is None until the first run pins it (dated comment); tier 1
+#: has no answer for the container rows (A15) and an ASCII answer for the
+#: Symbol rows (`Symbol.__lt__`), which the runner ALSO compares -- a Symbol
+#: disagreement is a FrozenTableDisagreement (E10).
+COMPARE_VECTORS = (
+    (Vec(U32, [U32(1)]), Vec(U32, [U32(1), U32(0)]), None),
+    (Vec(U32, [U32(2)]), Vec(U32, [U32(1), U32(0)]), None),
+    (Vec(U32, [U32(1), U32(2)]), Vec(U32, [U32(1), U32(3)]), None),
+    (Symbol("_"), Symbol("A"), None),
+    (Symbol("a"), Symbol("B"), None),
+    (Symbol("abcdefghijk"), Symbol("abcdefghijl"), None),   # object vs object
+    (Symbol("abc"), Symbol("abcdefghijk"), None),           # small vs object
 )
 ```
 
-Tier-1 `HostErr` rows map the model's own exception classes: `Storage` ↔
-`serpent.errors.MissingValue`-class / the TTL model's refusal; `Auth` ↔
-`AuthorizationFailed`; `Object` ↔ `ZeroDivisionError` — the tier-1 runner
-(`test_host_facts_tier1.py`) owns that mapping table and states it.
+Tier-1 `HostErr` rows map the model's own exception classes to underlying
+pairs: the TTL model's refusals ↔ `("Storage", ...)`; `AuthorizationFailed`
+↔ `("Auth", "InvalidAction")`; `ZeroDivisionError` ↔ `("Object",
+"ArithDomain")` — the tier-1 runner (`test_host_facts_tier1.py`) owns that
+mapping table and states it. A tier-1 `HostErr()` with `underlying=None`
+matches any tier-1 refusal of the mapped family.
 
 - [ ] **Step 3: Write the real-leg runner** `tests/real_host/test_host_facts_real.py`
 
-Per row: `RealEnv(sequence=…, auths=(Address(ACCOUNT),) if row.name.startswith("a_refused_auth") else None)`,
-deploy `tests/fixtures/host_facts.py`'s class, replay `setup`, run
-`invoke`, match `real`: `Value(v)` → `answer == v`; `ContractErr(c)` →
-`RealContractError.code == c`; `HostErr(t, c)` → `RealHostError.error_type
-== t and (c is None or code == c)`. Then the row-specific extras: the clamp
-row asserts `c.storage("persistent").ttl(KEY) == sequence + DEFAULT_MAX_ENTRY_TTL - 1`
-(S9's `-1` convention, verified live — if the host answers `+ max` exactly,
-record THAT); the rollback row asserts `c.events() == ()`; the auth row
-asserts `c.auths() == ()`; `write_entries`/`read_entries` when declared
-assert against `c.resources()["write_entries"]` and
+Per row (each test `@real`-marked; the table meta-tests unmarked): `RealEnv(sequence=…,
+auths=(Address(ALLOWED),) if row.name.startswith("a_refused_auth") else None)`
+with `ALLOWED` a CONTRACT strkey (B2), `deploy_source(tests/fixtures/host_facts.py)`,
+replay `setup`, run `invoke`, match `real`: `Value(v)` → `answer == v`;
+`ContractErr(c)` → `RealContractError.code == c`; `HostErr(u)` →
+`RealHostError` that is not a `RealContractError` and, when `u` is not
+None, `.underlying == u`. Row-specific extras: the no-op row asserts
+`ttl(KEY)` unchanged; the `max_ttl` row asserts `env.max_ttl() ==
+DEFAULT_MAX_ENTRY_TTL - 1`; the clamp row asserts `c.storage("persistent")
+.ttl(KEY) == env.max_ttl()` (B9/B10); the rollback row asserts `c.events()
+== ()`; the auth row asserts `c.auths() == ()`; a `chain_unproven` row
+asserts the test-host value AND that it differs from tier 1's (M3: a
+two-sided declared divergence); `write_entries`/`read_entries` when
+declared assert against `c.resources()["write_entries"]` and
 `resources()["memory_read_entries"] + resources()["disk_read_entries"]`
-(E6: footprint COUNTS — key-level footprint is M2 via `e2e_invoke`, stated in
-the module docstring). After the first run, pin every `HostErr(..., None)`
-code into the table and set `DIV128_BY_ZERO_HOST_ERROR` from the observed
-`div_i128` row.
+(E6: footprint COUNTS — key-level footprint is M2 via `e2e_invoke`, stated
+in the module docstring). `COMPARE_VECTORS`: `RealEnv().compare(a, b)`'s
+sign per row; for Symbol rows also compare to `a < b` at tier 1 and raise
+`FrozenTableDisagreement` on mismatch (O12/E10). After the first run, pin
+every `HostErr()` underlying and every `None` sign into the table with a
+dated comment, and re-run green.
 
 - [ ] **Step 4: Write the tier-1 leg** `tests/unit/test_host_facts_tier1.py`
 
@@ -2386,37 +2870,44 @@ cites an ID (`re.search(r"\b(S\d+|O\d+|E\d+|D\d+)\b", row.fact)`).
 
 - [ ] **Step 5: The un-toggleable proposals** `tests/real_host/test_feature_set_real.py` (O3)
 
-Four hand-assembled modules via `tests.harness.testmod.build_test_module`
-(read its signature: `functions, imports=(), memory_pages=None, data=None`):
-a function body containing `f64.const 0` (opcode `0x44` + 8 bytes) then
-`drop`; a memory with the memory64 limits flag (`0x04`); a global whose init
-expression is `i32.const 1; i32.const 2; i32.add; end` (extended-const); a
-body with `try` (`0x06`). Each: `RealEnv().deploy_wasm(bytes)` raises
-`RealHostError` with `error_type == "WasmVm"` (or `HostPanic` if the sdk's
-`register` panics — either is CATCHABLE, which is the assertion; record
-which). A fifth POSITIVE control: `build_test_module` of a module using
-`i64.extend8_s` (sign-extension, ON in the chain's config) registers fine.
-Where `build_test_module` cannot express a shape (e.g. the memory limits
-flag), the implementer writes the ~30 bytes by hand with a comment
-spelling each byte.
+The host REJECTS every module without a `contractenvmetav0` custom section
+(`WasmVm(InvalidInput)`, "contract missing metadata section" — review M1),
+so a `build_test_module` module fails for the wrong reason and the four
+negatives would pass vacuously. Therefore FIRST: `tests/harness/testmod.py`'s
+`build_test_module` gains `custom_sections: Mapping[str, bytes] = {}`
+(section id 0, name + payload, emitted after the code/data sections), and
+every module in this file carries `{"contractenvmetav0":
+serpent.spec.build_env_meta(20)}` (the emitter's own writer — one
+implementation). The POSITIVE control — a module using `i64.extend8_s`
+(sign-extension, ON in the chain's config) plus the meta section — MUST
+register and be invokable; a meta-test asserts it passes, which is what
+makes the negatives mean anything. Then four negatives, each asserting the
+UNDERLYING diagnostic (not just `WasmVm`): a function body containing
+`f64.const 0` (opcode `0x44` + 8 bytes) then `drop`; a memory whose limits
+flag is `0x04` (memory64 — `build_test_module` has no limits-flag knob:
+write those ~30 bytes by hand with a comment per byte); a GLOBAL whose init
+expression is `i32.const 1; i32.const 2; i32.add; end` (extended-const —
+`build_test_module` emits no global section: hand-assemble, same rule); a
+body with `try` (`0x06`). Each `RealEnv().deploy_wasm(bytes)` raises a
+catchable `RealHostError`/`HostPanic` (the sdk's `register` PANICS on a
+rejected module — probe-confirmed with a String payload — and `contained`
+turns that into kind "panic"); record which kind and which underlying code
+per module in a dated comment.
 
 - [ ] **Step 6: Run everything, pin the first-run facts, run again**
 
 Run: `SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q tests/real_host/test_host_facts_real.py tests/real_host/test_feature_set_real.py tests/unit/test_host_facts_tier1.py`
-Expected: PASS after the pins; every `HostErr` in the table has a concrete
-code; `DIV128_BY_ZERO_HOST_ERROR` is set. If the `a_lapsed_persistent_entry`
-row's real outcome is a VALUE rather than a `Storage` error, change the row
-to what was observed and note in the fixture docstring that the test host's
-recording-footprint storage does not model archival (a known limit of the
-sdk test Env — record it as evidence about the TEST HOST, distinct from
-the chain, and carry "archival is proven only at tier 3" to the attention
-file).
+Expected: PASS after the pins; every `HostErr()` in the table has a concrete
+underlying pair; every `COMPARE_VECTORS` sign is pinned. The archival row is
+pre-declared (`chain_unproven`), so it must NOT be "corrected" from a run:
+if the test host ever starts archiving, that row FAILS and the declaration
+is retired deliberately.
 
 - [ ] **Step 7: Gates, then commit**
 
 ```bash
-git add tests/fixtures/host_facts.py tests/semantics/host_facts.py tests/real_host/test_host_facts_real.py tests/real_host/test_feature_set_real.py tests/unit/test_host_facts_tier1.py
-git commit -m "test(real-host): add the HOST_FACTS table pinning TTL, rollback, auth, and 128-bit division facts"
+git add tests/fixtures/host_facts.py tests/semantics/host_facts.py tests/real_host/test_host_facts_real.py tests/real_host/test_feature_set_real.py tests/unit/test_host_facts_tier1.py tests/unit/test_frontend_fuzz.py tests/harness/testmod.py
+git commit -m "test(real-host): add the HOST_FACTS table pinning TTL, rollback, auth, ordering, and 128-bit division facts"
 ```
 
 ---
@@ -2469,7 +2960,7 @@ from tests.unit.test_emitter_end_to_end import (
 )
 from tests.unit.test_examples import _allowance_token_roles, load_example
 
-pytestmark = pytest.mark.real_host
+real = pytest.mark.real_host  # per-test (M12); every test here needs the host, but the rule is stated
 
 Step = tuple[str, tuple[Any, ...]]
 
@@ -2483,9 +2974,9 @@ def _both_legs(path: Path, ctor: tuple[Any, ...], steps: Sequence[Step]) -> tupl
         with env1.frame():
             tier1.append(_outcome(lambda: getattr(inst, method)(env1, *args)))
     real_env = RealEnv()
-    c = real_env.deploy(cls, *ctor)
-    real: list[object] = [_outcome(lambda m=method, a=args: c.invoke(m, *a)) for method, args in steps]
-    return tier1, real
+    c = real_env.deploy_source(path, *ctor)   # B3: path-loaded classes have no sys.modules entry
+    real_leg: list[object] = [_outcome(lambda m=method, a=args: c.invoke(m, *a)) for method, args in steps]
+    return tier1, real_leg
 
 
 def _outcome(call: Any) -> object:
@@ -2501,11 +2992,13 @@ def _outcome(call: Any) -> object:
         return ("error", code)
 
 
+@real
 def test_counter() -> None:
     tier1, real = _both_legs(EXAMPLE_COUNTER, (), [("increment", (U32(2),)), ("increment", (U32(3),)), ("total", ())])
     assert real == tier1 == [U32(2), U32(5), U32(5)]
 
 
+@real
 def test_errors_vault() -> None:
     owner = Address("GCUNZ4XXN2LPHSGWPGCVZAZ4GUWL6HMXLJ7NCHCPB3I23EPY6JCVISSY")
     steps: list[Step] = [("deposit", (U32(4),)), ("deposit", (U32(7),)), ("withdraw", (U32(9),)), ("balance", ())]
@@ -2520,11 +3013,13 @@ def test_errors_vault() -> None:
 # test carries. allowance_token's auth: RealEnv() mocks all auths, matching Env(auths=None).
 
 
+@real
 def test_a_union_and_an_int_enum_return_decode_through_their_types() -> None:
-    """O5 lifted: the mini host could not decode these; the real leg decodes via `ty`."""
+    """O5 lifted: the mini host could not decode these; the real leg decodes via `ty`.
+    `area`/`radius` on this fixture compare small Symbols (B1) -- runnable only after Task 0."""
     udt_style = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "udt_style.py"
     module = load_example(udt_style)
-    c = RealEnv().deploy(module.UdtStyle)
+    c = RealEnv().deploy_source(udt_style)
     c.invoke("set_rect", U32(2), U32(3))
     assert c.invoke("current_shape") == module.Shape.Rect(U32(2), U32(3))
     c.invoke("promote")
@@ -2574,7 +3069,13 @@ git commit -m "test(real-host): run the six examples on the embedded host and de
   (docstring repoints: "F's obligation" → "proven in tests/real_host/…")
 
 **Interfaces:**
-- Consumes: Task 6's `DIV128_BY_ZERO_HOST_ERROR` (`tests.semantics.host_facts`).
+- Consumes: Task 6's `DIV128_BY_ZERO_HOST_ERROR` (`tests.semantics.host_facts`;
+  its `underlying` is `("Object", "ArithDomain")`, so `DIV_ERROR_VAL` becomes
+  `val.error_val(<ArithDomain discriminant, 0>, val.ERROR_TYPE_OBJECT)` — the
+  code names are mapped to discriminants through `stellar_sdk.xdr.SCErrorCode`).
+  NOT changed here: the mini host's `obj_cmp` container comparison stays
+  `NotImplementedError` — the host's answer is HOST_FACTS' `COMPARE_VECTORS`
+  evidence (O6), and the tier-1 implementation is M2 (E12).
 - Produces:
 
 ```python
@@ -2596,8 +3097,8 @@ def chain_value_as(self, word: int, ty: object) -> object
 # struct -> the sorted-key map (so `Call` args may be containers on the mini leg too).
 ```
 
-- [ ] **Step 1: Failing tests** — in `tests/unit/test_harness_objects.py` (or the
-  existing objects test module): `chain_value_as` round-trips `Vec(U32, [...])`,
+- [ ] **Step 1: Failing tests** — in the NEW `tests/unit/test_harness_objects.py`
+  (there is no existing objects test module, review m3): `chain_value_as` round-trips `Vec(U32, [...])`,
   a `Map(Symbol, U32)`, `Shape.Rect(...)` (from `tests/unit/_udt_decls.py`),
   `Color.Green`, and a `@contracttype` through `val_word` → `chain_value_as`;
   `chain_value_as(word, U32)` on a Symbol word raises `AssertionError`; `built()`
@@ -2609,11 +3110,14 @@ def chain_value_as(self, word: int, ty: object) -> object
   `test_examples.py:398-430` with `chain_value_as(word, Vec[...])` (read the
   test to get the element type); switch `_built`/`build_fixture` callers to
   `cache.built` (keep `build_fixture` as a thin alias so nothing else moves);
-  `DIV_ERROR_VAL = val.error_val(DIV128_BY_ZERO_HOST_ERROR.code, <the type
-  constant matching DIV128_BY_ZERO_HOST_ERROR.error_type>)` with its docstring
-  rewritten from "an unpinned XDR code" to "the code the real host returned
-  on 2026-09-xx (tests/semantics/host_facts.py)"; update the one test that
-  pins `DIV_ERROR_VAL`'s shape if it asserted the old `(0, VALUE)` word.
+  `DIV_ERROR_VAL = val.error_val(0, val.ERROR_TYPE_OBJECT)` (ArithDomain's
+  discriminant is 0, Object's is 4 — derived in a test from
+  `DIV128_BY_ZERO_HOST_ERROR.underlying` via `stellar_sdk.xdr.SCErrorCode`/
+  `SCErrorType`, so the literal cannot drift from the pinned fact) with its
+  docstring rewritten from "an unpinned XDR code" to "the UNDERLYING code the
+  real host reported on 2026-09-xx (tests/semantics/host_facts.py)"; update
+  the one test that pins `DIV_ERROR_VAL`'s shape (it asserted the old
+  `(0, VALUE)` word).
 
 - [ ] **Step 3: Docstring repoints** in `hostfns.py:53-76`, `engine.py:133-135`,
   `objects.py:117-122`, `i256.py:28-46`: every "sub-plan F will/is where"
@@ -2638,7 +3142,12 @@ git commit -m "test(harness): cache compiled modules, add typed container decodi
 
 **Files:**
 - Create: `src/serpent/testing/testnet.py`, `tests/real_host/test_testnet_fixtures.py`,
-  `tests/real_host/fixtures/testnet/shapes/*.json` (recorded), `tests/real_host/fixtures/testnet/README.md`
+  `tests/real_host/fixtures/testnet/shapes/*.json` (recorded),
+  `tests/real_host/fixtures/testnet/shapes/deployed.wasm` (the 4,171 bytes
+  fetched from the chain — `stellar contract fetch`, sha256 `6a9dd135…6e33`;
+  the real leg replays THESE bytes, same-bytes per Phase 0, because Task 0
+  changes what `build_file(shapes.py)` produces — B1 ruling),
+  `tests/real_host/fixtures/testnet/README.md`
 
 **Interfaces:**
 - Consumes: `stellar_sdk` (`SorobanServer`, `TransactionBuilder`, `Account`,
@@ -2650,14 +3159,20 @@ git commit -m "test(harness): cache compiled modules, add typed container decodi
 TESTNET_RPC = "https://soroban-testnet.stellar.org"
 TESTNET_PASSPHRASE = "Test SDF Network ; September 2015"
 RECORD_ENV_VAR = "SERPENT_TESTNET_RECORD"          # "1" enables network recording
-SOURCE_ENV_VAR = "SERPENT_TESTNET_SOURCE"          # an EXISTING account's public key (E14)
+SOURCE_ENV_VAR = "SERPENT_TESTNET_SOURCE"          # OVERRIDE only: simulation accepts a never-funded
+                                                  # source (probe, E14 as amended); the default is
+DEFAULT_SOURCE = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"   # the zero public key
 
 @dataclass(frozen=True)
 class Fixture:
     contract_id: str; wasm_sha256: str; protocol: int; ledger: int; rpc_version: str
     recorded_at: str; method: str; args_xdr: tuple[str, ...]      # base64
     seeded: tuple[SeededEntry, ...]   # (durability, key_xdr b64, value_xdr b64, live_until) for every
-                                      # contract-data entry the simulation's footprint READ
+                                      # PLAIN contract-data entry the footprint read (keys decoded with
+                                      # decode_loose -- the pin key is a UNION, review M4)
+    instance: tuple[tuple[str, str], ...]   # the contract INSTANCE entry's storage map as (key_xdr,
+                                      # value_xdr) b64 pairs -- SHAPE lives here (M4); seeded via
+                                      # RealStorage("instance").set / tier-1 instance().set
     result: FixtureResult             # ok: value_xdr b64 | error: (error_type, code)
     events_xdr: tuple[str, ...]
 
@@ -2673,11 +3188,16 @@ def fixtures_under(directory: Path) -> list[Fixture]
   .append_invoke_contract_function_op(contract_id, method, [encode(a) for a in args])
   .set_timeout(300).build()` and calls `server.simulate_transaction(tx)`;
   `record_fixture` reads `response.results[0].xdr` (the return ScVal) or
-  `response.error`, decodes `response.transaction_data` to get the footprint
+  `response.error` (an error fixture is VALID and valuable: the deployed
+  contract's `area` traps on chain today, B1 — record it as `error` with the
+  diagnostic text), decodes `response.transaction_data` to get the footprint
   (`SorobanTransactionData.resources.footprint.read_only/read_write`), fetches
   every `LedgerKey` of type `CONTRACT_DATA` for this contract via
-  `server.get_ledger_entries(keys)`, and stores `(durability, key, val,
-  live_until)` per entry; header fields from `server.get_network()`
+  `server.get_ledger_entries(keys)`; the entry whose key is
+  `SCV_LEDGER_KEY_CONTRACT_INSTANCE` is stored as `instance` (its
+  `ScVal::ContractInstance.storage` map → pairs), every other as a
+  `SeededEntry`; `CONTRACT_CODE` keys are the module itself and are not
+  state; header fields from `server.get_network()`
   (`protocol_version`) and `server.get_version_info()`; writes JSON. The
   module contains NO `Keypair`, no `sign`, no `send_transaction` — a test
   asserts by AST that none of those names appear (F.1.9).
@@ -2697,23 +3217,41 @@ Env), invoke, compare the three answers. The header test needs no extension.
 FIXTURES = fixtures_under(Path(__file__).parent / "fixtures" / "testnet" / "shapes")
 
 
-def test_the_fixtures_were_recorded_against_the_bytes_this_tree_builds() -> None:
-    built = build_file(EXAMPLE_SHAPES).wasm
+DEPLOYED = Path(__file__).parent / "fixtures" / "testnet" / "shapes" / "deployed.wasm"
+DEPLOYED_SHA256 = "6a9dd13549bac20f2609ab3d74668963b5249a7943dc7f027cdf6c42bec86e33"
+
+
+def test_the_fixtures_were_recorded_against_the_deployed_bytes() -> None:
     assert FIXTURES, "no fixtures recorded"
+    assert hashlib.sha256(DEPLOYED.read_bytes()).hexdigest() == DEPLOYED_SHA256
     for f in FIXTURES:
         assert f.contract_id == "CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW"
-        assert f.wasm_sha256 == hashlib.sha256(built).hexdigest()
+        assert f.wasm_sha256 == DEPLOYED_SHA256
         assert f.protocol == DEFAULT_PROTOCOL
+
+
+def test_this_trees_shapes_build_differs_from_the_deployed_bytes_until_the_next_deploy() -> None:
+    """B1: Task 0 changed the Symbol-compare lowering, so HEAD's shapes.py no longer
+    builds the deployed bytes. This inverts when Elliot approves the M1-end deployment
+    (G): flip the assertion then and retire this docstring."""
+    built = build_file(EXAMPLE_SHAPES).wasm
+    assert hashlib.sha256(built).hexdigest() != DEPLOYED_SHA256
 
 
 @pytest.mark.real_host
 @pytest.mark.parametrize("fixture", FIXTURES, ids=[f.method for f in FIXTURES])
 def test_the_real_host_and_tier_1_agree_with_testnet(fixture: Fixture) -> None:
+    """Same bytes: the real leg runs the DEPLOYED wasm, not HEAD's build (B1). Tier 1
+    runs HEAD's model. Three answers, compared -- for `area` the deployed bytes TRAP on
+    both the chain and the real host (the B1 bug, reproduced), while tier 1 answers;
+    that row is a declared divergence with the B1 reason, retired at the next deploy."""
     shapes = load_example(EXAMPLE_SHAPES)
     real = RealEnv(sequence=fixture.ledger)
-    c = real.deploy(shapes.Drawing)
+    c = real.deploy_wasm(DEPLOYED.read_bytes())
+    for key_xdr, value_xdr in fixture.instance:
+        c.storage("instance").set(decode_loose_xdr(key_xdr), decode_loose_xdr(value_xdr))
     for e in fixture.seeded:
-        c.storage(e.durability).set(from_xdr(b64decode(e.key_xdr), _key_ty(e)), from_xdr(b64decode(e.value_xdr), _val_ty(e)))
+        c.storage(e.durability).set(decode_loose_xdr(e.key_xdr), decode_loose_xdr(e.value_xdr))
     args = [from_xdr(b64decode(a), t) for a, t in zip(fixture.args_xdr, _param_types(shapes.Drawing, fixture.method))]
     real_answer = _outcome(lambda: c.invoke(fixture.method, *args))
     env = Env(sequence=fixture.ledger); inst = deploy(shapes.Drawing, env)
@@ -2725,7 +3263,11 @@ def test_the_real_host_and_tier_1_agree_with_testnet(fixture: Fixture) -> None:
     assert real_answer == tier1_answer == testnet_answer
 ```
 
-(Helpers this test defines, each a few lines: `_outcome` as in Task 7;
+(Helpers this test defines, each a few lines: `decode_loose_xdr(b64)` =
+`decode_loose(SCVal.from_xdr_bytes(b64decode(b64)))` — the union pin key and
+the `Shape`/`Color` values arrive as Vec/U32 (D6-coarse) on BOTH seeding
+legs, which is exactly the bare word the host stores, so re-typing happens
+in the contract's own `get(..., ty)` as on chain; `_outcome` as in Task 7;
 `_param_types(cls, method)` = `typing.get_type_hints(getattr(cls, method))`
 minus `return` and `env`, in signature order; `_return_ty(cls, method)` = that
 map's `return` (or `type(None)`); `_tier1_bucket(env, durability)` =
@@ -2738,13 +3280,14 @@ with `Shape`/`Color` values, the pin under temporary; the implementer writes
 symbol, stated in the test. Tier-1 seeding uses `env.storage().persistent()
 .set(...)` inside the frame, exactly what a contract method does.)
 
-- [ ] **Step 3: RECORD the fixtures (controller-run; needs network + an account)** —
-  `SERPENT_TESTNET_RECORD=1 SERPENT_TESTNET_SOURCE=G... uv run --no-sync python -m serpent.testing.testnet record --contract CDEU7Q… --out tests/real_host/fixtures/testnet/shapes kind area palette is_pinned`
-  (a tiny `__main__` in `testnet.py`). E14: the account is supplied by Elliot
-  in-session; the implementer does NOT call friendbot. If `simulateTransaction`
-  rejects a non-existent source account, that is the finding to report — the
-  runner's contract does not change. Commit the JSON with the README stating
-  the recording date, ledger, and command.
+- [ ] **Step 3: RECORD the fixtures (needs network only)** —
+  `SERPENT_TESTNET_RECORD=1 uv run --no-sync python -m serpent.testing.testnet record --contract CDEU7Q… --out tests/real_host/fixtures/testnet/shapes kind area palette is_pinned`
+  (a tiny `__main__` in `testnet.py`). E14 as amended: simulation accepts a
+  never-funded source, so `DEFAULT_SOURCE` is used and no account is asked
+  for; the implementer does NOT call friendbot and the module has no signing
+  path. Also fetch `deployed.wasm` (`stellar contract fetch --id CDEU7Q… --network testnet --out-file …`)
+  and assert its sha256 before committing. Commit the JSON + wasm with the
+  README stating the recording date, ledger, protocol, and command.
 
 - [ ] **Step 4: Run**
 
@@ -2772,14 +3315,15 @@ git commit -m "feat(testing): add the simulation-only testnet fixture runner and
   (a third net: "sub-plan F"), `docs/superpowers/specs/2026-08-26-serpent-python-soroban-sdk-design.md`
   (§13 network line: a dated correction note, not a rewrite)
 
-- [ ] **Step 1: The third net.** In `test_no_stale_promises.py` add
-  `_NEEDLE_F = "sub-plan f"` walked over `src/` and `tests/`; every mention
-  must either read as a past-tense/record sentence in a TEXT-keyed allowlist
-  (`frozenset[tuple[str, str]]` of `(relative path, exact line text
-  stripped)` — G's B2 fix applied to the new net from the start, so a line
-  move does not break it) or be absent. Run it FIRST to get the census
-  (expect ~25 hits), then Step 2 makes each one IMPLEMENTED / REPOINTED /
-  REMOVED.
+- [ ] **Step 1: The third net.** In `test_no_stale_promises.py` add the F net
+  with ALL THREE O33 needles (`"sub-plan f"`, `"tier 2b"`/`"tier-2b"`, and
+  the possessive `"f's"` as a word) walked over `src/`, `tests/`,
+  `examples/`, and `docs/` (widen `_WALKED` for this net — review m5);
+  every mention must either read as a past-tense/record sentence in a
+  TEXT-keyed allowlist (`frozenset[tuple[str, str]]` of `(relative path,
+  exact line text stripped)`) or be absent. Run it FIRST to get the census
+  (probe: 44 "sub-plan F" + 27 "tier 2b" hits in `src`+`tests` alone), then
+  Step 2 makes each one IMPLEMENTED / REPOINTED / REMOVED.
 
 - [ ] **Step 2: The sweep.** `env.py` 6, 14, 89-91, 605, 751, 1091-1096, 1190,
   1216, 1519: each becomes "proven on the real host: `tests/real_host/
@@ -2820,13 +3364,10 @@ git add docs/testing.md README.md src/serpent/env.py src/serpent/errors.py tests
 git commit -m "docs: repoint every sub-plan F promise at its real-host evidence and document the testing tiers"
 ```
 
-(If `examples/shapes.py`'s docstring edit changes the emitted `contractspecv0`
-bytes — method docstrings ARE emitted — then K6's byte-identity with the
-deployed contract BREAKS and Task 9's header test fails. Therefore: the
-shapes.py paragraph at 95-101 is a MODULE docstring, not a method docstring;
-verify it is not emitted (`build_spec_entries` reads class/method docs only)
-before editing, and if it IS emitted, leave shapes.py untouched and repoint
-from `docs/testing.md` instead.)
+(Probe-verified, review m6: lines 95-101 of `examples/shapes.py` are inside
+the MODULE docstring, which `build_spec_entries` never emits — rewriting them
+leaves the bytes identical (4,171 bytes, same hash). Method docstrings ARE
+emitted; do not touch those.)
 
 ---
 
@@ -2835,15 +3376,22 @@ from `docs/testing.md` instead.)
 1. **Final whole-branch review on Fable**, fed
    `.superpowers/sdd/2026-09-02-m1f-testing-tiers/final-review-attention.md`
    accumulated from Task 1 onward and reconciled against the ledger. It must
-   carry: every host fact pinned FROM A FIRST RUN (the `EXPECTED_HOST_ERROR_
-   TYPE` map, every `HostErr` code, `DIV128_BY_ZERO_HOST_ERROR`, the clamp
-   `-1` convention, the archived-persistent outcome) with the run date; every
+   carry: every host fact pinned FROM A FIRST RUN (the
+   `EXPECTED_UNDERLYING_ERROR` map, every `HostErr` underlying pair, every
+   `COMPARE_VECTORS` sign, the `max_ttl()` value) with the run date; every
    `FrozenTableDisagreement` escalation and its ruling; every `host_diverges`
-   declaration; the P4 discrimination matrix; the containment evidence (three
-   panic sources); the `mini_host_gap` rename's blast radius; the two
+   and `chain_unproven` declaration (archival: the test host does not model
+   it either, M3); the P4 discrimination matrix and the fact that the frame
+   level is one bit wide (B5); the containment evidence (three panic
+   sources); the `mini_host_gap` rename's blast radius; the `_ADMIN` strkey
+   change (B2) and the contract-authorizers-only fence; the two
    private-accessor seams `_scval` uses (`_payload_items`, `_METADATA_ATTR`);
-   the tier-3 recording account and date; the 28.0.0-vs-28.0.2 delta as a
-   standing caveat on every tier-3 comparison.
+   Task 0's lowering change with the goldens' diff summary and the new
+   runtime part; that the sdk test Env installs
+   `InvocationResourceLimits::mainnet()` (review m13 — a first hypothesis
+   when a row fails on limits); the tier-3 recording date and the
+   `deployed.wasm` artifact; the 28.0.0-vs-28.0.2 delta as a standing caveat
+   on every tier-3 comparison.
 2. **Obligations carried OUT of M1-F**: to **G** — the CI Rust job
    (`SERPENT_REQUIRE_REAL_HOST=1`, maturin build, cargo gates), `stellar
    serpent doctor` reporting the extension's presence and protocol,
@@ -2855,9 +3403,15 @@ from `docs/testing.md` instead.)
    suite. To **M2** — tier-1 frame rollback (retiring the publish-then-raise
    `host_diverges`), tier-1 container ordering if E12 recorded a non-trivial
    order, key-level footprint via `e2e_invoke`, `get_max_live_until_ledger`
-   at tier 1 (the clamp/trap model), archival/restore modelling, threads /
+   at tier 1 (the clamp/trap model), archival/restore modelling (M3: the
+   test host does not model it either — chain-only until then), account
+   authorizers on the real host (B2: needs real ed25519 signing), O6 (the
+   mini host's container `obj_cmp`) and O20 (struct↔`Map` tag-level
+   acceptance) with the host's `COMPARE_VECTORS` evidence in hand, threads /
    free-threaded CPython for `unsendable`.
 3. **One fix wave**, then local merge to main. **No pushes (hard stop).**
    process.md's state section gains the M1-F line and "NEXT: G". The
    M1-end testnet deployment remains G's and requires Elliot's explicit
-   in-session approval.
+   in-session approval — and it now also REPLACES the deployed shapes
+   contract whose `area` traps (B1); until then `deployed.wasm` is the
+   tier-3 truth and Task 9's "differs from HEAD" assertion stands.
