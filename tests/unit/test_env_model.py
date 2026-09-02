@@ -366,6 +366,31 @@ def test_a_fixed_length_bytes_request_also_checks_the_length() -> None:
     assert bucket.get(Symbol("n"), b3) == b3(b"abc")
 
 
+def test_a_stored_void_read_through_an_option_stays_None() -> None:
+    """The Void arm of the re-typing (the fix wave's own regression).
+
+    `X | None` accepts Void as well as `X`'s family, so a stored `None` passes
+    the tag check -- and there is nothing to re-type: the word IS Void, and the
+    read answers `None` at both tiers. Pinned for the two families the
+    re-typing touches, because those are the two that used to reach into the
+    value (`'NoneType' object has no attribute 'value'`, `object of type
+    'NoneType' has no len()`).
+
+    The WRITE goes through a `type: ignore`, as the `Bytes32 | None` read above
+    does: `set`'s signature takes a chain value and Void is not one, so a Void
+    entry is not something the typed surface offers a way to create -- but the
+    store can hold one, and the READ side is typed for exactly that (`X |
+    None`), so the model must answer it rather than raise inside the decode.
+    """
+    from tests.unit.test_udt_values import Color, Shape
+
+    bucket = deployed_env().storage().temporary()
+    bucket.set(Symbol("v"), None)  # type: ignore[arg-type]
+    assert bucket.get(Symbol("v"), Color | None) is None  # type: ignore[arg-type]
+    assert bucket.get(Symbol("v"), Shape | None) is None  # type: ignore[arg-type]
+    assert bucket.get(Symbol("v"), U32 | None) is None  # type: ignore[arg-type]
+
+
 def test_a_struct_and_a_map_share_one_tag_family() -> None:
     """A struct IS a `Map<Symbol, V>` on chain (S9): the emitter maps
     `TyTag.STRUCT` to `TAG_MAP_OBJECT`, so tier 1 must accept both directions

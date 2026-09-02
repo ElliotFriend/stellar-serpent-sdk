@@ -468,7 +468,7 @@ def _require_ty(value: ChainValue, ty: object) -> None:
             )
 
 
-def _retyped_as(value: ChainValue, ty: object) -> ChainValue:
+def _retyped_as(value: ChainValue | None, ty: object) -> ChainValue | None:
     """`value` re-typed to the type `ty` names, across the union/int-enum family.
 
     Called immediately after `_require_ty` passes, by every read that decodes a
@@ -515,6 +515,12 @@ def _retyped_as(value: ChainValue, ty: object) -> ChainValue:
     request above all, which is every ordinary read -- passes through
     UNCHANGED, so ruling E5's identity properties are untouched.
     """
+    if value is None:
+        # Void: `X | None` accepts it (`_families_of_ty` composes the arm), and
+        # there is nothing to re-type -- the word IS Void at both tiers, and
+        # reaching into it is what raised `'NoneType' object has no attribute
+        # 'value'` before this guard.
+        return value
     members = _ty_members(ty)
     if len(members) != 1:
         return value

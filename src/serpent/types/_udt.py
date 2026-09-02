@@ -66,9 +66,10 @@ import copy as _copy
 from collections.abc import Callable
 from typing import Any, ClassVar, Generic, NoReturn, Self, TypeVar, cast, get_origin, overload
 
+from serpent.types._base import _ChainValue
 from serpent.types._ordering import ChainValue, require_map_value
 from serpent.types.containers import _DEFERRED, Vec, _value_element_type_for
-from serpent.types.numeric import U32
+from serpent.types.numeric import U32, Bool
 from serpent.types.symbol import Symbol
 
 __all__ = ["ContractEnum", "ContractUnion", "enumvalue", "variant"]
@@ -89,6 +90,40 @@ MAX_PAYLOAD_ARITY = 12
 #: readability -- it is an `int` subclass, so `isinstance` would match it
 #: either way -- and `Bool(True)` is what it adopts to.
 _RAW_LITERALS: tuple[type[Any], ...] = (int, str, bytes, bool)
+
+
+def _adopts_literal(value: object, slot: object) -> bool:
+    """Whether the payload slot typed `slot` ADOPTS the raw literal `value`.
+
+    Three narrowings, each one a rule the COMPILER already applies to a literal
+    in a typed position -- tier 1 adopting more widely than the frontend
+    accepts is how a literal ends up somewhere no chain type ever checks it
+    again (`storage_key` raising `'int' object has no attribute
+    '_SCVAL_RANK'`, a long way from the call that caused it):
+
+    * the value must be one of the four raw literal kinds;
+    * the slot must be a CHAIN-VALUE class -- `_ChainValue`, the same
+      scalar-chain-class test `env._is_chain_value` and
+      `decorators._is_contract_annotation` are written over. A
+      `@contracttype` struct, a `Vec[T]`, a union or an int-enum slot adopts
+      nothing: none of them takes a raw literal, and `Point(1)` is not what
+      `Wrapped.At(1)` means;
+    * `bool` adopts into `Bool` and nowhere else, and an `int` never adopts
+      into `Bool`. `bool` is an `int` subclass in Python but not on chain, and
+      the frontend refuses both crossings (`SPT3018`).
+
+    A literal the slot's own constructor cannot take is still adopted, and its
+    error is that constructor's own -- `U32("x")` raises exactly where the
+    frontend reports the mismatch.
+    """
+    if not isinstance(value, _RAW_LITERALS) or not isinstance(slot, type):
+        return False
+    if not issubclass(slot, _ChainValue):
+        return False
+    if isinstance(value, bool):
+        return issubclass(slot, Bool)
+    return not (isinstance(value, int) and issubclass(slot, Bool))
+
 
 #: The owner class an access goes through. METHOD-scoped on every `__get__`
 #: below, never a class parameter: it is what types `Shape.Empty` as `Shape`
@@ -376,18 +411,18 @@ class _BoundCase:
         until this ("not a chain value"). One adoption door serves both
         positions: `env._adopt`, which `get`'s raw-literal `default=` uses.
 
-        Only the four raw literal kinds are adopted, and only when the arity
-        matches the declaration: anything else (a list, a `None`, an object)
-        stays exactly as it was passed and meets `_construct`'s own
+        Adoption is narrow on purpose (`_adopts_literal`): a raw literal, a
+        slot that is a CHAIN-VALUE class, `bool` only into `Bool`, and only
+        when the arity matches the declaration. Anything else -- a list, a
+        `None`, an object, a literal in a struct/container/union slot -- stays
+        exactly as it was passed and meets `_construct`'s own
         `require_map_value` refusal, which names what is wrong with it.
         """
         from serpent.env import _adopt  # deferred: see the module docstring
 
         if len(payload) == len(self._slots):
             payload = tuple(
-                _adopt(value, slot)
-                if isinstance(value, _RAW_LITERALS) and isinstance(slot, type)
-                else value
+                _adopt(value, slot) if _adopts_literal(value, slot) else value
                 for value, slot in zip(payload, self._slots, strict=True)
             )
         return self._owner._construct(self._case, payload)

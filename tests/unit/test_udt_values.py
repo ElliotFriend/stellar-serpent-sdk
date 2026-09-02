@@ -30,6 +30,7 @@ from serpent.errors import AbiCheckFailed
 from serpent.types import (
     U32,
     U64,
+    Bool,
     ContractEnum,
     ContractUnion,
     Map,
@@ -436,6 +437,40 @@ def test_a_raw_literal_payload_is_adopted_through_its_declared_slot() -> None:
     assert adopted.payload(U32(0), U32) == U32(1)
     with pytest.raises(ValueError, match="out of range"):
         untyped(-1)
+
+
+def test_a_raw_literal_is_adopted_ONLY_through_a_chain_value_slot() -> None:
+    """The narrow half of the same rule, and the compiler's own vocabulary.
+
+    Adoption is the SLOT's chain-value constructor, so a slot that is not one
+    adopts nothing: a `@contracttype` struct slot handed a raw `1` would
+    otherwise hold an int inside a struct field, which no chain type ever
+    checks again -- `storage_key` died on it with `AttributeError: 'int' object
+    has no attribute '_SCVAL_RANK'`, far from the call that caused it.
+
+    `bool` follows the compiler exactly: it adopts into `Bool` and nowhere
+    else, and an `int` never adopts into `Bool` (the frontend refuses both
+    crossings with `SPT3018`, so tier 1 must not accept either).
+    """
+
+    class Flag(ContractUnion):
+        On = variant(Bool)
+
+    _bind_cases(Flag)
+
+    shape = _shape_module().Shape
+    circle: Callable[..., object] = shape.Circle
+    at: Callable[..., object] = Wrapped.At
+    on: Callable[..., object] = Flag.On
+
+    assert circle(1) == shape.Circle(U32(1))  # the chartered accept, still fixed
+    assert on(True) == Flag.On(Bool(True))
+    with pytest.raises(TypeError, match="not a chain value"):
+        at(1)  # a struct slot adopts nothing
+    with pytest.raises(TypeError, match="not a chain value"):
+        circle(True)  # `bool` never adopts into a non-`Bool` slot
+    with pytest.raises(TypeError, match="not a chain value"):
+        on(1)  # ...and an `int` never adopts into `Bool`
 
 
 def test_a_payload_index_may_be_a_raw_int() -> None:

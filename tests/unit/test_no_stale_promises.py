@@ -233,7 +233,7 @@ _DENIALS_THAT_MUST_TRIP: tuple[str, ...] = (
 #: is ordinary prose that names the surface and denies nothing.
 _PROSE_THAT_MUST_PASS: tuple[str, ...] = (
     "# cross-contract union arguments are deferred to M2",
-    '"""A union as a multi-entry Map key is not modelled in tier 1."""',
+    '"""A union as a Map key is not modelled in tier 1 at any entry count."""',
     "# a union that is not exactly one type plus `None` is unsupported",
     "# @contractunion and @contractenum both ship; variant() declares a case",
 )
