@@ -1,0 +1,27 @@
+{
+  "contract_id": "CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW",
+  "wasm_sha256": "6a9dd13549bac20f2609ab3d74668963b5249a7943dc7f027cdf6c42bec86e33",
+  "protocol": 28,
+  "ledger": 4473306,
+  "rpc_version": "28.0.1-273f19e4fcb183b568948bd2b810abfe87150a9c",
+  "recorded_at": "2026-09-02T23:01:58+00:00",
+  "method": "area",
+  "args_xdr": [],
+  "instance": [
+    [
+      "AAAADwAAAAVTSEFQRQAAAA==",
+      "AAAAEAAAAAEAAAADAAAADwAAAARSZWN0AAAAAwAAAAUAAAADAAAAAg=="
+    ]
+  ],
+  "seeded": [],
+  "result": {
+    "ok": false,
+    "error_text": "HostError: Error(Value, UnexpectedType)\n\nEvent log (newest first):\n   0: [Diagnostic Event] contract:CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW, topics:[error, Error(Value, UnexpectedType)], data:\"escalating error to VM trap from failed host function call: obj_cmp\"\n   1: [Diagnostic Event] contract:CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW, topics:[error, Error(Value, UnexpectedType)], data:[\"two non-object args to obj_cmp\", Rect, Rect]\n   2: [Diagnostic Event] topics:[fn_call, CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW, area], data:Void\n"
+  },
+  "events_xdr": [
+    "AAAAAAAAAAAAAAAAAAAAAgAAAAAAAAADAAAADwAAAAdmbl9jYWxsAAAAAA0AAAAgyU/Dg8JqdemkaNmvbU27qf3E57Y0Glgz0fN/X4EvC58AAAAPAAAABGFyZWEAAAAB",
+    "AAAAAAAAAAAAAAAByU/Dg8JqdemkaNmvbU27qf3E57Y0Glgz0fN/X4EvC58AAAACAAAAAAAAAAIAAAAPAAAABWVycm9yAAAAAAAAAgAAAAgAAAAIAAAAEAAAAAEAAAADAAAADgAAAB50d28gbm9uLW9iamVjdCBhcmdzIHRvIG9ial9jbXAAAAAAAA8AAAAEUmVjdAAAAA8AAAAEUmVjdA==",
+    "AAAAAAAAAAAAAAAByU/Dg8JqdemkaNmvbU27qf3E57Y0Glgz0fN/X4EvC58AAAACAAAAAAAAAAIAAAAPAAAABWVycm9yAAAAAAAAAgAAAAgAAAAIAAAADgAAAENlc2NhbGF0aW5nIGVycm9yIHRvIFZNIHRyYXAgZnJvbSBmYWlsZWQgaG9zdCBmdW5jdGlvbiBjYWxsOiBvYmpfY21wAA==",
+    "AAAAAAAAAAAAAAAByU/Dg8JqdemkaNmvbU27qf3E57Y0Glgz0fN/X4EvC58AAAACAAAAAAAAAAEAAAAPAAAAA2xvZwAAAAAQAAAAAQAAAAMAAAAOAAAAHlZNIGNhbGwgdHJhcHBlZCB3aXRoIEhvc3RFcnJvcgAAAAAADwAAAARhcmVhAAAAAgAAAAgAAAAI"
+  ]
+}

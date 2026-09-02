@@ -1,0 +1,25 @@
+{
+  "contract_id": "CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW",
+  "wasm_sha256": "6a9dd13549bac20f2609ab3d74668963b5249a7943dc7f027cdf6c42bec86e33",
+  "protocol": 28,
+  "ledger": 4473306,
+  "rpc_version": "28.0.1-273f19e4fcb183b568948bd2b810abfe87150a9c",
+  "recorded_at": "2026-09-02T23:01:57+00:00",
+  "method": "kind",
+  "args_xdr": [],
+  "instance": [
+    [
+      "AAAADwAAAAVTSEFQRQAAAA==",
+      "AAAAEAAAAAEAAAADAAAADwAAAARSZWN0AAAAAwAAAAUAAAADAAAAAg=="
+    ]
+  ],
+  "seeded": [],
+  "result": {
+    "ok": true,
+    "value_xdr": "AAAADwAAAARSZWN0"
+  },
+  "events_xdr": [
+    "AAAAAQAAAAAAAAAAAAAAAgAAAAAAAAADAAAADwAAAAdmbl9jYWxsAAAAAA0AAAAgyU/Dg8JqdemkaNmvbU27qf3E57Y0Glgz0fN/X4EvC58AAAAPAAAABGtpbmQAAAAB",
+    "AAAAAQAAAAAAAAAByU/Dg8JqdemkaNmvbU27qf3E57Y0Glgz0fN/X4EvC58AAAACAAAAAAAAAAIAAAAPAAAACWZuX3JldHVybgAAAAAAAA8AAAAEa2luZAAAAA8AAAAEUmVjdA=="
+  ]
+}
