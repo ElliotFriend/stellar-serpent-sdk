@@ -76,6 +76,16 @@ class Point:
     y: U32
 
 
+@contracttype
+class Backwards:
+    """Fields declared OUT OF alphabetical order -- `z` before `a` -- so the
+    struct encoder's sort is actually exercised rather than agreeing with
+    declaration order by accident."""
+
+    z: U32
+    a: U32
+
+
 # --- chain_value_as / val_word: containers, union, enum, struct ------------
 
 
@@ -119,6 +129,25 @@ def test_chain_value_as_round_trips_a_struct() -> None:
     value = Point(x=U32(1), y=U32(2))
     word = store.val_word(value)
     assert store.chain_value_as(word, Point) == value
+
+
+def test_val_word_encodes_a_struct_with_sorted_field_names_not_declaration_order() -> None:
+    """`Backwards` declares `z` then `a`; the on-chain map's keys must still
+    be SORTED (M1-C's P7 sort -- `sections.py`'s struct entry and the
+    emitter's `MakeStruct` both build the ScMap this way, and
+    `map_new_from_linear_memory` panics on a descending key), never
+    declaration order. Checked directly against the stored map's key words,
+    and then round-tripped back through `chain_value_as`.
+    """
+    store = ObjectStore()
+    value = Backwards(z=U32(9), a=U32(1))
+    word = store.val_word(value)
+
+    key_words = [store.key_word(key) for key in store._map(word)]
+    key_names = [store.text_of(w) for w in key_words]
+    assert key_names == ["a", "z"]
+
+    assert store.chain_value_as(word, Backwards) == value
 
 
 def test_chain_value_as_on_a_symbol_word_requesting_u32_raises() -> None:

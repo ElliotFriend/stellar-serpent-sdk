@@ -620,7 +620,15 @@ class ObjectStore:
             return val.pack_u32val(typing.cast("int", value._cmp_payload()))
         if dataclasses.is_dataclass(value) and not isinstance(value, type):
             entries = {}
-            for name, _annotation in _struct_fields(type(value)):
+            # SORTED field names (M1-C's P7 sort): `sections.py`'s struct entry
+            # and the emitter's `MakeStruct` both build the ScMap this way, and
+            # `map_new_from_linear_memory` panics on a descending key -- a
+            # struct encoded in DECLARATION order would silently disagree with
+            # the compiled contract's own map the moment a field is declared
+            # out of alphabetical order.
+            for name, _annotation in sorted(
+                _struct_fields(type(value)), key=lambda field: field[0]
+            ):
                 key_word = self.val_word(Symbol(name))
                 entries[self.map_key(key_word)] = self.val_word(getattr(value, name))
             return self._new(val.TAG_MAP_OBJECT, entries)

@@ -223,9 +223,12 @@ class Wide256Host:
     def i256_div(self, lhs: int, rhs: int) -> int:
         """`lhs / rhs`, TRUNCATED TOWARD ZERO; `ScError` on zero or overflow.
 
-        The rounding is the UNVERIFIED assumption this module's docstring
-        flags: no artifact in this repo demonstrates the real host's behaviour
-        on a negative dividend, and sub-plan F re-proves it. `MIN256 / -1` is
+        The rounding is PROVEN on the real host, not an assumption (E15, and
+        this module's own docstring): `tests/real_host/test_host_facts_real.py`
+        (parametrized over `tests/semantics/host_facts.py`'s `HOST_FACTS`) rows
+        `i128_floordiv_truncates_toward_zero`, `i128_mod_takes_the_dividends_sign`
+        and `i128_min_mod_minus_one_is_zero`, measured 2026-09-02, match this
+        rounding on a negative dividend and at `MIN % -1`. `MIN256 / -1` is
         the one overflow an i256 division has.
         """
         left = self.read_i256(lhs)
