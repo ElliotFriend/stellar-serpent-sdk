@@ -73,9 +73,9 @@ is the frozen table entry, and the `eval` is what tier 1 actually does today.
 Ruling E1: `tests/harness` is NOT the chain. A green run means the compiled
 module's behavior agrees with tier 1 under a mini host that mirrors tier 1 --
 "the codegen is self-consistent", not "this contract is correct on chain".
-Sub-plan F re-runs this against the real Soroban host, and the flagged
-divergence vector (`symbol_underscore_vs_A_ascii_order`) is pinned below
-precisely so the day the real host disagrees, it is a one-line diff.
+`tests/real_host/test_semantics_real.py` re-runs this against the real Soroban
+host, and the flagged divergence vector (`symbol_underscore_vs_A_ascii_order`)
+is pinned below; the real host AGREES with tier 1 (HOST_FACTS' `COMPARE_VECTORS`).
 """
 
 from __future__ import annotations
@@ -425,10 +425,11 @@ def test_the_flagged_symbol_ordering_vector_still_gives_the_tier1_answer() -> No
     (`ord("A") == 65 < ord("_") == 95`) and would be `True` if the host
     compared `SymbolSmall`'s packed 6-bit alphabet codes (`"_"` is code 1,
     `"A"` is 12). The mini host mirrors tier 1 BY CONSTRUCTION (ruling E1), so
-    a green here is not evidence about the real host -- it is a pin, so that
-    when sub-plan F runs this against a real Soroban host the disagreement is
-    a five-second diff instead of a rediscovery. `cases.py`'s module docstring
-    is the long version.
+    a green here is not evidence about the real host by itself -- it is a pin,
+    so that a disagreement there would be a five-second diff instead of a
+    rediscovery. It stayed one: the real host AGREES with tier 1
+    (`tests/real_host/test_semantics_real.py`, HOST_FACTS' `COMPARE_VECTORS`).
+    `cases.py`'s module docstring is the long version.
     """
     (case,) = [c for c in IN_SCOPE if c.name == "symbol_underscore_vs_A_ascii_order"]
     ty, host, mini = start_case(case)

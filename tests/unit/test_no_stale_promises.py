@@ -1,11 +1,12 @@
-"""The promise-sweep gates: `src/` and `tests/` make no promise they have
-already kept.
+"""The promise-sweep gates: the tree makes no promise it has already kept.
 
-TWO nets over the same two trees. The first (M1-E Task 10) is about the phrase
-"sub-plan E": every mention has to be a deliberate historical record. The
-second (M1-E2 Task 10) is about the tagged-union / int-enum SURFACE: no
+THREE nets. The first two (M1-E/M1-E2 Task 10) walk `src/` and `tests/`. The
+first is about the phrase "sub-plan E": every mention has to be a deliberate
+historical record. The second is about the tagged-union / int-enum SURFACE: no
 docstring, comment or message may still say that surface is unavailable, now
-that `@contractunion` and `@contractenum` ship.
+that `@contractunion` and `@contractenum` ship. The third (M1-F Task 10) is
+about "sub-plan F", "tier 2b"/"tier-2b" and the possessive "F's", walked over
+the WIDER `src/`, `tests/`, `examples/` and `docs/` (see `_WALKED_F` below).
 
 Every docstring/message that once said "sub-plan E will..." has to be one of
 three things by the time the sub-plan closes: IMPLEMENTED (the promise is
@@ -311,3 +312,161 @@ def test_no_source_or_test_file_says_the_union_surface_is_unavailable() -> None:
         "true, or (if it is really about a part that is still out) repointed at the "
         f"milestone that owns it: {denials}"
     )
+
+
+# --- the M1-F promise sweep -------------------------------------------------
+#
+# A THIRD net, over a WIDER walk (review m5): M1-F's own obligations lived in
+# `src/`, `tests/`, `examples/` (the contracts that carried a TTL/rollback
+# caveat) AND `docs/` (this task's own `docs/testing.md`), so this net widens
+# `_WALKED` rather than reusing it -- `docs/superpowers/` stays out, for the
+# same reason the two nets above leave it out: it is the PLANNING record, not
+# a promise the shipped code makes.
+#
+# THREE needles, matched independently (a line can trip more than one):
+#
+# * `"sub-plan f"`, case-INSENSITIVELY, exactly like the `"sub-plan e"` needle
+#   above;
+# * `"tier 2b"` / `"tier-2b"`, case-INSENSITIVELY -- the sub-plan's own private
+#   name for the real-host tier, which the sweep retired in favour of naming
+#   the actual proof (a file, a HOST_FACTS row) instead of the jargon;
+# * the possessive `"F's"` as a WHOLE WORD, case-SENSITIVELY on the capital --
+#   `"F's tier 2b is the gate"` is a promise, and a lowercase "f's" (an
+#   ordinary word ending in "f", possessive) is not this sub-plan at all.
+#
+# Every mention has to be one of IMPLEMENTED (the text now states the fact and
+# cites where the proof lives: a `tests/real_host/` file, a HOST_FACTS row, a
+# declared `host_diverges`), REPOINTED (M2/M3/tier 3 by name, for the
+# obligations M1-F itself carried onward), REMOVED, or -- only for a genuine
+# historical record the sweep chose to keep verbatim -- allowlisted below.
+
+_WALKED_F = (_REPO_ROOT / "src", _REPO_ROOT / "tests", _REPO_ROOT / "examples", _REPO_ROOT / "docs")
+
+#: `docs/superpowers/` is walked by `_WALKED_F` (it is under `docs/`) but
+#: excluded by `_is_excluded_from_f_walk`, for the same reason as the two nets
+#: above: it is the planning record, not a promise the shipped code makes.
+_EXCLUDED_DOCS_PREFIX = _REPO_ROOT / "docs" / "superpowers"
+
+_NEEDLE_SUBPLAN_F = re.compile(r"sub-plan f", re.IGNORECASE)
+_NEEDLE_TIER_2B = re.compile(r"tier[- ]2b", re.IGNORECASE)
+#: Case-sensitive on purpose: an ordinary possessive ending in a lowercase
+#: "f's" is not this sub-plan, and the whole-word boundaries keep "M1-F's" and
+#: "sub-plan F's" both caught without also catching e.g. "staff's".
+_NEEDLE_FS_POSSESSIVE = re.compile(r"\bF's\b")
+
+
+def _is_an_f_mention(line: str) -> bool:
+    """Whether `line` trips any of the three O33 needles."""
+    return bool(
+        _NEEDLE_SUBPLAN_F.search(line)
+        or _NEEDLE_TIER_2B.search(line)
+        or _NEEDLE_FS_POSSESSIVE.search(line)
+    )
+
+
+#: `(relative path, exact line text stripped)` for every mention the sweep
+#: audited and chose to KEEP, with why in a trailing comment -- never a live
+#: promise, and never reworded away because doing so would either violate a
+#: FREEZE this task does not own or would blur a specific, dated finding this
+#: repo wants named exactly as it was found.
+_ALLOWLIST_F: frozenset[tuple[str, str]] = frozenset(
+    {
+        # `tests/semantics/cases.py` is FROZEN (this task's own controller
+        # ruling, mirroring D9's append-only registry): this line is a stale
+        # forward promise by the letter of the net, but the file cannot be
+        # reworded to fix it, so it is kept and recorded here instead.
+        (
+            "tests/semantics/cases.py",
+            "sub-plan D/F's differential harness is exactly what must confirm or refute it",
+        ),
+        # A specific, dated, numbered review finding -- "M1-F's review finding
+        # B1" already happened and is cited by number precisely so a reader
+        # can find it again; reworded, it would stop being that citation.
+        (
+            "src/serpent/emitter/arith.py",
+            "#: and M1-F's review finding B1 ``symsmall_cmp``.",
+        ),
+        (
+            "tests/unit/test_emitter_symbol_compare.py",
+            "Review finding **B1** of sub-plan M1-F's adversarial plan review: the shipped",
+        ),
+    }
+)
+
+
+def _mentions_f(root: Path) -> list[tuple[str, int, str]]:
+    """`(relative path, 1-based line number, line text)` for every line under
+    `root` tripping an O33 needle, `__pycache__` and `docs/superpowers/`
+    excluded."""
+    found: list[tuple[str, int, str]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or path.resolve() == _SELF:
+            continue
+        resolved = path.resolve()
+        if resolved == _EXCLUDED_DOCS_PREFIX or _EXCLUDED_DOCS_PREFIX in resolved.parents:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            continue
+        for lineno, line in enumerate(lines, start=1):
+            if _is_an_f_mention(line):
+                found.append((str(path.relative_to(_REPO_ROOT)), lineno, line.strip()))
+    return found
+
+
+def _all_mentions_f() -> list[tuple[str, int, str]]:
+    mentions: list[tuple[str, int, str]] = []
+    for root in _WALKED_F:
+        mentions.extend(_mentions_f(root))
+    return mentions
+
+
+def _keyed_f() -> set[tuple[str, str]]:
+    """Every M1-F mention as its allowlist key: `(relative path, stripped text)`."""
+    return {(path, line) for path, _lineno, line in _all_mentions_f()}
+
+
+def test_every_sub_plan_f_mention_is_an_allowlisted_historical_record() -> None:
+    unexpected = sorted(
+        (path, lineno, line)
+        for path, lineno, line in _all_mentions_f()
+        if (path, line) not in _ALLOWLIST_F
+    )
+    assert not unexpected, (
+        'unexpected M1-F mention(s) ("sub-plan F", "tier 2b"/"tier-2b", or the '
+        'possessive "F\'s") outside the allowlist -- each one has to be '
+        "IMPLEMENTED (state the fact and cite the real-host proof), REPOINTED "
+        "(M2/M3/tier 3 by name), REMOVED, or (only if it is a genuine historical "
+        f"record) added to _ALLOWLIST_F with why: {unexpected}"
+    )
+
+
+def test_the_f_allowlist_names_no_line_that_has_moved_or_changed() -> None:
+    """The other direction, mirroring the sub-plan E net above: an allowlisted
+    line that lost its needle text -- reworded, or deleted -- would silently
+    stop exempting anything and ALSO stop being verified, which is a bug in
+    this test rather than a pass."""
+    missing = sorted(set(_ALLOWLIST_F) - _keyed_f())
+    assert not missing, (
+        "allowlisted M1-F line(s) no longer appear with their needle text -- the "
+        "sentence was reworded or removed; re-audit it and update _ALLOWLIST_F: "
+        f"{missing}"
+    )
+
+
+def test_the_f_net_has_teeth() -> None:
+    """Both directions, pinned as samples, exactly like the surface gate above:
+    a forward-looking sentence naming sub-plan F must still trip the net, and
+    an honestly repointed one -- citing the real host directly, by file or by
+    HOST_FACTS row, and naming no sub-plan -- must not."""
+    forward_looking = (
+        "the mini host cannot decode a returned union; sub-plan F's tier 2b "
+        "is where it eventually gets proven against a real host."
+    )
+    repointed = (
+        "proven on the real host: tests/real_host/test_host_facts_real.py's "
+        "i128_floordiv_truncates_toward_zero row."
+    )
+    assert _is_an_f_mention(forward_looking)
+    assert not _is_an_f_mention(repointed)

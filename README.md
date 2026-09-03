@@ -118,3 +118,11 @@ counts, byte layouts, on-chain-verified constants) live in
 `docs/superpowers/specs/2026-08-26-serpent-python-soroban-sdk-design.md`.
 Judgment calls made along the way, with context and reversal cost, are
 recorded in `docs/superpowers/decisions.md`.
+
+## Testing
+
+A contract is tested at four tiers, from a fast in-memory model up to a
+recording of the real network, and only the last two are evidence about the
+chain rather than about a model of it. `docs/testing.md` covers what each
+tier means, building and using the embedded real-host extension, and the
+vocabulary a test uses to say when two tiers are known to disagree.

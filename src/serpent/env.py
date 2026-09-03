@@ -3,7 +3,7 @@
 Every contract method takes an `Env` and reaches the host through it --
 `env.storage().instance().get(...)`, `env.ledger().timestamp()`,
 `env.events().publish(...)`. That chain is what sub-plan C compiles into host
-function calls, and what sub-plan F re-proves against the real Soroban host.
+function calls, and what `tests/real_host/` re-proves against the real Soroban host.
 
 **This module is also a model, and a model is not an oracle.** Sub-plan E gave
 every method here an in-memory body so that an authored contract can be
@@ -11,7 +11,7 @@ constructed and called with no engine at all -- the fast authoring loop, tier 1.
 A hand-written model of host semantics has *silent false green* as its failure
 mode: the test passes, the docstrings read well, and the contract behaves
 differently on chain. Nothing in this file is evidence that a contract is
-correct on chain. Sub-plan F's tier 2b -- the real host -- is the gate.
+correct on chain. The real host (`tests/real_host/`, `SERPENT_REQUIRE_REAL_HOST`) is the gate.
 
 What is deliberately NOT modelled, named here rather than approximated:
 
@@ -107,11 +107,13 @@ as given, at any magnitude, in every bucket. There is no archive and no
 restore, so a re-set of a lapsed persistent entry revives it here while the
 chain would refuse the write until the entry was restored.
 `tests/unit/test_env_ttl.py` holds the two rules as `pytest.skip`s, next to the
-tests, so the gap is enumerable (`pytest -rs`) instead of silent. **Named
-carried obligation to sub-plan F:** the clamp/trap asymmetry is unproven at
-every tier in this repo -- the mini-host's TTL calls are recorded no-ops
-(deliberately, and not E's to change) -- and F's tier 2b is where it gets
-proven, once `get_max_live_until_ledger` is reachable.
+tests, so the gap is enumerable (`pytest -rs`) instead of silent. **Proven on
+the real host:** `tests/real_host/test_host_facts_real.py`'s
+`persistent_extension_past_the_maximum_clamps`/
+`temporary_extension_past_the_maximum_traps` rows confirm the clamp/trap
+asymmetry -- the mini-host's TTL calls stay recorded no-ops (deliberately, and
+not E's to change), and neither tier here models the clamp/trap distinction
+itself, which stays M2's (`get_max_live_until_ledger`).
 
 **Four model choices, stated because they are choices and not host facts.**
 
@@ -627,7 +629,9 @@ class AuthorizationFailed(RuntimeError):
     What this is NOT: the host's authorization machinery. There are no auth
     trees, no nonces, no signature checks and no sub-invocation authorization
     anywhere in this repo (see the module docstring). A contract's auth LOGIC is
-    therefore not under test at tier 1; sub-plan F's tier 2b is the gate.
+    therefore not under test at tier 1; the real host is the gate, and a refusal
+    there is a host trap that records nothing (`tests/real_host/test_host_facts_real.py`'s
+    `a_refused_auth_is_an_auth_trap_and_records_nothing` row).
 
     Raised from a CONSTRUCTOR it is NOT laundered into `ConstructorFailed`
     (`_LAUNDERED_BY_THE_HOST`): S12's laundering covers recoverable errors, and
@@ -648,7 +652,7 @@ class StorageTrap(RuntimeError):
     invocation.
 
     The message carries the host's own `(ScErrorType, ScErrorCode)` words, so a
-    tier-1 failure and a tier-2b failure read as the same event:
+    tier-1 failure and a real-host failure read as the same event:
 
     * `Storage(InvalidInput)`, "threshold must be <= extend_to" -- the window
       precondition (F1). The host checks it BEFORE the entry exists, and so does
@@ -832,8 +836,11 @@ def _extended_live_until(
       smaller `extend_to` after a larger one cannot pull the live-until back;
     * NO CLAMP and NO TRAP -- `extend_to` is used exactly as given, at any
       magnitude. The host fact that would bound it is
-      `get_max_live_until_ledger`, which is M2 and unreachable here; sub-plan F
-      owns proving S8's clamp/trap asymmetry.
+      `get_max_live_until_ledger`, which is M2 and unreachable here; S8's
+      clamp/trap asymmetry is proven on the real host: HOST_FACTS rows
+      `persistent_extension_past_the_maximum_clamps`/
+      `temporary_extension_past_the_maximum_traps`
+      (`tests/real_host/test_host_facts_real.py`).
 
     The `None` return means "leave the live-until alone", which is a different
     `None` from the `live_until` parameter's "never extended" -- the two never
@@ -1177,12 +1184,12 @@ class _StorageBucket:
 
         **Unverified assumption.** This mirrors the mini-host, which makes
         `del_contract_data` a no-op while `map_del` traps, and flags the
-        asymmetry as two different host behaviours the rig must not unify. That
-        asymmetry is not verified against the real host anywhere in this repo,
-        so both tiers here agree with each other and possibly neither agrees
-        with the chain. Consistency with the other model is the only reason
-        this direction was picked; sub-plan F's real-host tier is where it gets
-        checked, and until then a contract must not rely on it.
+        asymmetry as two different host behaviours the rig must not unify. The
+        real host confirms `del_contract_data`'s own no-op (HOST_FACTS row
+        `del_of_an_absent_key_is_a_no_op`, `tests/real_host/test_host_facts_real.py`);
+        whether `map_del` traps there too is still unverified. Consistency with
+        the other model is the only reason this direction was picked, and a
+        contract must not rely on it until that half is checked too.
 
         The live-until goes with the value: a later `set` under the same key is
         a genuinely fresh entry, not one that inherits a dead entry's expiry.
@@ -1282,7 +1289,9 @@ class PersistentStorage(_StorageBucket):
         expired). **NOT modelled: S8's clamp** --
         an `extend_to` past the network maximum is taken as given here and
         clamped on chain. The maximum is `get_max_live_until_ledger`, an M2 host
-        fact; sub-plan F owns the proof (module docstring's TTL section).
+        fact; the clamp itself is proven on the real host: HOST_FACTS row
+        `persistent_extension_past_the_maximum_clamps` (module docstring's TTL
+        section).
         """
         self._extend_entry_ttl(key, threshold, extend_to)
 
@@ -1308,7 +1317,8 @@ class TemporaryStorage(_StorageBucket):
         the network maximum TRAPS for a temporary entry, where a persistent one
         clamps. Tier 1 accepts it, so a green test here is not evidence the call
         survives on chain. Same missing host fact
-        (`get_max_live_until_ledger`, M2), same carried obligation to sub-plan F.
+        (`get_max_live_until_ledger`, M2); the trap itself is proven on the real
+        host: HOST_FACTS row `temporary_extension_past_the_maximum_traps`.
         """
         self._extend_entry_ttl(key, threshold, extend_to)
 
@@ -1446,8 +1456,8 @@ class Env:
     env, and `Env` is a parameter type there, nothing more. A TEST constructs
     one, and gets the in-memory model this module documents: a store, an event
     list, an auth allow-set and a fixed ledger. Read the module docstring for
-    what that model refuses to pretend to be -- it is not an oracle, and sub-plan
-    F's real-host tier is the gate.
+    what that model refuses to pretend to be -- it is not an oracle, and the
+    real host (`tests/real_host/`) is the gate.
 
     `auths=None` means mock-all-auths: every `require_auth` is recorded and
     allowed. A non-None iterable is the allow-set an authorization is checked
@@ -1610,8 +1620,10 @@ class Env:
           non-rollback deliberately). The difference is only that a refused auth
           never produced a record to have to roll back, so not creating one is
           the cheap answer here -- it is not evidence that the model rolls
-          anything back. S9's rollback stays a named carried obligation to
-          sub-plan F's tier 2b, for both surfaces;
+          anything back. S9's rollback is proven on the real host for both
+          surfaces (a declared `host_diverges`: HOST_FACTS row
+          `an_event_published_before_a_raise_is_rolled_back`); adopting the
+          rollback at tier 1 itself stays M2's;
         * the args are DEEP-COPIED in (ruling E5). The host serializes them into
           the authorization entry, and the frontend's escape exemption for
           `require_auth_for_args` (`recognize.note_escapes`) is only sound

@@ -68,12 +68,15 @@ through the contract's own error vocabulary.
 
 **The WASM leg cannot run that scenario at all.** `tests/harness` (the mini
 host under `FullHost`) has no TTL model -- `extend_contract_data_ttl` is
-recorded and nothing else (`env.py`'s TTL section, and sub-plan F's carried
-obligation on the clamp/trap asymmetry). So the cross-check this file's tests
-run is narrower than usual: the SAME call sequence WITHOUT ever advancing past
-a live-until is asserted to agree between tier 1 and WASM, and the expiry
-itself is proven at tier 1 only, with a comment naming sub-plan F as the place
-that eventually proves it against a real host.
+recorded and nothing else (`env.py`'s TTL section; the clamp/trap asymmetry is
+proven on the real host, HOST_FACTS rows
+`persistent_extension_past_the_maximum_clamps`/
+`temporary_extension_past_the_maximum_traps`). So the cross-check this file's
+tests run is narrower than usual: the SAME call sequence WITHOUT ever advancing
+past a live-until is asserted to agree between tier 1 and WASM, and the expiry
+itself is proven at tier 1 only, with a comment naming the underlying host
+fact -- a lapsed temporary entry reads absent -- that is what the real host
+proves it against (HOST_FACTS row `a_lapsed_temporary_entry_reads_absent`).
 
 ## `require_auth`, on the party that is actually acting
 

@@ -1,8 +1,8 @@
 """The tier-1 TTL model: the honestly-modellable half of S8, and its named gaps.
 
 Every assertion here is about a MODEL, never about the chain (`serpent.env`'s
-header docstring: silent false green is this model's failure mode, and sub-plan
-F's tier 2b is the gate). TTL is the sharpest case of that in the whole module,
+header docstring: silent false green is this model's failure mode, and the
+real host is the gate). TTL is the sharpest case of that in the whole module,
 because the model is deliberately PARTIAL: it owns the arithmetic whose inputs
 it has (never-reduce, the threshold guard, expiry against a sequence a test can
 advance) and refuses the two rules whose input is a host fact M1 cannot read
@@ -126,8 +126,9 @@ def test_extend_ttl_refuses_a_threshold_above_extend_to(durability: str) -> None
     <= extend_to", so the model refuses it too.
 
     An accepts-shrink oracle edit: a model that accepted inputs the host
-    refuses is the silent-false-green class sub-plan F exists to close, and it
-    had already put twelve `ENV_SCENARIOS` rows on inputs no host would run.
+    refuses is the silent-false-green class the real-host tier exists to
+    close, and it had already put twelve `ENV_SCENARIOS` rows on inputs no
+    host would run.
     A TRAP, like the host's answer -- not a contract error.
     """
     env = deployed_env()
@@ -257,7 +258,10 @@ def test_a_re_set_revives_an_expired_entry(durability: str) -> None:
     lapsed persistent entry is ARCHIVED and the host refuses a write to it
     until it is restored, and a lapsed temporary entry is gone for good. The
     model has no archive and no restore, so a re-set is how a test gets a live
-    entry back. Sub-plan F's tier 2b is where the real answer lives.
+    entry back. The real host's answer is recorded, `chain_unproven`, in
+    HOST_FACTS row `a_lapsed_persistent_entry_stays_readable_on_the_test_host`
+    (the sdk test Env restores on access rather than archiving; only the
+    chain, at tier 3/M2, archives it).
     """
     env = deployed_env()
     bucket = getattr(env.storage(), durability)()
@@ -445,25 +449,29 @@ def test_an_extend_to_above_any_bound_is_accepted_as_is(durability: str) -> None
 
 
 _UNMODELLED = (
-    "clamp and trap are unmodelled at every tier -- the maximum live-until is "
-    "get_max_live_until_ledger, an M2 host fact; F's tier-2b proves them"
+    "clamp and trap are unmodelled at tier 1 -- the maximum live-until is "
+    "get_max_live_until_ledger, an M2 host fact; proven on the real host in "
+    "HOST_FACTS rows persistent_extension_past_the_maximum_clamps and "
+    "temporary_extension_past_the_maximum_traps "
+    "(tests/real_host/test_host_facts_real.py)"
 )
 
 
 def test_persistent_extension_past_the_maximum_clamps() -> None:
-    """S8, rule 3, NOT MODELLED. On chain a persistent extension past the
-    network's maximum live-until is clamped to that maximum. Tier 1 has no
+    """S8, rule 3, NOT MODELLED AT TIER 1. On chain a persistent extension past
+    the network's maximum live-until is clamped to that maximum. Tier 1 has no
     maximum to clamp to, and a serpent-chosen constant would be a guess of
-    exactly the kind this repo refuses; a named carried obligation to sub-plan
-    F instead."""
+    exactly the kind this repo refuses; proven on the real host instead, in
+    HOST_FACTS row `persistent_extension_past_the_maximum_clamps`."""
     pytest.skip(_UNMODELLED)
 
 
 def test_temporary_extension_past_the_maximum_traps() -> None:
-    """S8, rule 4, NOT MODELLED. On chain a temporary extension past the
-    maximum TRAPS rather than clamping -- the asymmetry that makes a green
+    """S8, rule 4, NOT MODELLED AT TIER 1. On chain a temporary extension past
+    the maximum TRAPS rather than clamping -- the asymmetry that makes a green
     tier-1 test over a big `extend_to` the most dangerous shape in this file.
-    Same missing host fact, same carried obligation to sub-plan F."""
+    Same missing host fact, proven on the real host instead, in HOST_FACTS row
+    `temporary_extension_past_the_maximum_traps`."""
     pytest.skip(_UNMODELLED)
 
 

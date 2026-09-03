@@ -1,6 +1,6 @@
 """Tier 3: testnet simulations, recorded once as fixtures and replayed offline.
 
-Tier 1 is the model, tier 2b (`_real.py`) is the embedded host, and this is the
+Tier 1 is the model, `_real.py` is the embedded real host, and this is the
 third leg: what the REAL network answers for a contract that is really
 deployed. The fixture source is the deployed `examples/shapes.py` contract (U5),
 whose bytes were fetched from the chain and committed beside the fixtures (K6),

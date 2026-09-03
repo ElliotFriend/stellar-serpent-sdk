@@ -1,10 +1,10 @@
 """Tests for `tests/harness/hostfns.py` -- the completed dev-only mini host.
 
 The harness is **not an oracle** (ruling E1): a green run here means "the
-codegen is self-consistent", not "this contract is correct on chain". Sub-plan F
-re-proves everything against the real Soroban host. What these tests protect is
-the rig, and specifically the four places where a wrong mini host would make a
-green emitter suite meaningless:
+codegen is self-consistent", not "this contract is correct on chain".
+`tests/real_host/` re-proves everything against the real Soroban host. What
+these tests protect is the rig, and specifically the four places where a
+wrong mini host would make a green emitter suite meaningless:
 
 * **`obj_cmp` is the tier-1 oracle or it is a second, drifting model.** Every
   assertion below compares the callback's answer against
@@ -231,9 +231,11 @@ def test_obj_cmp_gives_the_tier1_ascii_answer_for_underscore_versus_A() -> None:
     code 1 and `"A"` is 12) and, if it compares packed CODES, answers the
     opposite. **This harness is not the oracle for that question** (ruling E1):
     it mirrors tier 1 so the compiled answer can be compared against tier 1
-    today, and F's tier-2b run against a real host is what settles it. If the
-    host disagrees, that is a controller decision on the frozen table, not a
-    change here.
+    today; the real host run is what settles it, and it agrees with tier 1
+    (`Symbol("_") < Symbol("A")` is `False` there too,
+    `tests/real_host/test_semantics_real.py`, HOST_FACTS' `COMPARE_VECTORS`).
+    Had the host disagreed, that would have been a controller decision on the
+    frozen table, not a change here.
     """
     store = FullHost()
     underscore = store.val_word(Symbol("_"))
@@ -487,8 +489,9 @@ def test_require_auth_records_the_address_and_succeeds() -> None:
     """Mock-all-auths semantics, and S17's documented tier-2a fidelity line:
     the real host TRAPS when the invocation was not authorized, and this rig
     has no authorization state to consult, so it records and succeeds. A
-    contract's auth logic is therefore NOT under test here -- F's tier 2b is
-    where `require_auth` can actually fail."""
+    contract's auth logic is therefore NOT under test here -- the real host is
+    where `require_auth` can actually fail (HOST_FACTS row
+    `a_refused_auth_is_an_auth_trap_and_records_nothing`)."""
     store = FullHost()
     address = store.val_word(Address(_ACCOUNT))
     assert store.require_auth(address) == val.VOID_VAL

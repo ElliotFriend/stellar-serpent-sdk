@@ -1,4 +1,4 @@
-"""Tier 2b: which WASM proposals the chain's host actually accepts (dossier O3).
+"""The real host: which WASM proposals the chain's host actually accepts (dossier O3).
 
 serpent's emitter targets a RESTRICTED WASM: no floats, 32-bit memory, constant
 global initializers, no exception handling. Until this module existed, every one

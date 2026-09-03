@@ -16,9 +16,10 @@ produce (dossier risk 13 -- "a tier-1-only state" is this file's whole subject):
 * **auth is RECORDING** (S4, mock-all-auths). `auths=None` records every
   `require_auth` and succeeds; a non-`None` allow-set refuses a non-member with
   `AuthorizationFailed`. There are no auth trees, no nonces and no signatures
-  anywhere in this repo -- `serpent.env`'s header docstring says so, and
-  sub-plan F's tier 2b is the gate for anything this file appears to prove
-  about authorization.
+  anywhere in this repo -- `serpent.env`'s header docstring says so, and the
+  real host is the gate for anything this file appears to prove about
+  authorization: a refusal there is a host trap that records nothing
+  (HOST_FACTS row `a_refused_auth_is_an_auth_trap_and_records_nothing`).
 
 Two honest pins carried here from Task 2 rather than left to F: the args
 snapshot that the frontend's escape exemption for `require_auth_for_args`
@@ -543,7 +544,9 @@ def test_an_event_published_before_a_raise_is_not_rolled_back() -> None:
 
     On chain the event and the storage write go away with the failed frame.
     Tier 1 keeps both, and the mini-host keeps both too, so NEITHER tier in
-    this repo is evidence about rollback -- sub-plan F's tier 2b is.
+    this repo is evidence about rollback -- the real host is: proven in
+    HOST_FACTS row `an_event_published_before_a_raise_is_rolled_back`
+    (a declared `host_diverges`; adopting the rollback at tier 1 stays M2's).
     """
     env = Env()
     deploy(NoConstructor, env)

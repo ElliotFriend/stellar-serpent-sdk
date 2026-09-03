@@ -46,8 +46,9 @@ same guard was added there, so the convention is one convention and not two.
 Ruling E1 again: `tests/harness` mirrors tier 1, so a green run is "the codegen
 is self-consistent", not "this contract is correct on chain". The three claims
 that ARE chain-anchored are the ones compared against the deployed artifact's
-own bytes; everything else is self-consistency, and sub-plan F's tier 2b is
-where it gets re-proved against a real host.
+own bytes; everything else is self-consistency, re-proved against the real
+host in `tests/real_host/test_semantics_real.py` and
+`tests/real_host/test_feature_set_real.py`.
 """
 
 from __future__ import annotations

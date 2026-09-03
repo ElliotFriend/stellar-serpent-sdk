@@ -1,4 +1,4 @@
-"""Tier 2b: the `HOST_FACTS` table asked of the REAL host (dossier D.3, E6/E12/E15).
+"""The real host: the `HOST_FACTS` table, asked of it (dossier D.3, E6/E12/E15).
 
 `tests/unit/test_host_facts_tier1.py` runs the model's leg and owns the table's
 meta-tests; this module runs the host's. Per row: build the `RealEnv` the row
@@ -261,7 +261,7 @@ def _row(name: str) -> HostFact:
 
 
 def test_the_unmodelled_rows_still_run_here() -> None:  # unmarked: about this leg
-    """The point of tier 2b: a row the model cannot answer is not a row nobody
+    """The point of the real host: a row the model cannot answer is not a row nobody
     answers. Every `Unmodelled` row is in the parametrization above, and each of
     them is a TTL-maximum fact -- the three the tier-1 leg skips."""
     unmodelled = {row.name for row in HOST_FACTS if isinstance(row.tier1, Unmodelled)}

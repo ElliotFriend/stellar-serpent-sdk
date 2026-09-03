@@ -2,9 +2,10 @@
 
 The harness is **not an oracle** (ruling E1): a green run here means "the bytes
 the emitter produced are self-consistent under a wasmtime pinned to the chain's
-feature set", not "this contract is correct on chain". Sub-plan F re-proves
-everything against the real host. What these tests protect is the rig itself,
-where three failure modes would silently invalidate everything built on it:
+feature set", not "this contract is correct on chain". `tests/real_host/`
+re-proves everything against the real host. What these tests protect is the
+rig itself, where three failure modes would silently invalidate everything
+built on it:
 
 * **The feature set drifts.** wasmtime's `Config` feature properties are
   write-only, and assigning a name that does not exist on the class silently

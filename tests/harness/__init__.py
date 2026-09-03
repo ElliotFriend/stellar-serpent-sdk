@@ -2,9 +2,9 @@
 
 **This is not an oracle** (ruling E1). It is a fast local loop that answers one
 narrow question -- *do the bytes the emitter just produced compute what the
-Python source said?* -- before a testnet round trip. Sub-plan F re-proves
-everything against the real Soroban host. A green run here means "the codegen is
-self-consistent", not "this contract is correct on chain"
+Python source said?* -- before a testnet round trip. `tests/real_host/`
+re-proves everything against the real Soroban host. A green run here means
+"the codegen is self-consistent", not "this contract is correct on chain"
 (`spikes/spike1/harness.py:18-21`, verbatim).
 
 Five modules:

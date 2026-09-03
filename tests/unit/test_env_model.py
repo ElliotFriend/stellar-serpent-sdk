@@ -2,7 +2,8 @@
 
 Every assertion here is about a MODEL, never about the chain. `serpent.env`'s
 own header docstring says it: silent false green is this model's failure mode,
-and sub-plan F's tier 2b is the gate. Two habits keep that honest in this file:
+and the real host (`tests/real_host/`) is the gate. Two habits keep that
+honest in this file:
 
 * structural equality is asserted with `storage_key` (the one cross-tier
   definition of value identity, `serpent.types._storage_key`) as well as `==`,

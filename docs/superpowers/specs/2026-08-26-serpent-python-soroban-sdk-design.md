@@ -381,6 +381,9 @@ registration.
 - Networks (2026-08-26): mainnet + testnet on protocol 27; protocol 28 "Adapter" vote
   scheduled 2026-09-16. Pinned `env.json` is v28.0.2 — one ahead; guard via computed
   protocol floor.
+  *(Correction 2026-09-02, M1-F:)* testnet moved to protocol 28 before 2026-09-02
+  (core 28.0.1); mainnet stayed on 27. The embedded test host tracks testnet
+  (rulings U4/E11).
 - Spike testnet artifacts (throwaway evidence, not kept code):
   counter `CC3CUV2D6DBBAI5C4ZG44J46RPXMQVQWHM4GYR63VCKSESFS25DVFPXV` (344 B),
   add/sum_to/gcd `CBLOHCDAO4OZTGCDYWUVTKIIQDGKB2VVVQVXOMSSGVF3S3AMOLHBOZCF` (511 B);

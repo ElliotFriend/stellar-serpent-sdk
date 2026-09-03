@@ -225,7 +225,9 @@ class EnvSurface:
 
         Both models keep the event; the chain rolls it back with the frame.
         `tests/unit/test_env_differential.py` states that gap where it asserts
-        this method's outcome, and it is a carried obligation to sub-plan F.
+        this method's outcome, and it is proven on the real host (HOST_FACTS
+        row `an_event_published_before_a_raise_is_rolled_back`); adopting the
+        rollback at either tier here stays M2's.
         """
         Logged(who=who, amount=amount).publish(env)
         raise SurfaceError.Refused

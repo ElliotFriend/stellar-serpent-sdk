@@ -1,4 +1,4 @@
-"""Tier 2b: every example's headline call sequence, tier 1 vs the REAL host (dossier C8, O5).
+"""The real host: every example's headline call sequence, tier 1 vs it (dossier C8, O5).
 
 `tests/unit/test_examples.py` runs each example at tier 1 and under the mini
 host and compares the two. This module re-runs the SAME sequences with the

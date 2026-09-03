@@ -1,4 +1,4 @@
-"""Tier 2b: the frozen semantics table, run against the REAL host (dossier O9, ruling E10).
+"""The real host: the frozen semantics table, run against it (dossier O9, ruling E10).
 
 `tests/unit/test_emitter_semantics.py` runs the 35 in-scope cases under the mini
 host; this module runs the SAME wrapped modules on the embedded soroban-env-host
@@ -17,9 +17,9 @@ Three things about the shape of this module are decisions rather than taste:
   what reconciles the B5 two-step wrapper -- step 1 reads the expression's `Ty`
   off an unannotated `x = <source>`, step 2 re-wraps the same source with
   `annotation_of(ty)` in the RETURN position and asserts the round trip closed.
-  Re-deriving those two steps here would give tier 2b a wrapper that could
-  drift from tier 2's, which is exactly the divergence the differential exists
-  to find;
+  Re-deriving those two steps here would give this leg a wrapper that could
+  drift from the mini host's, which is exactly the divergence the differential
+  exists to find;
 * the ordering vector (O12) keeps two failure modes apart (review B1). A host
   that REFUSES the compare is an emitter bug -- Task 0's territory, BLOCKED
   under E16 -- and a host that ANSWERS differently is the frozen-table

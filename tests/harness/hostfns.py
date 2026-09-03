@@ -2,9 +2,9 @@
 
 **This is not an oracle** (ruling E1). It is a fast local loop that answers one
 narrow question -- do the bytes the emitter just produced compute what the
-Python source said? -- before a testnet round trip. Sub-plan F re-proves
-everything against the real Soroban host. A green run here means "the codegen is
-self-consistent", not "this contract is correct on chain"
+Python source said? -- before a testnet round trip. `tests/real_host/`
+re-proves everything against the real Soroban host. A green run here means
+"the codegen is self-consistent", not "this contract is correct on chain"
 (`spikes/spike1/harness.py:18-21`, verbatim).
 
 Where this sits
@@ -447,7 +447,7 @@ class FullHost(ObjectStore):
 
         A loud check rather than a silent record: `require_auth` on a
         non-address is a lowering bug, and a rig that recorded the word anyway
-        would let it through to a tier-2b run to discover.
+        would let it through to a real-host run to discover.
         """
         address = self.chain_value(word)
         assert isinstance(address, Address), f"require_auth needs an Address, got {address!r}"

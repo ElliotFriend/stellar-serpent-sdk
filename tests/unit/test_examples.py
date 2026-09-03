@@ -22,8 +22,8 @@ only then pins the literal answers, so a failure says which half moved.
 
 What a green run here does NOT mean (ruling E1, restated because these are the
 files an author will copy): tier 1 is a hand-written model, `tests/harness` is a
-mini host that mirrors it, and neither is the chain. Sub-plan F's tier 2b is the
-gate.
+mini host that mirrors it, and neither is the chain. The real host
+(`tests/real_host/test_examples_real.py`) is the gate.
 
 ## Import mechanics
 
@@ -484,8 +484,10 @@ def test_the_allowance_token_example_answers_the_same_at_tier_1_and_as_wasm() ->
     `env.advance(...)` anywhere: the mini host has no TTL model at all
     (`extend_contract_data_ttl` is a recorded no-op), so this is the
     WITHOUT-expiry half of the cross-check the module docstring names. The
-    expiry half is tier-1 only (the dedicated test below), and sub-plan F's
-    tier 2b is where it eventually gets proven against a real host.
+    expiry half is tier-1 only (the dedicated test below); the underlying host
+    fact -- a lapsed temporary entry reads absent -- is proven on the real
+    host in HOST_FACTS row `a_lapsed_temporary_entry_reads_absent`
+    (`tests/real_host/test_host_facts_real.py`).
 
     The two refusal codes are reached in an order that isolates each guard:
     `transfer_from(spender, owner, to, 100)` exceeds the balance (75 left)
@@ -702,8 +704,10 @@ def test_the_allowance_expires_and_transfer_from_then_fails_with_the_authors_err
     **Not runnable on the WASM leg at all.** `tests/harness`'s mini host has no
     TTL model (`extend_contract_data_ttl` is a recorded no-op, `env.py`'s TTL
     section), so there is nothing to cross-check this scenario against here --
-    sub-plan F's tier 2b is where it eventually gets proven against a real
-    host.
+    the underlying host fact -- a lapsed temporary entry reads absent -- is
+    proven on the real host in HOST_FACTS row
+    `a_lapsed_temporary_entry_reads_absent`
+    (`tests/real_host/test_host_facts_real.py`).
     """
     module = load_example(EXAMPLE_ALLOWANCE_TOKEN)
     extend_to = module.ALLOWANCE_TTL_EXTEND_TO.value
@@ -846,8 +850,8 @@ def test_the_shapes_examples_union_survives_all_three_durabilities_at_tier_1() -
     author writes.
 
     Tier-1 only: the mini host has no spec decoder, so there is no WASM leg to
-    compare a returned union against (the limitation the headline test's
-    docstring carries to sub-plan F).
+    compare a returned union against; the real host leg does decode it
+    (`tests/real_host/test_examples_real.py::test_a_union_and_an_int_enum_return_decode_through_their_types`).
     """
     module = load_example(EXAMPLE_SHAPES)
     env = Env()

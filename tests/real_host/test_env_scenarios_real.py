@@ -1,4 +1,4 @@
-"""Tier 2b: the 62 `ENV_SCENARIOS` rows on the REAL host (dossier O16, rulings E8/E9/E10).
+"""The real host: the 62 `ENV_SCENARIOS` rows (dossier O16, rulings E8/E9/E10).
 
 The mini host cannot run the TTL, auth-args, and allow-set rows (`mini_host_gap`);
 the real host runs ALL 62. Three comparisons per row, in this order (O28):

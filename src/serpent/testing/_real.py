@@ -1,4 +1,4 @@
-"""`RealEnv`: the tier-2b façade over `serpent_host`, in serpent's own vocabulary.
+"""`RealEnv`: the real-host façade over `serpent_host`, in serpent's own vocabulary.
 
 The Rust layer speaks ScVal XDR bytes and strkey strings and knows nothing about
 serpent's types (`host/serpent_host.pyi`). This module is the only place that
@@ -74,8 +74,8 @@ DEFAULT_NETWORK_ID = bytes(32)
 #: The protocol every `RealEnv` runs at. Pinned to the MAJOR of
 #: `serpent._host._codegen.PINNED_TAG` by `test_real_env.py` (review E11): the
 #: embedded host and the emitter's generated bindings have to be the same
-#: release line, or a tier-2b answer is evidence about a different chain than
-#: the one the wasm was built for.
+#: release line, or a real-host answer is evidence about a different chain
+#: than the one the wasm was built for.
 DEFAULT_PROTOCOL = 28
 
 #: The three storage buckets, spelled as the Rust layer expects them.

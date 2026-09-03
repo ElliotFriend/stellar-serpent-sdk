@@ -98,8 +98,9 @@ The methods below return scalars anyway, because that is what lets ONE test
 compare the tier-1 answers against the WASM answers value for value: the mini
 host in `tests/harness` has no spec decoder, so it hands a returned union back
 as an opaque vec and a returned enum back as a bare `U32`. That is a
-limitation of the test harness, carried to sub-plan F, and not a rule about
-what you may write.
+limitation of the mini host -- it cannot decode a union/enum return; the real
+host leg does (`tests/real_host/test_examples_real.py`) -- and not a rule
+about what you may write.
 
 Run it two ways -- `tests/unit/test_examples.py` does both and asserts the two
 legs agree:

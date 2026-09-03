@@ -1,5 +1,5 @@
 """Tier-2a productization, scoped (ruling E7): the build cache and the typed
-container codec that discharge sub-plan F's two carried debts (O1, O4, O5, O8,
+container codec that discharge the two debts carried to M1-F (O1, O4, O5, O8,
 E15).
 
 Three things, and nothing else (O8: no new mock semantics):

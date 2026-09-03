@@ -1,4 +1,4 @@
-"""serpent.testing: the tier-2b (real host) and tier-3 (testnet fixture) test surface.
+"""serpent.testing: the real-host and tier-3 (testnet fixture) test surface.
 
 Import this, not `serpent_host`, in a contract's tests. `RealEnv` mirrors the
 tier-1 `Env`/`deploy` verbs wherever the semantics coincide, so a tier-1 test

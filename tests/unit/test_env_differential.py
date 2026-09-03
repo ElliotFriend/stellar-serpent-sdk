@@ -20,10 +20,11 @@ be edited to agree with a drifting convention, and comparing the legs cannot
 be satisfied that way -- a failure says which half moved.
 
 **The honest limit (ruling E9, verbatim): it compares two models E/D wrote;
-F's tier-2b is where it becomes evidence.** Tier 1 is a hand-written model of
-host semantics, `tests/harness` is a mini host that mirrors it, and neither is
-the chain. `ENV_SCENARIOS` is importable precisely so sub-plan F's tier 2b can
-re-run this corpus against a real host; a green run here is self-consistency.
+the real host is where it becomes evidence.** Tier 1 is a hand-written model
+of host semantics, `tests/harness` is a mini host that mirrors it, and neither
+is the chain. `ENV_SCENARIOS` is importable precisely so
+`tests/real_host/test_env_scenarios_real.py` can re-run this corpus against a
+real host; a green run here is self-consistency.
 
 **What the WASM leg cannot do, and how a row says so.** A row carrying
 `mini_host_gap` runs at tier 1 only HERE, and the reason names the harness
@@ -362,8 +363,7 @@ def test_a_row_carries_expect_or_code_exactly_when_its_kind_calls_for_it() -> No
     something for `kind="contract_error"` -- `EnvScenario` cannot enforce that
     itself (both fields are plain optional attributes), so this is the meta-test
     that keeps a future row from carrying an `expect` nobody reads or from
-    omitting a `code` a `contract_error` row needs, as sub-plan F grows this
-    corpus.
+    omitting a `code` a `contract_error` row needs, as this corpus grows.
     """
     for scenario in ENV_SCENARIOS:
         assert (scenario.expect is not None) == (scenario.kind == "value"), (
@@ -578,9 +578,11 @@ def test_an_event_published_before_a_raise_survives_in_both_models() -> None:
     **On chain the answer is different: the event rolls back with the failed
     frame, and a client sees no `Logged` at all.** So this test is not evidence
     about the chain; it is the pin that says the two models agree with each
-    other and that BOTH are known to differ from the host here. It is a named
-    carried obligation to sub-plan F's tier 2b, which is the only tier that can
-    settle it.
+    other and that BOTH are known to differ from the host here. It is proven
+    on the real host: HOST_FACTS row
+    `an_event_published_before_a_raise_is_rolled_back`
+    (`tests/real_host/test_host_facts_real.py`); adopting the rollback at
+    either tier here stays M2's.
     """
     scenario = _row("an_event_published_before_a_raise_survives_at_both_tiers")
     tier_1 = _tier_1(scenario)

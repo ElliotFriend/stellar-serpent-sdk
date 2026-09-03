@@ -39,9 +39,13 @@ carried in M1-D's Task 6 report and ledgered for this docstring):
   as the HOST's own `ScError` (a trap-class host error) rather than a wasm
   trap. Conformant under A10's trap-class mapping, and implemented with no
   guest-side zero check (`serpent.emitter.arith`'s wide-division helper
-  documents the same divergence at its own definition). Tier 2b (sub-plan F)
-  is where this gets re-confirmed against a real host rather than the mini
-  host, which is not an oracle for it (ruling E1).
+  documents the same divergence at its own definition). Confirmed against the
+  real host, not just the mini host (which is not an oracle for it, ruling
+  E1): both signednesses report `DIV128_BY_ZERO_HOST_ERROR`
+  (`("Object", "ArithDomain")`), HOST_FACTS rows
+  `i128_div_by_zero_is_a_host_error_not_a_trap_code`/
+  `u128_div_by_zero_is_the_same_host_error`
+  (`tests/real_host/test_host_facts_real.py`).
 
 Concretely: `U32(1) // U32(0)` and `I128(1) // I128(0)` both abort the guest
 call, but through two different mechanisms -- neither surfaces as one of the

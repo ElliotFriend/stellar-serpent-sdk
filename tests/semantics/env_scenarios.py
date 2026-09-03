@@ -26,8 +26,9 @@ One `EnvScenario` is:
 `ENV_SCENARIOS` is importable on purpose (the named carried obligation,
 mirroring D11's shape): `tests/unit/test_env_differential.py` runs every row
 against the tier-1 model AND against the compiled WASM under the mini host, and
-sub-plan F's tier 2b re-runs the same corpus against a real host -- which is
-where the comparison stops being two models agreeing and starts being evidence.
+`tests/real_host/test_env_scenarios_real.py` re-runs the same corpus against a
+real host -- which is where the comparison stops being two models agreeing and
+starts being evidence.
 
 **Why a row is ever marked `mini_host_gap`.**
 
@@ -103,7 +104,8 @@ SPENDER = "GAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPSABOV"
 #: authorization needs real ed25519 signatures, which is M2). Every row here
 #: treats the authorizer as OPAQUE -- it is passed in, recorded, and compared,
 #: never parsed -- so the rows' meaning is unchanged and the allow-set rows
-#: become replayable at tier 2b. Safe against the `MockAuthContract`
+#: become replayable against the real host (`test_env_scenarios_real.py`). Safe
+#: against the `MockAuthContract`
 #: registration too: the deployed contract's own address is freshly generated
 #: by `register`, so it can never equal this constant (the one collision
 #: `serpent_host.mock_auths` warns about).
@@ -129,19 +131,21 @@ _OTHER_KEY = Symbol("Z")
 TTL_REASON = (
     "the MINI HOST has no TTL model at all -- `extend_contract_data_ttl` is a "
     "recorded no-op and no read applies expiry, so an expiry-sensitive answer "
-    "has no WASM leg to be compared with; the real host at tier 2b runs this "
-    "row"
+    "has no WASM leg to be compared with; tests/real_host/test_env_scenarios_real.py "
+    "runs this row against the real host"
 )
 AUTH_ARGS_REASON = (
     "the MINI HOST DISCARDS `require_auth_for_args`' args (it shape-checks the "
     "vec and records only the address, review M11), so an args-sensitive "
-    "assertion has no WASM leg; the real host at tier 2b runs this row"
+    "assertion has no WASM leg; tests/real_host/test_env_scenarios_real.py runs "
+    "this row against the real host"
 )
 ALLOW_SET_REASON = (
     "the MINI HOST has no authorization state to consult: its `require_auth` "
     "records and always succeeds, so an `Env(auths=...)` allow-set -- and the "
-    "refusal it produces -- does not exist on the WASM leg; the real host at "
-    "tier 2b runs this row"
+    "refusal it produces -- does not exist on the WASM leg; "
+    "tests/real_host/test_env_scenarios_real.py runs this row against the real "
+    "host"
 )
 
 # `TTL_METHODS`/`AUTH_ARGS_METHODS` -- which method names in a row FORCE
@@ -229,10 +233,10 @@ class EnvScenario:
     """One stateful Env observable, and the outcome both models must produce.
 
     Frozen, and shaped so that every field is data a re-runner can act on
-    without reading this module's tests: sub-plan F's tier 2b deploys
-    `contract`'s class with `constructor`, replays `setup`, invokes `invoke` and
-    compares the outcome, exactly as `test_env_differential.py` does for the two
-    tiers here.
+    without reading this module's tests: `tests/real_host/test_env_scenarios_real.py`
+    deploys `contract`'s class with `constructor`, replays `setup`, invokes
+    `invoke` and compares the outcome, exactly as `test_env_differential.py`
+    does for the two tiers here.
     """
 
     name: str
@@ -279,9 +283,9 @@ class EnvScenario:
     #: (TTL, auth args, the allow-set) -- i.e. it has no WASM leg to compare
     #: against in `test_env_differential.py` today, and nothing more than that.
     #: Named `mini_host_gap` rather than `tier1_only_reason` (ruling E8)
-    #: because the old name overstated the reach: the REAL host at tier 2b has
-    #: a settable ledger sequence, honours `require_auth_for_args`' args and
-    #: has a real allow-set, so `tests/real_host/test_env_scenarios_real.py`
+    #: because the old name overstated the reach: the REAL host has a settable
+    #: ledger sequence, honours `require_auth_for_args`' args and has a real
+    #: allow-set, so `tests/real_host/test_env_scenarios_real.py`
     #: runs every row marked here. The gap is one harness's, not the corpus's.
     mini_host_gap: str | None = None
     #: A declared, expected real-host-vs-tier-1 difference (ruling E9), or
@@ -614,9 +618,11 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
     ),
     EnvScenario(
         # F.1.8: BOTH models keep the event of a method that then raises. The
-        # chain rolls it back with the frame, and neither model does -- the
-        # honest pin, carried to sub-plan F (see the differential's own
-        # docstring for that row).
+        # chain rolls it back with the frame, and neither model does -- proven
+        # on the real host (HOST_FACTS row
+        # an_event_published_before_a_raise_is_rolled_back; see the
+        # differential's own docstring for that row). Adopting the rollback at
+        # tier 1/the mini host stays M2's.
         name="an_event_published_before_a_raise_survives_at_both_tiers",
         contract=ENV_SURFACE,
         invoke=Call("log_then_refuse", (_ADMIN, U32(3))),
@@ -807,7 +813,8 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         #
         # It is the one row in this table whose named claim was measured FALSE
         # by the real host and corrected, rather than the model being wrong
-        # about something it never promised -- which is what tier 2b is for.
+        # about something it never promised -- which is what the real-host
+        # tier is for.
         name="the_threshold_guard_extends_at_exact_equality",
         contract=ENV_SURFACE,
         setup=(
