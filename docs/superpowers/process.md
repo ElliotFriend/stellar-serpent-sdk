@@ -62,7 +62,7 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   M2: `match` sugar, Option payloads/narrowing, `.value`, `discriminant`
   rename, typed container reads.
 - **M1-F (testing tiers): merged to main 2026-09-02** (fast-forward; 26
-  commits, tip 489ed5e; two docs commits + 0332919 + f61d458 unsigned-logged).
+  commits; all re-signed by Elliot 2026-09-03, tip fbdf077 at merge).
   Delivered: `host/` (the `serpent-host` PyO3 crate embedding the
   protocol-28 sdk test host, `soroban-sdk =28.0.0-rc.1` -> env-host 28.0.2
   == the env.json pin; built from source into `.venv` via maturin, see
