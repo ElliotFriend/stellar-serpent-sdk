@@ -12,7 +12,7 @@ oracle" that mirrors on-chain semantics exactly. Spec:
 (§13's verified-facts appendix is REQUIRED READING before touching compiler or
 harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
 
-## State (as of 2026-09-02)
+## State (as of 2026-09-02, post M1-F merge)
 
 - **Phase 0**: COMPLETE (GO). Testnet contract
   `CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI`.
@@ -61,26 +61,40 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   `is_pinned` docstring needs a golden regen), text-keyed allowlist;
   M2: `match` sugar, Option payloads/narrowing, `.value`, `discriminant`
   rename, typed container reads.
-- **M1-F (testing tiers): IN PROGRESS since 2026-09-02.** Dossier
-  `specs/2026-09-02-m1f-inputs-dossier.md` (chain facts verified live:
-  testnet is on protocol 28, core 28.0.1 embedding env-host v28.0.0; the
-  env.json pin v28.0.2 == crates.io latest == what soroban-sdk 28.0.0-rc.1
-  pins; the deployed shapes contract is byte-identical to
-  `build_file(examples/shapes.py)` at main tip) and its 16 rulings
-  (decisions.md 2026-09-02) are committed. Plan v1
-  `plans/2026-09-02-m1f-testing-tiers.md` (10 tasks) is committed; the
-  Opus adversarial plan review is the next step, then plan v2, then the
-  `m1f-testing-tiers` branch under SDD. Ledger:
-  `.superpowers/sdd/2026-09-02-m1f-testing-tiers/progress.md`. The F
-  inputs decided with Elliot (tier-2b build-from-source in M1 + wheels at
-  M3; tier 2b an opt-in skipping marker; tier 3 fixture-only until
-  approved; embed the env-host matching TESTNET's protocol; the deployed
-  shapes.py contract as a tier-3 fixture source) are the dossier's U1-U5.
-  Tier-3 fixture RECORDING needs an existing testnet account's public key
-  from Elliot (ruling E14) — ask in-session when Task 9 runs.
-- **THEN: G (CLI as a Stellar CLI plugin).** M1 ENDS with a user-approved
-  testnet deployment (HARD STOP — Elliot must explicitly approve it
-  in-session).
+- **M1-F (testing tiers): merged to main 2026-09-02** (fast-forward; 26
+  commits, tip 489ed5e; two docs commits + 0332919 + f61d458 unsigned-logged).
+  Delivered: `host/` (the `serpent-host` PyO3 crate embedding the
+  protocol-28 sdk test host, `soroban-sdk =28.0.0-rc.1` -> env-host 28.0.2
+  == the env.json pin; built from source into `.venv` via maturin, see
+  `docs/testing.md`); `serpent.testing` (`RealEnv`/`RealContract`/
+  `RealStorage`, two-level `RealHostError.underlying`, the `real_host`
+  marker with `tests/conftest.py`'s loud-skip / `SERPENT_REQUIRE_REAL_HOST=1`
+  session-fail policy, `_scval` marshalling, `testnet.py` simulation-only
+  tier 3); real-host legs for the 35 semantics cases, all 62 ENV_SCENARIOS
+  rows (`mini_host_gap`, `host_diverges`, `real_unrunnable`, `host_error`),
+  the six examples, and the F-owned `HOST_FACTS` table (17 rows +
+  `COMPARE_VECTORS`); four recorded tier-3 fixtures + the DEPLOYED shapes
+  bytes. The real host EXPOSED a shipped emitter bug (Task 0: two small
+  Symbols compared through `obj_cmp`, which the host refuses -- fixed with
+  a guarded lowering + `symsmall_cmp` part; the DEPLOYED shapes contract
+  still traps on `area` until the M1-end redeploy) and moved the tier-1 TTL
+  model toward the host (`StorageTrap` refusals, equality boundary; 14
+  frozen rows rewritten under ruling). Rulings: decisions.md 2026-09-02 x4.
+  Suite 4614/7skip; real_host 246/2; all gates + the Rust gate green on
+  main. Carried obligations live in `.superpowers/sdd/2026-09-02-m1f-
+  testing-tiers/final-review-attention.md` (kept, like C/D/E/E2's) -- G:
+  CI Rust job + `SERPENT_REQUIRE_REAL_HOST=1`, `stellar serpent doctor`,
+  the REDEPLOY of shapes, the strict-obj_cmp opt-in on the mini host, O30/
+  O32; M3: wheels (U1), sdk 28.0.0 stable, the live tier-3 suite; M2:
+  tier-1 frame rollback, minimum-TTL floors for all buckets, container
+  ordering (host order recorded), account authorizers, key-level footprint,
+  archival.
+- **NEXT: G (CLI as a Stellar CLI plugin + ship).** Start at step 1 of the
+  loop (dossier: ingest the F attention file's "To G" items). M1 ENDS with
+  a user-approved testnet deployment (HARD STOP -- Elliot must explicitly
+  approve it in-session); that deployment also REPLACES the deployed shapes
+  contract whose `area` traps.
+
 
 ## How each sub-plan runs (the loop that built A, B, C)
 
