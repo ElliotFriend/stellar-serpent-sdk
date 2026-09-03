@@ -207,8 +207,8 @@ class HostDivergence:
       the other;
     * `answer` is the real leg's expected answer where it differs too, and
       `None` where the answer agrees and only the events diverge. It exists
-      because the archival divergence (M3) is an ANSWER difference with no
-      event in sight;
+      because the minimum-entry-TTL-floor divergence (`MIN_TTL_FLOOR_REASON`)
+      is an ANSWER difference with no event in sight;
     * `auths` is the real leg's expected authorization record, in the ROW's
       vocabulary -- `None` args where only the address is claimed, exactly as
       `EnvScenario.auths` is written -- and `None` for the whole field when the
@@ -320,25 +320,36 @@ class EnvScenario:
 #: not clear a temporary entry's live-until on the host (measured: the TTL
 #: survives a re-write), which is a declared divergence rather than a rewrite.
 
-#: The M3 archival divergence, written once and shared by every row whose
-#: `Advance` lapses a PERSISTENT or INSTANCE entry and then reads it. Declared
-#: before the real leg was ever run, from Task 1's measurement -- so no row
-#: below spends an E10 escalation cycle on a known harness limit.
-ARCHIVAL_REASON = (
-    "review M3, and the host fact Task 1 measured on this test host: the sdk "
-    "test `Env` does not model archival. A PERSISTENT entry here never expires "
-    "-- its TTL counts down to 0 and the next access RESTORES it with a fresh "
-    "TTL (4095 at these ledger defaults) -- and Task 1's probe table records "
-    "instance storage behaving the same way. So the three legs give three "
-    "answers: tier 1 reads absent and answers the default, the test host "
-    "answers the STORED value, and the CHAIN archives the entry. The archival "
-    "half is proven only at tier 3 and is carried to M2; neither the tier-1 "
-    "model nor this row is edited to match the test host, because writing its "
-    "answer down as a host fact is the inversion M3 forbids. At the F1-rewritten "
-    "values two host facts compound: a fresh persistent or instance entry starts "
-    "with 4095 ledgers of TTL, so a `(threshold=1000, extend_to=1000)` extension "
-    "is a NO-OP on the host to begin with, and even past the TTL the entry would "
-    "be restored rather than gone."
+#: The MINIMUM ENTRY TTL FLOOR divergence, written once and shared by the three
+#: rows below whose `Advance` expires a PERSISTENT or INSTANCE entry at tier 1
+#: and does not touch it on the host.
+#:
+#: This constant was `ARCHIVAL_REASON` until the final whole-branch review
+#: re-measured the arithmetic and found the attribution wrong: none of these
+#: rows ever reaches a lapse, so nothing here is archived OR restored, and the
+#: cause is the floor tier 1 does not model. The archival fact is still true and
+#: is kept below as the secondary clause; the row that actually reaches it is
+#: `tests/semantics/host_facts.py`'s
+#: `a_lapsed_persistent_entry_stays_readable_on_the_test_host`, which advances
+#: 4097 ledgers rather than 1001.
+MIN_TTL_FLOOR_REASON = (
+    "the host's MINIMUM ENTRY TTL for the persistent and instance buckets, which "
+    "the tier-1 model does not have. Measured 2026-09-02 on the embedded host: a "
+    "FRESH persistent or instance entry already holds 4095 ledgers, so the row's "
+    "`(threshold=1000, extend_to=1000)` extension is a threshold-guard NO-OP "
+    "(4095 is not below 1000) and the `Advance(1001)` leaves 3094 -- the entry is "
+    "alive at the read and answers the value the setup wrote. Tier 1 has no "
+    "floor: a never-extended entry's `live_until` is `None`, so its FIRST "
+    "extension always applies, tier 1 grants `sequence + 1000`, and the same "
+    "`Advance` expires it. The model gap is the minimum entry TTL in all three "
+    "buckets (16 temporary, 4096 persistent and instance -- 15 and 4095 ledgers "
+    "REMAINING at the write) together with the first-extension-always-applies "
+    "choice it falsifies, and it is carried to M2. SECONDARY, and further out "
+    "than any row here advances: past the floor the sdk test `Env` RESTORES a "
+    "lapsed persistent entry with a fresh TTL where the CHAIN archives it "
+    "(review M3) -- chain_unproven, proven only at tier 3, also carried to M2. "
+    "Neither the tier-1 model nor this row is edited to match the test host, "
+    "because writing its answer down as a host fact is the inversion M3 forbids."
 )
 
 #: Why the two U32-edge rows have no real-host leg (finding F3, ruled
@@ -779,7 +790,12 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         # via the THRESHOLD GUARD (1000 remaining is not below a threshold of
         # 10) and the first grant stands. Never-reduce keeps its algebra pin at
         # tier 1 (`test_env_ttl.test_an_extension_never_reduces_as_an_algebra`).
-        name="a_smaller_extension_after_a_larger_one_never_reduces_the_live_until",
+        # The row was named
+        # `a_smaller_extension_after_a_larger_one_never_reduces_the_live_until`
+        # until the final whole-branch review: that name still promised
+        # never-reduce, which is the claim the F1 rewrite had already narrowed
+        # away, so the name now says what the row pins.
+        name="a_smaller_second_extension_is_a_no_op_via_the_threshold_guard",
         contract=ENV_SURFACE,
         setup=(
             Call("put_temp", (_K, U32(7))),
@@ -893,12 +909,15 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         kind="value",
         expect=U32(0),
         mini_host_gap=TTL_REASON,
-        # The lapse-and-read half of this row is the M3 divergence: the
-        # instance entry is still there on the real host, holding the value the
-        # second write left, so the real leg answers 8 where tier 1 answers the
+        # The lapse-and-read half of this row is the MINIMUM TTL FLOOR
+        # divergence, not archival. Measured 2026-09-02 on the embedded host:
+        # the fresh instance entry holds 4095 ledgers, the bump is a
+        # threshold-guard no-op (still 4095), and the Advance leaves 3094 -- so
+        # the entry never lapses there and still holds the value the second
+        # write left, and the real leg answers 8 where tier 1 answers the
         # default. What the row is ABOUT -- that an instance write does not
         # clear the bucket-wide live-until -- is a tier-1 claim either way.
-        host_diverges=HostDivergence(reason=ARCHIVAL_REASON, events=(), answer=U32(8)),
+        host_diverges=HostDivergence(reason=MIN_TTL_FLOOR_REASON, events=(), answer=U32(8)),
     ),
     EnvScenario(
         # Task 3's other carried obligation: `del_` of ONE instance key does
@@ -936,11 +955,12 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         kind="value",
         expect=U32(0),
         mini_host_gap=TTL_REASON,
-        # M3 again, on the key the `del_` left behind: the real host still has
-        # it, so the real leg answers 2. The row above it -- the same setup one
+        # The floor again, on the key the `del_` left behind: measured 3094
+        # ledgers still remaining at the read, so the real host has the entry
+        # and the real leg answers 2. The row above it -- the same setup one
         # ledger earlier, where tier 1 also answers 2 -- needs no declaration,
         # which is what makes this pair worth keeping side by side.
-        host_diverges=HostDivergence(reason=ARCHIVAL_REASON, events=(), answer=U32(2)),
+        host_diverges=HostDivergence(reason=MIN_TTL_FLOOR_REASON, events=(), answer=U32(2)),
     ),
     EnvScenario(
         name="a_persistent_struct_keyed_entry_expires_the_same_way",
@@ -955,10 +975,13 @@ ENV_SCENARIOS: tuple[EnvScenario, ...] = (
         kind="value",
         expect=U32(0),
         mini_host_gap=TTL_REASON,
-        # THE M3 row: a lapsed PERSISTENT entry. Tier 1 expires it and answers
-        # the default; the real host restores it and answers the 5 the setup
-        # wrote.
-        host_diverges=HostDivergence(reason=ARCHIVAL_REASON, events=(), answer=U32(5)),
+        # The floor on the PERSISTENT bucket, under a struct key. Measured
+        # 2026-09-02: 4095 ledgers after the put, still 4095 after the bump
+        # (the threshold guard declines), 3094 after the Advance -- the entry
+        # never lapses, so no archive and no restore happen here at all. Tier 1
+        # expires it and answers the default; the host answers the 5 the setup
+        # wrote. The row NAME is a tier-1 statement and stays true there.
+        host_diverges=HostDivergence(reason=MIN_TTL_FLOOR_REASON, events=(), answer=U32(5)),
     ),
     EnvScenario(
         # S8's dead-entry rule, for the never-written death -- and it is a

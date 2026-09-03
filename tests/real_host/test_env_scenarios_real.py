@@ -213,8 +213,8 @@ def test_a_row_answers_on_the_real_host_as_tier_1_does(scenario: EnvScenario) ->
         # The divergence must still EXIST: a model fix that removes it retires
         # the declaration loudly rather than leaving a green test asserting a
         # difference that is no longer there (ruling E9). All three facets
-        # count -- M3's archival rows differ in the ANSWER with no event in
-        # sight, and F5's row differs only in the AUTHS.
+        # count -- the MIN_TTL_FLOOR_REASON rows differ in the ANSWER with no
+        # event in sight, and F5's row differs only in the AUTHS.
         real_facets = (real_outcome.events, real_outcome.answer, real_outcome.auth_addresses)
         tier1_facets = (tier1.events, tier1.answer, tier1.auth_addresses)
         assert real_facets != tier1_facets, (

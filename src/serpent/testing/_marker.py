@@ -2,7 +2,9 @@
 
 Separate from `_real.py` on purpose. `tests/conftest.py` imports THIS module to
 decide every test's fate, and it has to answer on a Rust-less checkout, so
-nothing here may touch `serpent_host` (or `stellar_sdk`) at import time.
+nothing here may touch `serpent_host` at import time. (Only `serpent_host`:
+the package `__init__` reaches `stellar_sdk` through `_errors`, so claiming
+this module keeps that import out too was never true of the import graph.)
 `is_available()` asks the import system, never `import serpent_host`: a test
 that hides the extension by setting `sys.modules["serpent_host"] = None` (the
 shape a Rust-less checkout has from inside Python) must get the same "no" a

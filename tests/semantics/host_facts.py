@@ -179,7 +179,10 @@ HOST_FACTS: tuple[HostFact, ...] = (
     # --- TTL: the window, the maximum, and the two deaths ----------------------
     HostFact(
         name="an_extension_whose_threshold_is_below_the_current_ttl_is_a_no_op",
-        fact="B9: extend_ttl is conditional on threshold; threshold 0 changes nothing",
+        fact=(
+            "B9: extend_ttl is conditional on threshold; ON THE HOST threshold 0 changes "
+            "nothing (a tier-1 statement it is not: see the comment below)"
+        ),
         sequence=1_000_000,
         setup=(Call("put_p", (U32(1),)),),
         invoke=Call("extend_p", (U32(0), U32(DEFAULT_MAX_ENTRY_TTL + 10_000))),
@@ -189,6 +192,10 @@ HOST_FACTS: tuple[HostFact, ...] = (
         # a never-extended entry's `live_until` is `None` and always passes the
         # guard. The row's observable is the ANSWER, and the real leg asserts
         # the ttl is still 4095 -- which is the half tier 1 cannot be asked.
+        # Same root cause as `env_scenarios.MIN_TTL_FLOOR_REASON`: tier 1 has no
+        # minimum entry TTL, so its first extension always applies. Here the
+        # STATE divergence hides behind an agreeing Void; there it reaches the
+        # answer. Both are carried to M2.
         real=Value(None),
         tier1=Value(None),
     ),
@@ -204,7 +211,10 @@ HOST_FACTS: tuple[HostFact, ...] = (
     ),
     HostFact(
         name="persistent_extension_past_the_maximum_clamps",
-        fact="S9: persistent extension past max CLAMPS (O14; test_env_ttl skip 349)",
+        fact=(
+            "S9: persistent extension past max CLAMPS (O14; test_env_ttl."
+            "test_persistent_extension_past_the_maximum_clamps)"
+        ),
         sequence=1_000_000,
         setup=(Call("put_p", (U32(1),)),),
         invoke=Call("extend_p", (U32(DEFAULT_MAX_ENTRY_TTL), U32(DEFAULT_MAX_ENTRY_TTL + 88_000))),
@@ -214,7 +224,10 @@ HOST_FACTS: tuple[HostFact, ...] = (
     ),
     HostFact(
         name="temporary_extension_past_the_maximum_traps",
-        fact="S9: temporary extension past max TRAPS (O14; test_env_ttl skip 357)",
+        fact=(
+            "S9: temporary extension past max TRAPS (O14; test_env_ttl."
+            "test_temporary_extension_past_the_maximum_traps)"
+        ),
         sequence=1_000_000,
         setup=(Call("put_t", (U32(1),)),),
         invoke=Call("extend_t", (U32(DEFAULT_MAX_ENTRY_TTL), U32(DEFAULT_MAX_ENTRY_TTL + 88_000))),
