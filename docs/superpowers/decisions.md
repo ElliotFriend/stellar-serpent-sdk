@@ -996,3 +996,34 @@ entry.
   remaining < threshold is impossible), so its row and tier-1 test are
   narrowed and named; a keyed re-write does NOT clear a granted TTL on the
   host (tier-1-only claim, declared divergence, M2).
+
+## 2026-09-02 M1-F final-review rulings (fix wave)
+- Context: the Fable whole-branch review returned 0 Critical / 2 Important /
+  8 Minor ("merge with fixes"); one fix wave landed (4ccc057). Two of its
+  findings correct earlier rulings, so the calls are recorded here.
+- The three ENV_SCENARIOS divergences declared under the M3 "archival"
+  reason (persistent/instance rows that extend a FRESH entry by 1000 and
+  advance 1001) are NOT archival: on the host a fresh persistent or instance
+  entry has a 4095-ledger minimum TTL, so the extension is a guard no-op
+  and the entry never lapses; tier 1's fresh entry has no live-until and
+  its first extension always applies, so tier 1 expires it. Decision: the
+  rows declare `MIN_TTL_FLOOR_REASON` (primary cause: the unmodelled
+  minimum entry TTL floor for every bucket) with archival as the SECONDARY
+  `chain_unproven` clause; `ARCHIVAL_REASON` is removed from ENV_SCENARIOS
+  (no row advances past 4096; the genuine archival evidence is HOST_FACTS'
+  lapsed-persistent row at Advance 4097). Row values and Advance counts are
+  unchanged. The M2 obligation WIDENS from "the temporary floor" to
+  "minimum entry TTL floors for all three buckets, and revisit tier 1's
+  'first extension always applies'".
+- The compiled `symsmall_cmp` ordering (Task 0) is now proven on the real
+  host over 16 vectors (prefix, zero-group skip, the `_`/digit/capital/
+  lowercase boundaries, the 9-char edge, small vs object, equality), each
+  equal to tier 1 and to the host's `Compare` trait sign -- the frozen
+  ASCII ordering stands with real-host evidence behind it, not one vector.
+- Carried (triage recorded in the final review): the strict `obj_cmp`
+  opt-in on the mini host (Task 0 C3) goes to G, not M2; a two-distinct-
+  errors probe for `_innermost_error` and `map_del` on a missing key are
+  M2/M3 host-fact candidates; nineteen deferred minors carry with the
+  reviewer's line-by-line triage.
+- Reversal cost: prose and one reason constant; the row semantics did not
+  move.
