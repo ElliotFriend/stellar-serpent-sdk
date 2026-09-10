@@ -1,24 +1,19 @@
-"""The bounty board, run two ways and cross-checked.
+"""The bounty board on the real host, tier 1 as the other leg (M1-G Task 4, U1).
 
-Leg 1 is tier 1: `serpent.env.Env` in plain Python, no WASM anywhere. Leg 2
-is the real Soroban host (`serpent.testing.RealEnv`): the same source built to
-WASM and executed by the embedded `soroban-env-host`. Every test runs the SAME
-call sequence on both legs and asserts the decoded answers, error codes, and
-published events are equal, and only then pins the literal values.
-
-Run from the repo root (the extension must be built; see docs/testing.md):
-
-    uv run --no-sync pytest -q sandbox/test_bounty_board.py
+The seventh example is the one contract that touches every M1 authoring
+surface, so its sequences are the closest thing the suite has to a user's
+own test file. Every test here runs the SAME steps at tier 1 (`serpent.env`)
+and on the embedded real host (`serpent.testing.RealEnv`), asserts the decoded
+answers, error codes, and events are EQUAL, and only then pins the literals.
+Per-test `real_host` marks (M12), never a module-level `pytestmark`.
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
-import importlib.util
 from collections.abc import Callable
-from pathlib import Path
-from types import ModuleType
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from stellar_sdk.strkey import StrKey
@@ -26,25 +21,16 @@ from stellar_sdk.strkey import StrKey
 from serpent import U32, Address, Bool, Symbol, Vec
 from serpent.env import AuthorizationFailed, Env, deploy
 from serpent.testing import RealContractError, RealEnv, RealHostError
+from tests.unit.test_emitter_end_to_end import EXAMPLE_BOUNTY_BOARD
+from tests.unit.test_examples import load_example
 
-SOURCE = Path(__file__).with_name("bounty_board.py")
-
-
-def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("sandbox_bounty_board", SOURCE)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-board = _load()
+board = load_example(EXAMPLE_BOUNTY_BOARD)
 
 
 def _contract_address(label: str) -> Address:
-    """A deterministic CONTRACT strkey per role. Contract strkeys, because the
-    real host mocks authorization by registering a stand-in contract at the
-    authorizer's address (account authorizers need real signatures: M2)."""
+    """A deterministic CONTRACT strkey per role: the real host mocks
+    authorization by registering a stand-in contract at the authorizer's
+    address (ruling F-B2; account authorizers need real signatures: M2)."""
     return Address(StrKey.encode_contract(hashlib.sha256(label.encode()).digest()))
 
 
@@ -55,7 +41,7 @@ OUTSIDER = _contract_address("outsider")
 ALLOWED = (ADMIN, POSTER, WORKER)
 
 Step = tuple[str, tuple[Any, ...]]
-Outcome = Any  # a chain value, None, or ("error", code)
+Outcome = object  # a chain value, None, or ("error", code)
 
 
 def _outcome(call: Callable[[], object]) -> Outcome:
@@ -70,7 +56,13 @@ def _outcome(call: Callable[[], object]) -> Outcome:
         return ("error", code)
 
 
-def _tier1(steps: list[Step], *, advance_before: dict[int, int] | None = None) -> tuple[list[Outcome], Any]:
+def _invoke_tier1(inst: Any, method: str, args: tuple[Any, ...], env: Env) -> object:
+    return getattr(inst, method)(env, *args)
+
+
+def _tier1(
+    steps: list[Step], *, advance_before: dict[int, int] | None = None
+) -> tuple[list[Outcome], Any]:
     env = Env(auths=ALLOWED)
     inst = deploy(board.BountyBoard, env, ADMIN)
     answers: list[Outcome] = []
@@ -78,18 +70,20 @@ def _tier1(steps: list[Step], *, advance_before: dict[int, int] | None = None) -
         if advance_before and n in advance_before:
             env.advance(advance_before[n])
         with env.frame():
-            answers.append(_outcome(lambda m=method, a=args: getattr(inst, m)(env, *a)))
+            answers.append(_outcome(functools.partial(_invoke_tier1, inst, method, args, env)))
     return answers, env.published_events
 
 
-def _real(steps: list[Step], *, advance_before: dict[int, int] | None = None) -> tuple[list[Outcome], Any]:
+def _real(
+    steps: list[Step], *, advance_before: dict[int, int] | None = None
+) -> tuple[list[Outcome], Any]:
     env = RealEnv(auths=ALLOWED)
-    contract = env.deploy_source(SOURCE, ADMIN)
+    contract = env.deploy_source(EXAMPLE_BOUNTY_BOARD, ADMIN)
     answers: list[Outcome] = []
     for n, (method, args) in enumerate(steps):
         if advance_before and n in advance_before:
             env.advance(advance_before[n])
-        answers.append(_outcome(lambda m=method, a=args: contract.invoke(m, *a)))
+        answers.append(_outcome(functools.partial(contract.invoke, method, *args)))
     return answers, contract.events_for_sequence()
 
 
@@ -133,7 +127,6 @@ def test_the_happy_path_answers_the_same_on_both_legs() -> None:
         Bool(True),
         U32(20),
     ]
-    # Three events, one per data format: map, single-value, vec.
     assert [topics[0] for topics, _data in tier1_events] == [
         Symbol("posted"),
         Symbol("posted"),
@@ -145,9 +138,9 @@ def test_the_happy_path_answers_the_same_on_both_legs() -> None:
 ERRORS: list[Step] = [
     ("post", (POSTER, U32(0), board.Priority.Low)),  # ZeroReward
     ("post", (POSTER, U32(5), board.Priority.Medium)),  # id 1
-    ("complete", (U32(1),)),  # NotClaimed: nobody claimed it
+    ("complete", (U32(1),)),  # NotClaimed
     ("claim", (U32(1), WORKER)),
-    ("claim", (U32(1), WORKER)),  # NotOpen: already claimed
+    ("claim", (U32(1), WORKER)),  # NotOpen
     ("worker_of", (U32(99),)),  # NoSuchBounty
 ]
 
@@ -163,15 +156,14 @@ def test_every_error_code_agrees_on_both_legs() -> None:
 EXPIRY: list[Step] = [
     ("post", (POSTER, U32(9), board.Priority.Medium)),
     ("claim", (U32(1), WORKER)),
-    ("complete", (U32(1),)),  # after the ledger moves past the claim's TTL
+    ("complete", (U32(1),)),
 ]
 
 
 @pytest.mark.real_host
 def test_a_claim_lapses_after_its_ttl_on_both_legs() -> None:
-    """The claim is a temporary entry extended to CLAIM_TTL ledgers; move the
-    ledger one past that before `complete`, and both legs refuse with the
-    contract's own code rather than paying out."""
+    """The claim is a temporary entry extended to CLAIM_TTL ledgers; one past
+    that, both legs refuse with the contract's own code rather than paying."""
     past = {2: board.CLAIM_TTL.value + 1}
     tier1, _ = _tier1(EXPIRY, advance_before=past)
     real, _ = _real(EXPIRY, advance_before=past)
@@ -181,15 +173,14 @@ def test_a_claim_lapses_after_its_ttl_on_both_legs() -> None:
 
 @pytest.mark.real_host
 def test_an_address_outside_the_allow_set_cannot_post() -> None:
-    """Authorization is a host TRAP, not a contract error: tier 1 raises
-    `AuthorizationFailed`; the real host reports an `Auth` failure."""
+    """Authorization is a host TRAP, not a contract error."""
     env = Env(auths=ALLOWED)
     inst = deploy(board.BountyBoard, env, ADMIN)
     with env.frame(), pytest.raises(AuthorizationFailed):
         inst.post(env, OUTSIDER, U32(1), board.Priority.Low)
 
     real = RealEnv(auths=ALLOWED)
-    contract = real.deploy_source(SOURCE, ADMIN)
+    contract = real.deploy_source(EXAMPLE_BOUNTY_BOARD, ADMIN)
     with pytest.raises(RealHostError) as info:
         contract.invoke("post", OUTSIDER, U32(1), board.Priority.Low)
     assert not isinstance(info.value, RealContractError)
@@ -199,14 +190,20 @@ def test_an_address_outside_the_allow_set_cannot_post() -> None:
 
 @pytest.mark.real_host
 def test_storage_reads_back_through_the_real_host_by_type() -> None:
-    """The struct, the union, and the enum come back typed from the host's storage."""
     real = RealEnv(auths=ALLOWED)
-    contract = real.deploy_source(SOURCE, ADMIN)
+    contract = real.deploy_source(EXAMPLE_BOUNTY_BOARD, ADMIN)
     contract.invoke("post", POSTER, U32(7), board.Priority.High)
     contract.invoke("claim", U32(1), WORKER)
-    record = contract.storage("persistent").get(board.BountyKey(bounty_id=U32(1)), board.Bounty)
-    assert record == board.Bounty(poster=POSTER, reward=U32(7), priority=board.Priority.High, posted_at=record.posted_at)
-    assert contract.storage("persistent").get(board.StatusKey(status_of=U32(1)), board.Status) == board.Status.Claimed(WORKER)
+    record = cast(
+        Any, contract.storage("persistent").get(board.BountyKey(bounty_id=U32(1)), board.Bounty)
+    )
+    assert record == board.Bounty(
+        poster=POSTER, reward=U32(7), priority=board.Priority.High, posted_at=record.posted_at
+    )
+    assert contract.storage("persistent").get(
+        board.StatusKey(status_of=U32(1)), board.Status
+    ) == board.Status.Claimed(WORKER)
     assert contract.storage("temporary").get(board.ClaimKey(claim_on=U32(1)), Address) == WORKER
-    ttl = contract.storage("temporary").ttl(board.ClaimKey(claim_on=U32(1)))
-    assert ttl == board.CLAIM_TTL.value
+    assert (
+        contract.storage("temporary").ttl(board.ClaimKey(claim_on=U32(1))) == board.CLAIM_TTL.value
+    )

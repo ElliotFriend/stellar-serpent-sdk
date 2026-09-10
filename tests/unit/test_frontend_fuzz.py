@@ -1055,7 +1055,9 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     `examples/shapes.py` (the sixth shipped example, the tagged union and the
     int enum), and M1-F Task 6 added `host_facts.py` (the HOST_FACTS table's
     contract) -- each joined this corpus automatically, which is the intended
-    behavior, and updating these lines is how it gets acknowledged.
+    behavior, and updating these lines is how it gets acknowledged. M1-G Task 4
+    added `examples/bounty_board.py` (the seventh: every M1 surface in one
+    contract).
     """
     must_reject = [name for name, _ in CORPUS if name.startswith("must_reject/")]
     fixtures = [name for name, _ in CORPUS if name.startswith("fixtures/")]
@@ -1074,6 +1076,7 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     ]
     assert sorted(examples) == [
         "examples/allowance_token.py",
+        "examples/bounty_board.py",
         "examples/counter.py",
         "examples/errors.py",
         "examples/events.py",

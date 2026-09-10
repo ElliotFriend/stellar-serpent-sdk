@@ -19,7 +19,10 @@ What is in here, and where to look:
 
 Every method runs unchanged at tier 1 (plain Python, `serpent.env.Env`), on
 the embedded real host (`serpent.testing.RealEnv`), and as the deployable
-WASM `sandbox/compile.py` writes next to this file.
+WASM `stellar serpent build examples/bounty_board.py` writes next to this
+file. `tests/unit/test_examples.py` runs the first and the mini host and
+compares them; `tests/real_host/test_example_bounty_board_real.py` runs the
+real host against tier 1 on the same sequences.
 """
 
 from serpent import (

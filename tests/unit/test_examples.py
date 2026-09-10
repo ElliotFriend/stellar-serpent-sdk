@@ -37,17 +37,19 @@ example is under `mypy --strict` as a module, which is all mypy needs.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+from stellar_sdk.strkey import StrKey
 
 from serpent import val
 from serpent.compiler.frontend import compile_module
 from serpent.compiler.ir import FuncKind
-from serpent.env import AuthorizationFailed, ConstructorFailed, Env, deploy
+from serpent.env import DEFAULT_LEDGER_SEQUENCE, AuthorizationFailed, ConstructorFailed, Env, deploy
 from serpent.errors import ContractError
 from serpent.types import U32, Address, Bool, String, Symbol, Vec
 from tests.harness import engine
@@ -55,6 +57,7 @@ from tests.unit.test_emitter_end_to_end import (
     ACCOUNT,
     CONTRACT,
     EXAMPLE_ALLOWANCE_TOKEN,
+    EXAMPLE_BOUNTY_BOARD,
     EXAMPLE_COUNTER,
     EXAMPLE_ERRORS,
     EXAMPLE_EVENTS,
@@ -137,17 +140,18 @@ def test_every_example_compiles(path: Path) -> None:
 
     The declared protocol is the COMPUTED floor over both kinds of gate: no
     example reaches a gated host function, so the import floor is 20 for the
-    examples with no `__init__` -- but `errors.py` and `allowance_token.py`
-    each have one, and `__constructor` is a capability the host only honors
-    from protocol 22 (spec SS 13 / CAP-0058), so those two declare 22. The
-    split is derived from the module's own IR rather than listed by name, so
-    adding an `__init__` to an example cannot silently invalidate the pin.
+    examples with no `__init__` -- but `errors.py`, `allowance_token.py`, and
+    `bounty_board.py` each have one, and `__constructor` is a capability the
+    host only honors from protocol 22 (spec SS 13 / CAP-0058), so those three
+    declare 22. The split is derived from the module's own IR rather than
+    listed by name, so adding an `__init__` to an example cannot silently
+    invalidate the pin.
     """
     compiled = compile_module(path.read_text(encoding="utf-8"), str(path))
     contract = compiled.ir.contract
     assert contract is not None
     has_constructor = any(m.kind is FuncKind.CONSTRUCTOR for m in contract.methods)
-    assert has_constructor == (path.stem in {"errors", "allowance_token"}), (
+    assert has_constructor == (path.stem in {"errors", "allowance_token", "bounty_board"}), (
         path.stem,
         has_constructor,
     )
@@ -941,3 +945,155 @@ def _wasm_code(mini: engine.MiniHost, name: str, *args: int) -> int:
         mini.invoke(name, *args)
     assert val.error_type_of(info.value.val) == val.ERROR_TYPE_CONTRACT
     return val.error_code_of(info.value.val)
+
+
+# ===========================================================================
+# bounty_board: every M1 surface in one contract (M1-G, U1)
+# ===========================================================================
+
+
+def _role(label: str) -> Address:
+    """A deterministic CONTRACT strkey per role, the same derivation the real
+    leg uses (`tests/real_host/test_example_bounty_board_real.py`): contract
+    strkeys because the real host's allow-set mocks CONTRACT authorizers only
+    (ruling F-B2); the mini host mocks all auths and does not care."""
+    return Address(StrKey.encode_contract(hashlib.sha256(label.encode()).digest()))
+
+
+def test_the_bounty_board_example_answers_the_same_at_tier_1_and_as_wasm() -> None:
+    """post / claim / complete plus every read, on both legs, compared to each
+    other before the literal pins.
+
+    Two deliberate omissions on the mini-host leg, both `mini_host_gap`s:
+    `priority_of` returns an int enum, which the mini host hands back as a
+    bare `U32` while tier 1 answers `Priority.Low` (E9: the two are not equal
+    at tier 1; the REAL leg decodes the return through the method's own
+    annotation and pins it), so `is_urgent`'s `Bool` stands in here; and the
+    TTL lapse of a claim, which the mini host cannot model at all
+    (`extend_contract_data_ttl` is a recorded no-op) and the real leg proves.
+    """
+    module = load_example(EXAMPLE_BOUNTY_BOARD)
+    admin, poster, worker = _role("admin"), _role("poster"), _role("worker")
+    env = Env(auths=(admin, poster, worker))
+    board = deploy(module.BountyBoard, env, admin)
+    with env.frame():  # one frame for the whole sequence: auth is not consumed per frame
+        tier_1: list[object] = [
+            board.post(env, poster, U32(50), module.Priority.High),
+            board.post(env, poster, U32(20), module.Priority.Low),
+            board.total_posted(env),
+            board.status_of(env, U32(1)),
+            board.open_ids(env),
+        ]
+        board.claim(env, U32(1), worker)
+        tier_1 += [board.status_of(env, U32(1)), board.worker_of(env, U32(1)), board.open_ids(env)]
+        tier_1 += [board.complete(env, U32(1)), board.status_of(env, U32(1))]
+        tier_1 += [
+            board.is_urgent(env, U32(1)),
+            board.reward_of(env, U32(2)),
+            board.posted_at(env, U32(2)),
+        ]
+        tier_1_codes = [
+            _tier_1_code(board.post, env, poster, U32(0), module.Priority.Low),
+            _tier_1_code(board.complete, env, U32(2)),
+            _tier_1_code(board.claim, env, U32(1), worker),
+            _tier_1_code(board.worker_of, env, U32(99)),
+        ]
+        tier_1_topics = [topics[0] for topics, _data in env.published_events]
+
+    _built, host, mini = start(EXAMPLE_BOUNTY_BOARD)
+    admin_w, poster_w, worker_w = (host.val_word(a) for a in (admin, poster, worker))
+    high, low = val.pack_u32val(2), val.pack_u32val(0)
+    one, two = val.pack_u32val(1), val.pack_u32val(2)
+    assert mini.invoke("__constructor", admin_w) == val.VOID_VAL
+
+    def open_ids() -> object:
+        # A container RETURN: `answer`/`chain_value` deliberately gives a rank
+        # placeholder for a vec; the typed decoder is the public replacement
+        # for the old reach into `host._vec` (F Task 8, O4/E7) [B4].
+        word = mini.invoke("open_ids")
+        assert word is not None
+        return host.chain_value_as(word, Vec[U32])
+
+    from_wasm: list[object] = [
+        answer(host, mini, "post", poster_w, val.pack_u32val(50), high),
+        answer(host, mini, "post", poster_w, val.pack_u32val(20), low),
+        answer(host, mini, "total_posted"),
+        answer(host, mini, "status_of", one),
+        open_ids(),
+    ]
+    assert mini.invoke("claim", one, worker_w) == val.VOID_VAL
+    from_wasm += [
+        answer(host, mini, "status_of", one),
+        answer(host, mini, "worker_of", one),
+        open_ids(),
+    ]
+    from_wasm += [answer(host, mini, "complete", one), answer(host, mini, "status_of", one)]
+    from_wasm += [
+        answer(host, mini, "is_urgent", one),
+        answer(host, mini, "reward_of", two),
+        answer(host, mini, "posted_at", two),
+    ]
+    wasm_codes = [
+        _wasm_code(mini, "post", poster_w, val.pack_u32val(0), low),
+        _wasm_code(mini, "complete", two),
+        _wasm_code(mini, "claim", one, worker_w),
+        _wasm_code(mini, "worker_of", val.pack_u32val(99)),
+    ]
+    wasm_topics = [host.chain_value(topics[0]) for topics, _data in host.events]
+
+    assert from_wasm == tier_1
+    assert wasm_codes == tier_1_codes == [5, 3, 2, 1]
+    assert wasm_topics == tier_1_topics
+    assert tier_1 == [
+        U32(1),
+        U32(2),
+        U32(2),
+        Symbol("Open"),
+        Vec(U32, [U32(1), U32(2)]),
+        Symbol("Claimed"),
+        worker,
+        Vec(U32, [U32(2)]),
+        U32(50),
+        Symbol("Paid"),
+        # `posted_at` is the SHARED default ledger sequence (serpent.env's
+        # constant, which tests/harness/hostfns.py imports), which is WHY the
+        # two legs agree on it; `env.ledger()` may not be read outside a
+        # frame, so the constant is pinned, not re-read [B5].
+        Bool(True),
+        U32(20),
+        U32(DEFAULT_LEDGER_SEQUENCE),
+    ]
+    assert tier_1_topics == [
+        Symbol("posted"),
+        Symbol("posted"),
+        Symbol("claimed"),
+        Symbol("completed"),
+    ]
+
+
+def test_every_example_is_in_every_hand_kept_inventory() -> None:
+    """O-HYG8 (E attn item 7): five inventories beyond `EXAMPLES` are kept BY
+    HAND and never failed on an omission -- the printer's `FIXTURE_SOURCES`,
+    the mock's `_FIXTURES`, the fuzz `CORPUS`, the goldens directory, and the
+    real leg's module. This is the net: every example must be in each."""
+    from tests.unit.test_emitter_printer import FIXTURE_SOURCES, GOLDEN_DIR
+    from tests.unit.test_frontend_fuzz import CORPUS
+    from tests.unit.test_harness_hostfns import _FIXTURES
+
+    stems = {path.stem for path in EXAMPLES}
+    assert stems <= {stem for source, stem in FIXTURE_SOURCES if source.startswith("examples/")}
+    assert set(EXAMPLES) <= {path.resolve() for path in _FIXTURES}
+    assert {f"examples/{path.name}" for path in EXAMPLES} <= {name for name, _ in CORPUS}
+    for stem in stems:
+        assert (GOLDEN_DIR / f"{stem}.wat.txt").is_file(), f"no golden for {stem}"
+    real_dir = Path(__file__).resolve().parents[1] / "real_host"
+    real_text = "".join(
+        p.read_text(encoding="utf-8")
+        for p in [
+            real_dir / "test_examples_real.py",
+            *sorted(real_dir.glob("test_example_*_real.py")),
+        ]
+    )  # [m12] the per-example modules plus the shared one, each read once
+    for path in EXAMPLES:
+        constant = f"EXAMPLE_{path.stem.upper()}"
+        assert constant in real_text, f"{constant} is not used by any real-host example module"

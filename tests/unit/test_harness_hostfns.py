@@ -988,8 +988,9 @@ def _in_scope(case: SemCase) -> bool:
 
 #: The whole-contract fixtures Task 13 builds (M1-E added the fifth,
 #: `token_style_canonical.py`, with the canonical publish spelling, and then
-#: the three `examples/` contracts of sub-plan G's wave 1, and M1-E2 the sixth,
-#: `shapes.py`). The two sandbox contracts are read from `sandbox/` -- the same
+#: the three `examples/` contracts of sub-plan G's wave 1, M1-E2 the sixth,
+#: `shapes.py`, and M1-G the seventh, `bounty_board.py`). The two sandbox
+#: contracts are read from `sandbox/` -- the same
 #: source Task 13 promotes into `tests/fixtures/` (F.2.8) -- because
 #: `sandbox/` itself must not be touched.
 #:
@@ -1011,6 +1012,7 @@ _FIXTURES = (
     _ROOT / "examples" / "events.py",
     _ROOT / "examples" / "allowance_token.py",
     _ROOT / "examples" / "shapes.py",
+    _ROOT / "examples" / "bounty_board.py",
 )
 
 

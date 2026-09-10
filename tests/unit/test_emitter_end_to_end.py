@@ -106,6 +106,7 @@ EXAMPLE_STRUCTS = EXAMPLES_DIR / "structs.py"
 EXAMPLE_EVENTS = EXAMPLES_DIR / "events.py"
 EXAMPLE_ALLOWANCE_TOKEN = EXAMPLES_DIR / "allowance_token.py"
 EXAMPLE_SHAPES = EXAMPLES_DIR / "shapes.py"
+EXAMPLE_BOUNTY_BOARD = EXAMPLES_DIR / "bounty_board.py"
 EXAMPLES: tuple[Path, ...] = (
     EXAMPLE_COUNTER,
     EXAMPLE_ERRORS,
@@ -113,6 +114,7 @@ EXAMPLES: tuple[Path, ...] = (
     EXAMPLE_EVENTS,
     EXAMPLE_ALLOWANCE_TOKEN,
     EXAMPLE_SHAPES,
+    EXAMPLE_BOUNTY_BOARD,
 )
 
 #: THE fixture list this sub-plan's whole-contract properties run over. Defined
@@ -674,6 +676,8 @@ def test_sandbox_hello_world_refuses_the_unimaginative_greeting() -> None:
 #: a unit variant is the natural empty value, so `get(SHAPE, Shape,
 #: default=Shape.Empty)` covers the never-written key and there is nothing for
 #: a constructor to initialize. It therefore declares protocol 20, not 22.
+#: M1-G's `bounty_board.py` has an `__init__` (the admin is recorded at
+#: deploy) and is listed.
 CONSTRUCTOR_BEARING: frozenset[Path] = frozenset(
     {
         TOKEN_STYLE,
@@ -681,6 +685,7 @@ CONSTRUCTOR_BEARING: frozenset[Path] = frozenset(
         SANDBOX_HELLO_WORLD,
         EXAMPLE_ERRORS,
         EXAMPLE_ALLOWANCE_TOKEN,
+        EXAMPLE_BOUNTY_BOARD,
     }
 )
 

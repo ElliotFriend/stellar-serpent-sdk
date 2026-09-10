@@ -22,6 +22,7 @@ currently lowers to", never as "this is correct".
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -390,6 +391,7 @@ FIXTURE_SOURCES: tuple[tuple[str, str], ...] = (
     ("examples/events.py", "events"),
     ("examples/allowance_token.py", "allowance_token"),
     ("examples/shapes.py", "shapes"),
+    ("examples/bounty_board.py", "bounty_board"),
 )
 
 #: The golden stems, derived from the pairs above -- the name every test here
@@ -444,12 +446,23 @@ def test_no_stale_or_missing_wasm_goldens() -> None:
     assert stored == sorted(f"{name}.wat.txt" for name in FIXTURE_NAMES)
 
 
+#: A real leaked address (a Python `id()`-based repr, a pointer) is `0x`
+#: followed by actual hex digits. `bounty_board`'s linear-memory data segment
+#: -- raw little-endian offset/length words for its struct field names --
+#: legitimately contains the byte 0x78 (ASCII `x`) as the low byte of the
+#: offset 120, which prints as `...\x00x\x00\x00\x00...`: the literal
+#: substring "0x" appears where an escaped `\x00` abuts that printable `x`,
+#: with no hex digit after it. `re.search` for `0x` immediately followed by a
+#: hex digit tells that data-byte coincidence apart from a real leak.
+_HEX_ADDRESS = re.compile(r"0x[0-9a-fA-F]")
+
+
 def test_the_wasm_goldens_have_no_identity_leaks() -> None:
     repo_root = str(Path(__file__).resolve().parents[2])
     for name in FIXTURE_NAMES:
         text = golden_path(name).read_text()
         assert " object at 0x" not in text, name
-        assert "0x" not in text, name
+        assert not _HEX_ADDRESS.search(text), name
         assert repo_root not in text, name
         assert "/Users/" not in text, name
 
