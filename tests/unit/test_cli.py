@@ -484,3 +484,21 @@ def test_inspect_malformed_is_exit_1(tmp_path: Path, capsys: pytest.CaptureFixtu
 
 def test_inspect_missing_file_is_exit_3(tmp_path: Path) -> None:
     assert cli.main(["inspect", str(tmp_path / "nope.wasm")]) == cli.EXIT_ENVIRONMENT
+
+
+def test_inspect_a_truncated_custom_section_is_exit_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A module whose section framing is intact but whose XDR payload is cut
+    short must be a rendered diagnostic and exit 1, never a traceback: the
+    underlying `EOFError` is not a `ValueError`, so it once escaped."""
+    from serpent.emitter import encode
+
+    bad = tmp_path / "cut.wasm"
+    bad.write_bytes(
+        b"\x00asm\x01\x00\x00\x00" + encode.custom_section("contractspecv0", b"\x00\x00\x00")
+    )
+    assert cli.main(["inspect", str(bad)]) == cli.EXIT_REJECTED
+    err = capsys.readouterr().err
+    assert "unreadable section" in err
+    assert "Traceback" not in err

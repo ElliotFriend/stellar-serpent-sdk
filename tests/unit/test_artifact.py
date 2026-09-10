@@ -124,6 +124,35 @@ def test_not_a_wasm_module_is_malformed() -> None:
         inspect_artifact(b"hello")
 
 
+@pytest.mark.parametrize("section", ["contractenvmetav0", "contractspecv0", "contractmetav0"])
+def test_a_truncated_custom_section_payload_is_malformed(section: str) -> None:
+    """Section FRAMING intact, XDR payload cut short mid-entry.
+
+    `xdrlib3`'s `Unpacker` signals a short read with a bare `EOFError`, which
+    is not a `ValueError` -- so this escaped `inspect_artifact` as a traceback
+    until the decode guard grew its own clause. All three sections go through
+    an `Unpacker` or `from_xdr_bytes`, so all three are probed.
+    """
+    from serpent.emitter import encode
+
+    wasm = b"\x00asm\x01\x00\x00\x00" + encode.custom_section(section, b"\x00\x00\x00")
+    with pytest.raises(MalformedArtifact, match="unreadable section"):
+        inspect_artifact(wasm)
+
+
+def test_a_truncated_section_beside_real_ones_is_still_malformed() -> None:
+    """The same cut payload in a module that is otherwise a plausible artifact,
+    so the guard is not passing only because the module had nothing else in it."""
+    from serpent.emitter import encode
+
+    gated = _gated_witness()
+    wasm = _module_importing(
+        gated.module, gated.export, params=len(gated.arg_types)
+    ) + encode.custom_section("contractspecv0", b"\x00\x00\x00\x01")
+    with pytest.raises(MalformedArtifact, match="unreadable section"):
+        inspect_artifact(wasm)
+
+
 def test_a_non_function_import_says_it_is_not_a_serpent_artifact() -> None:
     """[m15]: a module importing a memory is a legitimate wasm module that
     serpent did not build, and the message must say so rather than blaming

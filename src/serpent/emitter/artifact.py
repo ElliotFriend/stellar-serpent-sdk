@@ -146,6 +146,15 @@ def inspect_artifact(wasm: bytes) -> Artifact:
         # `MalformedArtifact` IS a `ValueError`, so the broad clause below would
         # otherwise re-wrap the import-kind message above and bury it.
         raise
+    except EOFError as exc:
+        # `xdrlib3`'s `Unpacker` signals a short read with a BARE `EOFError` --
+        # not a `ValueError`, so the clause below never saw it, and its `str()`
+        # is empty, so it needs its own words as well as its own clause. All
+        # three custom sections decode through an `Unpacker`, so any of them
+        # can land here with its framing intact and its payload cut short.
+        raise MalformedArtifact(
+            "unreadable section: a custom-section payload ends mid-entry"
+        ) from exc
     except (EmitError, ValueError, IndexError) as exc:
         raise MalformedArtifact(f"unreadable section: {exc}") from exc
 
