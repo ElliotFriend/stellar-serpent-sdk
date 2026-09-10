@@ -1,0 +1,24 @@
+usage: stellar-serpent build [-h] [--out FILE] [--meta KEY=VALUE]
+                             [--version STR] [--target-protocol N]
+                             [--external-validate {auto,require,skip}] [--json]
+                             [--quiet]
+                             PATH
+
+Compile PATH (a serpent contract module) and write the validated .wasm.
+
+positional arguments:
+  PATH                  the contract module (.py)
+
+options:
+  -h, --help            show this help message and exit
+  --out FILE            output path (default: PATH with .wasm)
+  --meta KEY=VALUE      a contractmetav0 pair; repeatable
+  --version STR         the contract's own `version` meta entry (not serpent's
+                        version)
+  --target-protocol N   declare exactly protocol N; a host function gated above
+                        N is a compile error
+  --external-validate {auto,require,skip}
+                        wasm-tools: auto = run it when installed (default);
+                        require = fail if absent; skip = never
+  --json                print the build facts as JSON
+  --quiet               print nothing on success

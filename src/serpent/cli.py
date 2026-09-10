@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import importlib
 import json
 import shutil
@@ -39,6 +40,7 @@ import sys
 import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal, cast
 
@@ -280,12 +282,108 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return exit_code_for(checks)
 
 
-# --- build / inspect (bodies land in Tasks 2 and 3) -------------------------------------
+# --- build (inspect's body lands in Task 3) ---------------------------------------------
+
+
+def build_facts(result: Any, *, source: Path, out: Path, external: str) -> dict[str, object]:
+    """The facts `build` prints (human and `--json`), from one `BuildResult`.
+
+    `sha256` is the on-chain wasm hash (ruling D-E7: byte-reproducible output
+    makes it user-verifiable); `declared_protocol` is what `contractenvmetav0`
+    carries and `target_protocol` the requested gate or `None` (ruling E9/D6).
+    """
+    return {
+        "source": str(source),
+        "out": str(out),
+        "bytes": result.module_size,
+        "sha256": hashlib.sha256(result.wasm).hexdigest(),
+        "declared_protocol": result.declared_protocol,
+        "target_protocol": result.target_protocol,
+        "imports": list(result.imports),
+        "exports": list(result.exports),
+        "runtime_parts": sorted(result.runtime_parts_linked),
+        "memory": result.needs_memory,
+        "wasm_tools": external,
+    }
+
+
+def _print_build(facts: dict[str, object]) -> None:
+    target = facts["target_protocol"]
+    declared = (
+        f"{facts['declared_protocol']} (computed floor)"
+        if target is None
+        else f"{facts['declared_protocol']} (requested target {target})"
+    )
+    parts = facts["runtime_parts"]
+    imports = facts["imports"]
+    assert isinstance(parts, list) and isinstance(imports, list)
+    print(f"built {facts['source']} -> {facts['out']}")
+    print(f"  bytes             : {facts['bytes']}")
+    print(f"  sha256            : {facts['sha256']}  (the on-chain wasm hash)")
+    print(f"  declared protocol : {declared}")
+    print(f"  imports           : {len(imports)} host function(s)")
+    print(f"  runtime parts     : {', '.join(parts) if parts else 'none'}")
+    print(f"  memory            : {'yes' if facts['memory'] else 'no'}")
+    print(f"  wasm-tools        : {facts['wasm_tools']}")
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
-    print("stellar-serpent build is not yet implemented", file=sys.stderr)
-    return EXIT_ENVIRONMENT
+    try:
+        from serpent.compiler.diagnostics import CompileError
+        from serpent.emitter import build_file
+    except ModuleNotFoundError as exc:
+        if (exc.name or "").split(".", 1)[0] != "stellar_sdk":
+            raise
+        print(f"stellar-serpent build needs stellar_sdk; {SPEC_EXTRA_HINT}", file=sys.stderr)
+        return EXIT_ENVIRONMENT
+
+    source = Path(args.contract)
+    if not source.is_file():
+        print(f"no such contract module: {source}", file=sys.stderr)
+        return EXIT_ENVIRONMENT
+    out = Path(args.out) if args.out else source.with_suffix(".wasm")
+    meta: dict[str, str] = dict(args.meta)  # already (key, value) pairs: `type=_parse_meta` [M15]
+    validate_external: bool | None = {"auto": None, "require": True, "skip": False}[
+        args.external_validate
+    ]
+
+    try:
+        result = build_file(
+            source,
+            target_protocol=args.target_protocol,
+            meta=meta,
+            version=args.contract_version,
+            validate_external=validate_external,
+        )
+    except CompileError as exc:
+        lines = source.read_text(encoding="utf-8").splitlines()
+        print(exc.render(lines), file=sys.stderr)
+        return EXIT_REJECTED
+    except ValueError as exc:  # a reserved --meta key, before assembly
+        print(str(exc), file=sys.stderr)
+        return EXIT_ENVIRONMENT
+    except RuntimeError as exc:  # --require-external-validate with no wasm-tools
+        print(str(exc), file=sys.stderr)
+        return EXIT_ENVIRONMENT
+
+    try:
+        out.write_bytes(result.wasm)
+    except OSError as exc:
+        print(f"cannot write {out}: {exc}", file=sys.stderr)
+        return EXIT_ENVIRONMENT
+
+    if validate_external is False:
+        external = "skipped (--external-validate skip)"
+    elif shutil.which("wasm-tools") is None:
+        external = "not installed (skipped)"
+    else:
+        external = "validated"
+    facts = build_facts(result, source=source, out=out, external=external)
+    if args.json:
+        print(json.dumps(facts, indent=2))
+    elif not args.quiet:
+        _print_build(facts)
+    return EXIT_OK
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:

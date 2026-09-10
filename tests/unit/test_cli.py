@@ -235,3 +235,202 @@ def test_the_console_script_is_installed_under_the_plugin_name() -> None:
     done = subprocess.run([str(script), "--help"], capture_output=True, text=True, check=False)
     assert done.returncode == cli.EXIT_OK, done.stderr
     assert "build" in done.stdout and "inspect" in done.stdout and "doctor" in done.stdout
+
+
+# --- build ----------------------------------------------------------------------------
+
+from tests.unit.test_emitter_end_to_end import EXAMPLES as ALL_EXAMPLES
+
+_ROOT = Path(__file__).resolve().parents[2]
+EXAMPLES = _ROOT / "examples"
+
+
+def test_build_help_golden() -> None:
+    golden("build", cli.subparser("build").format_help())
+
+
+@pytest.mark.parametrize("path", ALL_EXAMPLES, ids=lambda p: p.stem)
+def test_build_writes_the_same_bytes_build_file_returns(
+    path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """[M9] over EVERY example: the sha256 the CLI prints is the on-chain wasm
+    hash Task 11b compares against `stellar contract info hash`, so the claim
+    "the CLI writes what build_file returns" is proven for the constructor,
+    memory, and union/enum paths, not sampled."""
+    import hashlib
+
+    from serpent.emitter import build_file
+
+    out = tmp_path / f"{path.stem}.wasm"
+    assert cli.main(["build", str(path), "--out", str(out)]) == cli.EXIT_OK
+    expected = build_file(path).wasm
+    assert out.read_bytes() == expected
+    printed = capsys.readouterr().out
+    assert hashlib.sha256(expected).hexdigest() in printed
+    assert "declared protocol" in printed
+
+
+def test_build_default_out_is_beside_the_source(tmp_path: Path) -> None:
+    source = tmp_path / "c.py"
+    source.write_text((EXAMPLES / "counter.py").read_text(encoding="utf-8"), encoding="utf-8")
+    assert cli.main(["build", str(source), "--quiet"]) == cli.EXIT_OK
+    assert (tmp_path / "c.wasm").exists()
+
+
+def test_build_json_carries_the_facts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "e.wasm"
+    assert (
+        cli.main(["build", str(EXAMPLES / "errors.py"), "--out", str(out), "--json"]) == cli.EXIT_OK
+    )
+    facts = json.loads(capsys.readouterr().out)
+    assert facts["declared_protocol"] == 22  # a constructor-bearing example (D9)
+    assert facts["target_protocol"] is None
+    assert facts["bytes"] == out.stat().st_size
+    assert sorted(facts) == sorted(
+        [
+            "source",
+            "out",
+            "bytes",
+            "sha256",
+            "declared_protocol",
+            "target_protocol",
+            "imports",
+            "exports",
+            "runtime_parts",
+            "memory",
+            "wasm_tools",
+        ]
+    )
+
+
+def test_build_rejection_renders_diagnostics_and_exits_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "bad.py"
+    bad.write_text(
+        "from serpent import Env, U32, contract\n\n\n@contract\nclass C:\n"
+        "    def f(self, env: Env, x: U32) -> U32:\n        return x + 1.5\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["build", str(bad), "--out", str(tmp_path / "bad.wasm")]) == cli.EXIT_REJECTED
+    err = capsys.readouterr().err
+    assert "error[SPT" in err
+    assert not (tmp_path / "bad.wasm").exists()
+
+
+def test_build_missing_source_is_an_environment_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["build", str(tmp_path / "nope.py")]) == cli.EXIT_ENVIRONMENT
+    assert "nope.py" in capsys.readouterr().err
+
+
+@pytest.mark.skip(reason="serpent.spec.decode lands in Task 3")
+def test_build_meta_pairs_land_in_contractmetav0(tmp_path: Path) -> None:
+    from serpent.spec.decode import decode_meta  # type: ignore[import-not-found] # lands in Task 3
+
+    from tests.unit.test_sections import _wasm_custom_section
+
+    out = tmp_path / "m.wasm"
+    assert (
+        cli.main(
+            [
+                "build",
+                str(EXAMPLES / "counter.py"),
+                "--out",
+                str(out),
+                "--meta",
+                "team=devrel",
+                "--meta",
+                "tag=v1",
+                "--quiet",
+            ]
+        )
+        == cli.EXIT_OK
+    )
+    pairs = dict(decode_meta(_wasm_custom_section(out.read_bytes(), "contractmetav0")))
+    assert pairs["team"] == "devrel" and pairs["tag"] == "v1"
+
+
+def test_build_reserved_meta_key_is_an_environment_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        cli.main(
+            [
+                "build",
+                str(EXAMPLES / "counter.py"),
+                "--out",
+                str(tmp_path / "x.wasm"),
+                "--meta",
+                "serpentver=9",
+            ]
+        )
+        == cli.EXIT_ENVIRONMENT
+    )
+    assert "reserved" in capsys.readouterr().err
+
+
+def test_build_meta_without_equals_is_a_usage_error() -> None:
+    with pytest.raises(SystemExit) as info:
+        cli.main(["build", "x.py", "--meta", "novalue"])
+    assert info.value.code == cli.EXIT_USAGE
+
+
+def test_build_target_protocol_below_a_constructor_floor_is_rejected(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = cli.main(
+        [
+            "build",
+            str(EXAMPLES / "errors.py"),
+            "--out",
+            str(tmp_path / "e.wasm"),
+            "--target-protocol",
+            "21",
+        ]
+    )
+    assert code == cli.EXIT_REJECTED
+    assert "SPT6001" in capsys.readouterr().err
+
+
+def test_build_require_external_validate_without_the_tool_is_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    code = cli.main(
+        [
+            "build",
+            str(EXAMPLES / "counter.py"),
+            "--out",
+            str(tmp_path / "c.wasm"),
+            "--external-validate",
+            "require",
+        ]
+    )
+    assert code == cli.EXIT_ENVIRONMENT
+    assert "wasm-tools" in capsys.readouterr().err
+
+
+def test_build_without_the_spec_extra_names_the_hint(tmp_path: Path) -> None:
+    """A bare install, simulated in a SUBPROCESS [m22] (the pattern
+    `test_core_zero_dep.py::test_importing_serpent_does_not_load_stellar_sdk`
+    uses): a meta-path finder that refuses `stellar_sdk`, then `cli.main`."""
+    probe = (
+        "import sys, importlib.abc\n"
+        "class Refuse(importlib.abc.MetaPathFinder):\n"
+        "    def find_spec(self, name, path, target=None):\n"
+        "        if name == 'stellar_sdk' or name.startswith('stellar_sdk.'):\n"
+        "            raise ModuleNotFoundError(name, name=name)\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, Refuse())\n"
+        "from serpent import cli\n"
+        f"raise SystemExit(cli.main(['build', {str(EXAMPLES / 'counter.py')!r}, '--out', {str(tmp_path / 'c.wasm')!r}]))\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == cli.EXIT_ENVIRONMENT, done.stderr
+    assert cli.SPEC_EXTRA_HINT in done.stderr
