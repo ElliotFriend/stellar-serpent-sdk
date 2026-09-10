@@ -11,7 +11,7 @@ ever disagree; the failure message names the regeneration command.
 
 serpent compiles a restricted subset of Python to a Soroban contract.
 This document is generated, in full, from the compiler's own registry
-of diagnostic codes, its `tests/must_reject/` fixture suite (114 minimal counter-examples, one per rejected
+of diagnostic codes, its `tests/must_reject/` fixture suite (116 minimal counter-examples, one per rejected
 construct), and its recognized-surface tables -- never hand-authored,
 so it cannot say something the compiler does not actually do.
 
@@ -1090,6 +1090,45 @@ class Contract:
 - **message:** name shadows an existing declaration
 - **help:** give the local a name no parameter, module constant, import, or declared type already uses
 - **note:** `x` already names a parameter
+
+#### parameter shadows a declared type (`names/param_shadows_declared_type.py`)
+
+```python
+from serpent import Env, U32, contract, contracttype
+
+
+@contracttype
+class Point:
+    x: U32
+
+
+@contract
+class Contract:
+    def compute(self, env: Env, Point: U32) -> U32:  # HERE
+        return Point
+```
+
+- **message:** name shadows an existing declaration
+- **help:** give the parameter a name no module constant, import, helper, or declared type already uses
+- **note:** `Point` already names a declared type
+
+#### parameter shadows a module constant (`names/param_shadows_module_constant.py`)
+
+```python
+from serpent import Env, U32, Symbol, contract
+
+LIMIT = U32(10)
+
+
+@contract
+class Contract:
+    def compute(self, env: Env, LIMIT: U32) -> U32:  # HERE
+        return LIMIT
+```
+
+- **message:** name shadows an existing declaration
+- **help:** give the parameter a name no module constant, import, helper, or declared type already uses
+- **note:** `LIMIT` already names a module constant
 
 #### @contractunion case named after a base reader (`types/union_case_shadows_a_reader.py`)
 

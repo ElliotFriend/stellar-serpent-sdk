@@ -140,6 +140,14 @@ __all__ = [
 
 _INTENT: dict[str, str] = {entry.code: entry.message_intent for entry in codes.REGISTRY}
 
+#: SPT2004's help for a PARAMETER that shadows a module-level reservation.
+#: `ctx._SHADOW_HELP` says "give the local a name", which is the wrong remedy
+#: at a parameter -- renaming a parameter changes the exported signature, so
+#: the advice has to name the parameter as the thing to rename (M1-G Task 5).
+_PARAM_SHADOW_HELP = (
+    "give the parameter a name no module constant, import, helper, or declared type already uses"
+)
+
 # --- the host functions the dedicated SS C.2 nodes name (B2: BY NAME) --------
 
 #: `raise <ErrorEnum>.<Member>` -> `fail_with_error` (S7/R3). A module-level
@@ -439,7 +447,22 @@ def _compile_function(
 ) -> FuncIR:
     """One `FuncSig` + its AST body -> one `FuncIR`."""
     reserved = dict(module_reserved)
-    for name, _ty, _loc in sig.params:
+    for name, _ty, loc in sig.params:
+        taken = module_reserved.get(name)
+        if taken is not None:
+            # A parameter that shadows a module-level reservation used to WIN
+            # silently (the overwrite below), so `def f(self, env, Point: U32)`
+            # in a module declaring `class Point` compiled, and every `Point`
+            # in the body meant the parameter. SPT2004 already names this
+            # shape ("Local/param shadows ... type name"); this is the check
+            # the registry row promised (M1-G Task 5, O-HYG5).
+            sink.error(
+                "SPT2004",
+                loc,
+                _INTENT["SPT2004"],
+                help=_PARAM_SHADOW_HELP,
+                notes=(f"`{name}` already names {taken}",),  # ctx.py:156's shape
+            )
         reserved[name] = "a parameter"
     ctx = FuncCtx(
         loaded=loaded,

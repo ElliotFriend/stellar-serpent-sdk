@@ -1588,6 +1588,25 @@ def test_compile_module_raises_before_a_caller_can_see_the_ir() -> None:
         )
 
 
+# --- a parameter shadowing a module-level reservation (M1-G Task 5) ---------
+
+
+def test_a_parameter_named_like_a_declared_type_is_spt2004_at_the_parameter() -> None:
+    """The parameter used to overwrite the reservation silently, so every
+    `Point` in the body meant the parameter rather than the declared type."""
+    source = (
+        "from serpent import Env, U32, contract, contracttype\n\n\n"
+        "@contracttype\nclass Point:\n    x: U32\n\n\n"
+        "@contract\nclass C:\n    def f(self, env: Env, Point: U32) -> U32:\n        return Point\n"
+    )
+    with pytest.raises(CompileError) as info:
+        compile_module(source, "shadow.py")
+    (diag,) = [d for d in info.value.diagnostics if d.code == "SPT2004"]
+    assert diag.loc.line == 11
+    assert "`Point` already names a declared type" in diag.notes
+    assert "parameter" in (diag.help or "")
+
+
 def test_a_syntax_error_is_a_single_located_diagnostic() -> None:
     with pytest.raises(CompileError) as info:
         compile_module("def (:\n", PATH)
