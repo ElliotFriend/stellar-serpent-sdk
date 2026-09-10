@@ -29,6 +29,7 @@ import ast
 import importlib
 import pathlib
 import re
+from types import ModuleType
 
 import pytest
 
@@ -39,7 +40,7 @@ PATH = "contract.py"
 
 _IMPORTS = (
     "from serpent import ("
-    "Annotated, ContractEnum, ContractUnion, Env, U32, contract, contractenum, "
+    "Annotated, ContractEnum, ContractUnion, Env, Event, U32, contract, contractenum, "
     "contracterror, contractevent, contracttype, contractunion, enumvalue, errorcode, "
     "topic, variant"
     ")"
@@ -411,6 +412,27 @@ _ROWS: tuple[tuple[str, str, str, str], ...] = (
             "        return U32(0)"
         ),
     ),
+    # --- M1-G Task 5: the raise this round bridged AND can reach (O-HYG4) --
+    # `_check_topic_list`'s prefixless-event refusal. `topics=()` makes the
+    # first `Annotated[T, topic]` field the event's `topics[0]`, which names
+    # the event, so a non-Symbol there is SPT3019 -- held at the declaration
+    # rather than at the `publish` call the code was written for. The
+    # `amount` field is load-bearing: an event whose ONLY field is a topic
+    # trips `_check_data_format`'s container-needs-a-data-field refusal first
+    # (itself an `_UNBRIDGED_DEBT` shape).
+    (
+        "event_prefixless_first_topic_field_not_symbol",
+        "SPT3019",
+        "this field is the event's topics[0]",
+        (
+            "@contractevent(topics=())\nclass Moved(Event):\n"
+            "    who: Annotated[U32, topic]  # HERE\n"
+            "    amount: U32"
+        ),
+    ),
+    # The OTHER rule this round added -- `_enum_member`'s owner check ->
+    # SPT4025 -- has no row: no contract source reaches it at all. See
+    # `_UNREACHABLE_NEEDLES` below for the dominance argument.
 )
 
 
@@ -469,6 +491,18 @@ _UNREACHABLE_NEEDLES: frozenset[str] = frozenset(
         # refused as a module-level redeclaration (SPT2004,
         # `loader._claim_name`) before the reassignment ever executes.
         "already declared as a serpent",
+        # `types._udt._enum_member`'s TypeError (bridged to SPT4025 in M1-G
+        # Task 5): reached only by reading `X.Member` where `Member` is an
+        # `enumvalue(...)` placeholder and `X` is not a `ContractEnum`
+        # subclass -- and every route to that read is dominated by an earlier
+        # check (verified empirically, task-5 report): an undecorated class is
+        # SPT4015 (a module-shape check, before the module body ever runs);
+        # `enumvalue(...)` in a @contract / @contracttype / @contractevent
+        # body is SPT4020, in a @contracterror body SPT4008, in a
+        # @contractunion body SPT4022; and in a @contractenum body the owner
+        # IS a `ContractEnum` subclass, so the check passes. SPT4025 itself is
+        # exercised by the `union_without_its_base` row.
+        "declares a member of a ContractEnum subclass",
     }
 )
 
@@ -488,39 +522,119 @@ def test_every_bridge_rule_needle_has_a_row() -> None:
     assert not stale, f"_UNREACHABLE_NEEDLES cite needle(s) no longer in _BRIDGE_RULES: {stale}"
 
 
-#: The declaration-layer functions whose every `raise` must carry a
-#: `_BRIDGE_RULES` needle -- M1-E2's two decorators, their refusal helpers, the
-#: two case factories a class body calls, and (as of M1-E2 Task 5, fed item
-#: X2/E10 -- controller ruling on the task-5 report's concern) `_check_method`
-#: and `_build_record`, the two functions whose `topic`-marker raises this task
-#: gave their own needle and code (`SPT4026`). `(module, function names)`.
-#:
-#: Scoped to this surface on purpose, and NOT to `decorators.py` wholesale: the
-#: OTHER M1-E Task 5 event-convention raises (`data_format must be one of
-#: ...`, the prefix-topic refusals) still carry no needle and still fall to
-#: MJ-11's catch-all -- a pre-existing gap this round did not create and is
-#: not chartered to fix (see the fix report; the controller has it). Every
-#: raise actually inside `_check_method`/`_build_record` IS bridged today
-#: (verified: this gate passes with both added), which is exactly why adding
-#: them here is safe -- no OTHER function in `decorators.py` is added
-#: alongside them, since this gate's surface stays exactly what M1-E2 Tasks 2
-#: and 5 chartered, no wider.
-_BRIDGED_RAISE_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "serpent.decorators",
-        (
-            "contractunion",
-            "contractenum",
-            "_check_udt_base",
-            "_reject_bare_case",
-            "_reject_empty_udt",
-            "_check_method",
-            "_build_record",
-            "_split_topic",
-        ),
-    ),
-    ("serpent.types._udt", ("variant", "enumvalue", "_bind_variant", "_reject_wide_payload")),
+#: The declaration-layer MODULES (not functions): every `raise` in them --
+#: outside dunder methods, which are RUNTIME surface (`__setattr__`'s
+#: immutability refusals are reached by a contract body, never a declaration)
+#: and are excluded by construction -- is either bridged (its message carries
+#: a `loader._BRIDGE_RULES` needle), listed in `_UNBRIDGED_BY_DESIGN` with a
+#: reason, or listed in `_UNBRIDGED_DEBT` with the M2 item that owes it a
+#: code. M1-E2's version of this gate named FUNCTIONS, so a raise added to any
+#: other function was invisible (one-directional blind spot, E2 attn section 3;
+#: O-HYG4/D11) -- deriving the walk from the module closes it.
+_DECLARATION_LAYER_MODULES: tuple[str, ...] = ("serpent.decorators", "serpent.types._udt")
+
+#: `(module, message fragment)` for raises a USER cannot reach through a
+#: declaration -- internal invariants, or paths the loader intercepts before
+#: the decorator runs -- each with its reason. Keyed on TEXT (the M1-F
+#: allowlist lesson), so a reworded message re-enters the gate. MAY NOT hold a
+#: user-reachable raise: that is `_UNBRIDGED_DEBT`'s job.
+_UNBRIDGED_BY_DESIGN: frozenset[tuple[str, str]] = frozenset(
+    {
+        # `_ContractUnion._cmp_payload`'s deferred refusal: RUNTIME value
+        # surface, not a declaration. It is `Vec`'s own `_DEFERRED` text, and
+        # it is reached only through a comparison operator (`__lt__` ->
+        # `_ordering.val_cmp`), i.e. the same runtime path as the
+        # `__setattr__` refusals the dunder rule already excludes -- a
+        # declaration never orders two union values.
+        ("serpent.types._udt", "container comparison"),
+    }
 )
+
+#: User-REACHABLE declaration raises with NO honest registry code today: the
+#: M1-E Task 5 event-convention shapes M1-E2's gate declined to fix and this
+#: gate now makes VISIBLE (a new raise here fails the gate; an entry here is a
+#: named debt, not a design). Each entry cites the M2 registry item owing it a
+#: code ("event-convention shape codes: data_format, prefix-topic cap,
+#: prefix-topic charset, bare-string topics, no topics"). Keyed on TEXT like
+#: the list above.
+_UNBRIDGED_DEBT: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("serpent.decorators", "an event declares at most"),  # prefix-topic cap
+        ("serpent.decorators", "topics= takes a sequence of topics, not one string"),
+        ("serpent.decorators", "data_format must be one of"),
+        ("serpent.decorators", "data_format 'single-value' publishes exactly one"),
+        # data_format map/vec with no data fields
+        ("serpent.decorators", "publishes the non-topic"),
+        ("serpent.decorators", "publishes the data fields as one"),  # vec with mixed types
+        ("serpent.decorators", "an event publishes at least one topic, and this one has"),
+        # `_prefix_topics`' charset/length refusal, whose message is built by
+        # `_bad_prefix_topic(...)` -- visible here only through
+        # `_indirect_message_chunks` below, and keyed on the one chunk both of
+        # that helper's two wordings share.
+        ("serpent.decorators", "a valid Symbol of 1 to"),
+    }
+)
+
+
+def _dunder_body_nodes(tree: ast.Module) -> set[int]:
+    """Every node inside a dunder method -- runtime surface, not declaration."""
+    inside: set[int] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name.startswith("__")
+            and node.name.endswith("__")
+        ):
+            inside.update(id(n) for n in ast.walk(node))
+    return inside
+
+
+def _raises_outside_dunders(tree: ast.Module) -> list[ast.Raise]:
+    """Every `raise` in the module except those inside a dunder method."""
+    dunder_bodies = _dunder_body_nodes(tree)
+    return [n for n in ast.walk(tree) if isinstance(n, ast.Raise) and id(n) not in dunder_bodies]
+
+
+def _body_string_literals(function: ast.FunctionDef) -> list[str]:
+    """Every string literal in `function`'s body, minus its docstring.
+
+    The docstring is excluded on purpose: it is prose ABOUT the refusal, and
+    letting it into the chunk list would let a needle match documentation
+    rather than a message a user ever sees.
+    """
+    body = function.body[1:] if ast.get_docstring(function) else function.body
+    return [
+        literal.value
+        for stmt in body
+        for literal in ast.walk(stmt)
+        if isinstance(literal, ast.Constant) and isinstance(literal.value, str)
+    ]
+
+
+def _indirect_message_chunks(raised: ast.Raise, tree: ast.Module, module: ModuleType) -> list[str]:
+    """The message text a `raise` builds INDIRECTLY, resolved one hop.
+
+    `_raise_message_chunks` reads literal fragments only, so
+    `raise ValueError(_bad_prefix_topic(...))` and
+    `raise NotImplementedError(_DEFERRED)` carry no literal chunk at all and
+    were invisible to this gate -- a blind spot in the same family as the
+    hand-kept function list. Two hops close it, and they are the only two the
+    declaration layer uses: a call to a helper defined in the SAME module
+    (its own literal fragments), and a module-level string constant (its live
+    value, which may have been imported from elsewhere).
+    """
+    helpers = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    chunks: list[str] = []
+    for node in ast.walk(raised):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            helper = helpers.get(node.func.id)
+            if helper is not None:
+                chunks.extend(_body_string_literals(helper))
+        elif isinstance(node, ast.Name):
+            value = getattr(module, node.id, None)
+            if isinstance(value, str):
+                chunks.append(value)
+    return chunks
 
 
 def _raise_message_chunks(node: ast.AST) -> list[str]:
@@ -539,41 +653,63 @@ def _raise_message_chunks(node: ast.AST) -> list[str]:
 
 
 def test_every_declaration_layer_raise_carries_a_bridge_needle() -> None:
-    """The MISSING direction of the gate above (fix round 1's finding).
+    """The MISSING direction of the gate above (M1-E2 fix round 1's finding),
+    now derived from the MODULE rather than a hand-kept list of functions.
 
     `test_every_bridge_rule_needle_has_a_row` proves every RULE is exercised;
     nothing proved the converse -- a declaration-site `raise` with no rule at
     all was invisible, and fell silently to `SPT1037` ("not supported by the
     serpent subset"), which is false for a construct that IS supported and
-    merely malformed. Two such raises shipped in M1-E2 Task 2
-    (`enumvalue(<not an int>)` and `variant(<a value>)`); this walks the AST of
-    the declaration surface and fails on any raise whose message no
-    `_BRIDGE_RULES` needle matches.
+    merely malformed. M1-E2's version of this test named the eight+four
+    functions it had audited, so a raise added to any OTHER function in the
+    same modules stayed invisible; this walks every raise in them.
     """
     needles = [rule.needle for rule in loader._BRIDGE_RULES if rule.needle]
-    unbridged: list[tuple[str, str, int]] = []
-    for module_name, function_names in _BRIDGED_RAISE_SOURCES:
+    listed = _UNBRIDGED_BY_DESIGN | _UNBRIDGED_DEBT
+    unbridged: list[tuple[str, int, str]] = []
+    for module_name in _DECLARATION_LAYER_MODULES:
         module = importlib.import_module(module_name)
         tree = ast.parse(pathlib.Path(module.__file__ or "").read_text(encoding="utf-8"))
-        functions = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name in function_names
-        ]
-        found = {node.name for node in functions}
-        assert found == set(function_names), (
-            f"{module_name}: this gate names function(s) that no longer exist: "
-            f"{sorted(set(function_names) - found)}"
-        )
-        for function in functions:
-            for raised in (n for n in ast.walk(function) if isinstance(n, ast.Raise)):
-                chunks = _raise_message_chunks(raised)
-                if not any(needle in chunk for chunk in chunks for needle in needles):
-                    unbridged.append((module_name, function.name, raised.lineno))
+        for raised in _raises_outside_dunders(tree):
+            chunks = _raise_message_chunks(raised)
+            chunks.extend(_indirect_message_chunks(raised, tree, module))
+            if any(needle in chunk for chunk in chunks for needle in needles):
+                continue
+            if any(
+                fragment in chunk for chunk in chunks for m, fragment in listed if m == module_name
+            ):
+                continue
+            unbridged.append((module_name, raised.lineno, " | ".join(chunks) or "<no message>"))
     assert not unbridged, (
-        "declaration-site raise(s) with no `loader._BRIDGE_RULES` needle -- each would "
-        f"fall to MJ-11's catch-all (SPT1037) instead of its own code: {unbridged}"
+        "declaration-site raise(s) with neither a `loader._BRIDGE_RULES` needle nor an "
+        f"`_UNBRIDGED_BY_DESIGN`/`_UNBRIDGED_DEBT` entry -- each would fall to SPT1037: {unbridged}"
     )
+
+
+def test_the_unbridged_lists_are_live_and_disjoint() -> None:
+    """Every listed fragment still matches at least one raise the walk sees in
+    its module (a stale entry is deleted, not kept), and no fragment is in
+    both lists.
+
+    Matched against the WALK's chunks rather than the raw source, because a
+    fragment may come from a helper's text or from a string constant imported
+    from another module -- the same text the gate above compares.
+    """
+    assert not (_UNBRIDGED_BY_DESIGN & _UNBRIDGED_DEBT)
+    for module_name, fragment in _UNBRIDGED_BY_DESIGN | _UNBRIDGED_DEBT:
+        module = importlib.import_module(module_name)
+        tree = ast.parse(pathlib.Path(module.__file__ or "").read_text(encoding="utf-8"))
+        matches = [
+            raised.lineno
+            for raised in _raises_outside_dunders(tree)
+            if any(
+                fragment in chunk
+                for chunk in (
+                    _raise_message_chunks(raised) + _indirect_message_chunks(raised, tree, module)
+                )
+            )
+        ]
+        assert matches, (module_name, fragment)
 
 
 def test_every_bridge_rule_code_has_a_row() -> None:

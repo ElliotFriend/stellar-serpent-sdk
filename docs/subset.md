@@ -11,7 +11,7 @@ ever disagree; the failure message names the regeneration command.
 
 serpent compiles a restricted subset of Python to a Soroban contract.
 This document is generated, in full, from the compiler's own registry
-of diagnostic codes, its `tests/must_reject/` fixture suite (116 minimal counter-examples, one per rejected
+of diagnostic codes, its `tests/must_reject/` fixture suite (117 minimal counter-examples, one per rejected
 construct), and its recognized-surface tables -- never hand-authored,
 so it cannot say something the compiler does not actually do.
 
@@ -1610,6 +1610,28 @@ class Contract:
 **Construct:** events().publish(topics, data) -- topics[0] is not a Symbol (S11)
 
 **Intent:** the first event topic must be a Symbol naming the event
+
+#### prefixless event whose first topic field is not a Symbol (`types/event_prefixless_first_topic_not_symbol.py`)
+
+```python
+from serpent import Annotated, Env, Event, U32, contract, contractevent, topic
+
+
+@contractevent(topics=())
+class Moved(Event):
+    who: Annotated[U32, topic]  # HERE
+    amount: U32
+
+
+@contract
+class Contract:
+    def compute(self, env: Env, x: U32) -> U32:
+        return x
+```
+
+- **message:** Moved.who: the first event topic must be a Symbol naming the event
+- **help:** name the event with a prefix topic (`@contractevent(topics=('name',))`), or make the first `Annotated[T, topic]` field a Symbol
+- **note:** ValueError: Moved.who: with `topics=()` this field is the event's topics[0], which names the event and must therefore be a Symbol (got U32) -- declare a prefix topic instead, e.g. `@contractevent(topics=('moved',))`
 
 #### event topics[0] not a Symbol (`types/event_topic_not_symbol.py`)
 

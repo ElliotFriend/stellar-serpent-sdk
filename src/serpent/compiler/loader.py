@@ -250,6 +250,14 @@ _HELP: dict[str, str] = {
         "`serpent.__all__`) and `from __future__ import annotations`"
     ),
     "SPT3004": "use a value the target chain type can represent",
+    # Worded for the DECLARATION, not for a `publish` call: `recognize.py`'s
+    # own SPT3019 help ("make topics[0] a Symbol ...") names an argument the
+    # author never wrote here -- with `topics=()` the first marked FIELD is
+    # topics[0], so the two remedies are a prefix topic or a Symbol field.
+    "SPT3019": (
+        "name the event with a prefix topic (`@contractevent(topics=('name',))`), or make "
+        "the first `Annotated[T, topic]` field a Symbol"
+    ),
     "SPT4001": "give the method `self` as its first parameter",
     "SPT4002": "list every parameter explicitly; an export has a fixed arity",
     "SPT4003": "drop the default and require the argument at every call site",
@@ -368,6 +376,15 @@ _BRIDGE_RULES: tuple[_BridgeRule, ...] = (
         (TypeError,), "enumvalue() takes an int discriminant", "SPT4023", _REFINE_ENUMVALUE
     ),
     _BridgeRule((TypeError,), "variant() takes payload types", "SPT4022", _REFINE_VARIANT),
+    # `_EnumValue.__get__`'s owner check (M1-G Task 5, O-HYG4). Reading
+    # `X.Member` on a class that is not a `ContractEnum` subclass is SPT4025's
+    # own rule -- an int-enum member only exists on a class that inherits
+    # `ContractEnum` -- so it is bridged to that code rather than falling to
+    # the SPT1037 catch-all. No contract source reaches it today (every route
+    # is dominated by an earlier check; see `_UNREACHABLE_NEEDLES` in
+    # `tests/unit/test_bridging_completeness.py`), which is exactly why the
+    # rule is here: the day one does, it gets a code instead of a lie.
+    _BridgeRule((TypeError,), "declares a member of a ContractEnum subclass", "SPT4025"),
     _BridgeRule(_VALUE_ERROR, "@contracterror members must be declared", "SPT4008"),
     _BridgeRule(_VALUE_ERROR, "is out of range -- contract codes are", "SPT4009"),
     _BridgeRule(_VALUE_ERROR, "is already used by", "SPT4010"),
@@ -422,6 +439,14 @@ _BRIDGE_RULES: tuple[_BridgeRule, ...] = (
     # SPT4026's intent -- the marker in a position that has no topics -- so it
     # is the same code rather than a new one.
     _BridgeRule(_VALUE_ERROR, "`topic` must mark the whole annotation", "SPT4026"),
+    # M1-G Task 5 (O-HYG4, controller-sanctioned): `_check_topic_list`'s
+    # prefixless-event refusal. With `topics=()` the first `Annotated[T,
+    # topic]` field IS the event's `topics[0]`, which names the event and must
+    # therefore be a Symbol -- exactly SPT3019's rule, held at the declaration
+    # instead of at the `publish` call the code was written for. It used to
+    # fall to the SPT1037 catch-all ("not supported by the serpent subset"),
+    # which is false for an event that is supported and merely mis-declared.
+    _BridgeRule(_VALUE_ERROR, "this field is the event's topics[0]", "SPT3019"),
     _BridgeRule(_VALUE_ERROR, "names are capped at", "SPT5001"),
     _BridgeRule(_VALUE_ERROR, "names must be valid Symbols", "SPT5001"),
     _BridgeRule(_VALUE_ERROR, "cannot resolve annotations", "SPT2003"),
