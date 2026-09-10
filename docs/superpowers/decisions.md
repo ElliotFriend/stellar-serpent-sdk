@@ -1027,3 +1027,100 @@ entry.
   reviewer's line-by-line triage.
 - Reversal cost: prose and one reason constant; the row semantics did not
   move.
+
+## 2026-09-10 M1-G rulings (dossier E1-E16, all recommendations adopted)
+- Context: the M1-G inputs dossier (specs/2026-09-10-m1g-inputs-dossier.md)
+  posed sixteen questions with recommendations; controller adopted all
+  sixteen. Two inputs were decided WITH Elliot in-session first (dossier
+  §A.5): U1, the M1-end deployment deploys the FIXED shapes contract AND
+  the bounty board promoted from sandbox/ to a seventh, gate-covered
+  example; U2, spikes/ is retained as frozen read-only evidence (roadmap
+  R3 closed; README-only touch). Facts verified live before ruling:
+  testnet protocol 28 (core 28.0.1), mainnet 27; stellar-cli latest
+  v28.0.0 with 27.1.0 installed locally; plugin dispatch PROVEN on 27.1.0
+  (a stub stellar-serpent on PATH received argv verbatim from `stellar
+  serpent build ...` and appears in `stellar plugin ls`); `stellar
+  contract info interface|meta|env-meta --wasm` already renders a serpent
+  artifact; `serpent` is TAKEN on PyPI; the bounty board is mypy-strict
+  clean and passes 5/5 on both legs.
+- E1 (CLI framework): stdlib argparse; no third-party CLI dependency.
+- E2 (zero-dep boundary): `serpent/cli.py` imports stdlib + core at module
+  load and `serpent.emitter`/`serpent.spec` lazily inside `build`/`inspect`
+  (ImportError -> exit 3 naming `serpent[spec]`); cli.py joins the zero-dep
+  gate's EXEMPT tuple WITH the not-reachable-from-root test spec/testing
+  have. Install path documented as the git URL with the `spec` extra.
+- E3 (`inspect` remit): serpent-specific facts only -- section inventory
+  and sizes, sha256 (the on-chain wasm hash), imports with protocol gates,
+  exports, DECLARED protocol from contractenvmetav0 side by side with the
+  floor RECOMPUTED via compute_protocol_floor + the constructor gate
+  (MISMATCH marker), spec entry names by kind, meta pairs, `--wat`; a
+  pointer to `stellar contract info interface` instead of a second
+  interface renderer. Never decodes Val words (spec §10).
+- E4 (`doctor`): offline table of ok/warn/fail rows with remedies; `fail`
+  only for Python < 3.11 and a missing `spec` extra; `--network` adds one
+  read-only getVersionInfo; `--json`.
+- E5 (docs site): mkdocs-material + pymdownx.snippets (examples rendered
+  from examples/*.py) + mkdocstrings-python (serpent's 40 names and
+  serpent.testing's 12); docs/superpowers excluded; `mkdocs build
+  --strict` in CI; CLI reference generated from `--help` goldens; NO
+  publish in G -- a workflow_dispatch Pages job Elliot may trigger.
+- E6 (CI Rust job): a separate `real-host` job (py 3.11; pinned rust
+  toolchain; rust-cache on host/Cargo.lock; `uv sync` -> maturin develop
+  -> `uv run --no-sync` per ruling F-E5; cargo fmt/clippy/test;
+  SERPENT_REQUIRE_REAL_HOST=1; an assertion on the real-host test count so
+  the job cannot pass vacuously). The plan measures the cold host build
+  before choosing the cache budget.
+- E7 (promotion): `git mv sandbox/bounty_board.py examples/bounty_board.py`,
+  source otherwise untouched (Elliot's contract); tests split along the
+  per-example convention (tier-1/mini-host in test_examples.py, real leg
+  in tests/real_host/); `_contract_address(label)` stays test-local (a
+  serpent.testing helper is M2 surface); joins all seven inventories plus
+  CONSTRUCTOR_BEARING and gets a golden.
+- E8 (mock strictness): `FullHost(strict_obj_cmp=True)` BY DEFAULT -- two
+  small Vals through obj_cmp trap as on the host; the deployed shapes
+  bytes are the regression fixture (they must now trap on `area` under
+  the mock); `False` kept for archaeology. Opus (tier-2a oracle edit).
+- E9 (parameter shadows a declared type): a located SPT2004 at the
+  parameter (the code's intent already names "type name"; no registry
+  edit), must_reject fixture, subset.md regen; frontend.py stops
+  overwriting the module-level reservation. Accepts shrink deliberately.
+- E10 (DEFAULT_TARGET_PROTOCOL): KEEP 27 (mainnet's protocol) and document
+  the reason -- the target is an upper bound, and the default build must
+  deploy on the lowest live network; `--target-protocol 28` opts in.
+  Revisit when mainnet moves to 28.
+- E11 (version): bump to 0.1.0 in the deployment pre-flight commit BEFORE
+  the deploy builds (so `serpentver: 0.1.0` is on chain); a LOCAL
+  annotated tag v0.1.0 on the deployment-record commit; pushing the tag
+  is Elliot's. host/ stays 0.0.1 (M3's wheel story).
+- E12 (distribution name): NO rename in G; `serpent` is taken on PyPI;
+  `stellar-serpent`, `serpent-sdk`, `soroban-serpent` were free on
+  2026-09-10 -- recorded for M3's name decision; the console script is
+  `stellar-serpent` regardless (plugin convention).
+- E13 (wasm-tools drift watch): one shared pin constant read by `doctor`
+  and asserted equal to ci.yml's WASM_TOOLS_VERSION by a unit test;
+  bumping is a documented manual step; no scheduled network job.
+- E14 (promise net + F minors): a fourth net for "sub-plan G"/"(G)"/"G's"
+  in the closing task; the plan names which F deferred minors G takes and
+  leaves the host-fact candidates to M2.
+- E15 (bounty-board tier 3): record the two no-argument methods the
+  recorder supports (`total_posted`, `open_ids`) against whatever state
+  the approved session leaves; argument-taking recording stays M3's.
+- E16 (sandbox): kept as Elliot's scratch area; compile.py becomes a
+  pointer at `stellar-serpent build` or is deleted (plan author's call,
+  stated); README rewritten; sandbox/counter.py and hello_world.py stay
+  untouched (test_harness_hostfns reads them).
+- Also ruled: the sanctioned registry WORDING pass for G is exactly the
+  dossier's O-HYG1/O-HYG2/O-HYG7 list (SPT4012 wording, origin-field
+  normalisation, SPT3020/SPT3014 construct lists, SPT1xxx help citing
+  docs/subset.md, limit numbers out of intent strings) -- text-only, no
+  new codes, no renumbering, snapshot pins and subset.md regenerated in
+  the same commit; anything beyond that list needs its own sanction.
+- Why: each recommendation was evidence-cited in the dossier; the
+  controlling risk for G is a hollow ship (a CLI that works only in the
+  repo venv, docs that drift, a Rust job that passes vacuously, a
+  deployment without re-recorded fixtures), and E2/E3/E5/E6 plus the
+  tool-install smoke are the four that make the shipped shape testable.
+- Reversal cost: per-item low before the plan's tasks consume them; E8 is
+  a tier-2a default flip pinned by the deployed bytes; E9 shrinks accepts
+  on a shape that is a bug every time; E11's tag is deletable until
+  pushed; E10 and E12 decide nothing irreversible.
