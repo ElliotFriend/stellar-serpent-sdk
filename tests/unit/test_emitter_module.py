@@ -1200,16 +1200,45 @@ def test_every_export_the_spec_section_names_really_exists_in_the_module() -> No
     assert spec_names == exported
 
 
+#: The only two `serpent/emitter/` modules allowed to import `serpent.spec`
+#: (and so, transitively, `stellar_sdk`): `sections.py` is the WRITE side, on
+#: the build path and imported by `serpent.emitter.__init__`; `artifact.py`
+#: (M1-G Task 3, ruling E3) is the READ side, imported by nothing in this
+#: package and reached only when `stellar-serpent inspect` imports it lazily.
+#: Both delegate every XDR byte to `serpent.spec`, which is what the boundary
+#: exists to guarantee -- neither encodes or decodes a field itself.
+_SPEC_IMPORTING_EMITTER_MODULES = ("artifact.py", "sections.py")
+
+
 def test_the_emitter_package_does_not_reach_stellar_sdk_outside_sections() -> None:
-    """Global Constraints: `emitter/sections.py` is the ONE emitter module
-    allowed to import `serpent.spec` (and so, transitively, `stellar_sdk`)."""
+    """Global Constraints: only `_SPEC_IMPORTING_EMITTER_MODULES` may import
+    `serpent.spec` (and so, transitively, `stellar_sdk`)."""
     src_dir = Path(serpent.__file__).parent / "emitter"
     offenders = [
         path.name
         for path in sorted(src_dir.glob("*.py"))
-        if path.name != "sections.py"
+        if path.name not in _SPEC_IMPORTING_EMITTER_MODULES
         and re.search(
             r"^\s*(from|import)\s+(serpent\.spec|stellar_sdk)", path.read_text(), re.MULTILINE
         )
     ]
     assert offenders == []
+
+
+def test_importing_the_emitter_package_does_not_pull_in_the_inspector() -> None:
+    """`artifact.py`'s place on the allow-list above rests on it being OFF the
+    build path: nothing in `serpent/emitter/` may import it, so `build` never
+    pays for the read direction and `inspect` alone imports it (ruling E2)."""
+    src_dir = Path(serpent.__file__).parent / "emitter"
+    importers = [
+        path.name
+        for path in sorted(src_dir.glob("*.py"))
+        if path.name != "artifact.py"
+        and re.search(
+            r"^\s*(from|import)\s+serpent\.emitter\.artifact|"
+            r"^\s*from\s+serpent\.emitter\s+import\s+.*\bartifact\b",
+            path.read_text(),
+            re.MULTILINE,
+        )
+    ]
+    assert importers == []

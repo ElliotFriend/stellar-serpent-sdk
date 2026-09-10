@@ -46,7 +46,7 @@ from typing import Any, Literal, cast
 
 import serpent
 from serpent import _pins
-from serpent._host import DEFAULT_TARGET_PROTOCOL
+from serpent._host import CONSTRUCTOR_MIN_PROTOCOL, DEFAULT_TARGET_PROTOCOL
 
 EXIT_OK = 0
 EXIT_REJECTED = 1
@@ -282,7 +282,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return exit_code_for(checks)
 
 
-# --- build (inspect's body lands in Task 3) ---------------------------------------------
+# --- build and inspect ------------------------------------------------------------
 
 
 def build_facts(result: Any, *, source: Path, out: Path, external: str) -> dict[str, object]:
@@ -387,8 +387,79 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
-    print("stellar-serpent inspect is not yet implemented", file=sys.stderr)
-    return EXIT_ENVIRONMENT
+    try:
+        from serpent.emitter.artifact import MalformedArtifact, inspect_artifact
+        from serpent.emitter.printer import disassemble
+    except ModuleNotFoundError as exc:
+        if (exc.name or "").split(".", 1)[0] != "stellar_sdk":
+            raise
+        print(f"stellar-serpent inspect needs stellar_sdk; {SPEC_EXTRA_HINT}", file=sys.stderr)
+        return EXIT_ENVIRONMENT
+    path = Path(args.artifact)
+    if not path.is_file():
+        print(f"no such file: {path}", file=sys.stderr)
+        return EXIT_ENVIRONMENT
+    wasm = path.read_bytes()
+    try:
+        art = inspect_artifact(wasm)
+    except MalformedArtifact as exc:
+        print(f"{path}: {exc}", file=sys.stderr)
+        return EXIT_REJECTED
+
+    if args.json:
+        facts: dict[str, object] = {
+            "file": str(path),
+            "sha256": art.sha256,
+            "bytes": art.size,
+            "sections": [dataclasses.asdict(s) for s in art.sections],
+            "imports": [dataclasses.asdict(i) for i in art.imports],
+            "exports": list(art.exports),
+            "has_constructor": art.has_constructor,
+            "declared_protocol": art.declared_protocol,
+            "recomputed_protocol": art.recomputed_protocol,
+            "protocol_mismatch": art.protocol_mismatch,
+            "spec": art.spec,
+            "meta": art.meta,
+        }
+        if args.wat:
+            facts["wat"] = disassemble(wasm)
+        print(json.dumps(facts, indent=2))
+        return EXIT_OK
+
+    print(f"{path}  ({art.size} bytes)")
+    print(f"  sha256             : {art.sha256}  (the on-chain wasm hash)")
+    declared = "absent" if art.declared_protocol is None else str(art.declared_protocol)
+    flag = (
+        "  MISMATCH: the declared protocol is not the floor the imports require"
+        if art.protocol_mismatch
+        else ""
+    )
+    constructor_note = (
+        f" (constructor gate {CONSTRUCTOR_MIN_PROTOCOL} applied)" if art.has_constructor else ""
+    )
+    print(f"  declared protocol  : {declared}")
+    print(f"  recomputed floor   : {art.recomputed_protocol}{constructor_note}{flag}")
+    print("  sections           :")
+    for section in art.sections:
+        print(f"    {section.id:>2} {section.name or '?':<20} {section.size:>7} B")
+    print(f"  imports            : {len(art.imports)}")
+    for imp in art.imports:
+        gate = "" if imp.min_protocol is None else f"  (protocol >= {imp.min_protocol})"
+        resolved = imp.host_fn or "UNKNOWN to the pinned env.json"
+        print(f"    {imp.module}.{imp.field:<4} {resolved}{gate}")
+    print(f"  exports            : {', '.join(art.exports)}")
+    if art.spec is not None:
+        print("  contractspecv0     :")
+        for kind, names in art.spec.items():
+            if names:
+                print(f"    {kind:<12} {', '.join(names)}")
+        print("    (rendered interface: `stellar contract info interface --wasm FILE`)")
+    if art.meta is not None:
+        print("  contractmetav0     : " + ", ".join(f"{k}={v}" for k, v in art.meta))
+    if args.wat:
+        print()
+        print(disassemble(wasm))
+    return EXIT_OK
 
 
 # --- the parser -----------------------------------------------------------------------

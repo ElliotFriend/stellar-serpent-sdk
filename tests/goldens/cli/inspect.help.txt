@@ -1,0 +1,11 @@
+usage: stellar-serpent inspect [-h] [--wat] [--json] FILE
+
+Read a built .wasm: its sections, sha256 (the on-chain wasm hash), host-function imports with their protocol gates, exports, the DECLARED protocol against the floor RECOMPUTED from the imports, and the spec/meta entries by name. For the rendered interface use `stellar contract info interface --wasm FILE`.
+
+positional arguments:
+  FILE        the .wasm to read
+
+options:
+  -h, --help  show this help message and exit
+  --wat       append a WAT-style disassembly
+  --json      print the facts as JSON

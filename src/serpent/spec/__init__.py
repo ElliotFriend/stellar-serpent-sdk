@@ -14,9 +14,16 @@ imported explicitly by the compiler (sub-plan D) and by tests.
 
 Re-exports only; nothing is defined here. `typemap` turns one annotation into
 an `SCSpecTypeDef`; `sections` builds the three custom-section payloads out of
-`_serpent_type_` metadata and those type defs.
+`_serpent_type_` metadata and those type defs; `decode` reads those same three
+payloads back, so the CLI's `inspect` has no XDR of its own (ruling E3).
 """
 
+from serpent.spec.decode import (
+    decode_env_meta,
+    decode_meta,
+    decode_spec_entries,
+    spec_entry_names_by_kind,
+)
 from serpent.spec.sections import (
     SpecDocError,
     SpecNameError,
@@ -33,5 +40,9 @@ __all__ = [
     "build_env_meta",
     "build_meta",
     "build_spec_entries",
+    "decode_env_meta",
+    "decode_meta",
+    "decode_spec_entries",
+    "spec_entry_names_by_kind",
     "to_spec_type",
 ]

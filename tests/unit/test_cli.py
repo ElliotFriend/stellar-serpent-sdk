@@ -325,10 +325,8 @@ def test_build_missing_source_is_an_environment_error(
     assert "nope.py" in capsys.readouterr().err
 
 
-@pytest.mark.skip(reason="serpent.spec.decode lands in Task 3")
 def test_build_meta_pairs_land_in_contractmetav0(tmp_path: Path) -> None:
-    from serpent.spec.decode import decode_meta  # type: ignore[import-not-found] # lands in Task 3
-
+    from serpent.spec.decode import decode_meta
     from tests.unit.test_sections import _wasm_custom_section
 
     out = tmp_path / "m.wasm"
@@ -434,3 +432,55 @@ def test_build_without_the_spec_extra_names_the_hint(tmp_path: Path) -> None:
     )
     assert done.returncode == cli.EXIT_ENVIRONMENT, done.stderr
     assert cli.SPEC_EXTRA_HINT in done.stderr
+
+
+# --- inspect --------------------------------------------------------------------------
+
+
+def test_inspect_help_golden() -> None:
+    golden("inspect", cli.subparser("inspect").format_help())
+
+
+def test_inspect_prints_declared_and_recomputed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "e.wasm"
+    build = ["build", str(EXAMPLES / "errors.py"), "--out", str(out), "--quiet"]
+    assert cli.main(build) == cli.EXIT_OK
+    assert cli.main(["inspect", str(out)]) == cli.EXIT_OK
+    text = capsys.readouterr().out
+    assert "declared protocol  : 22" in text
+    assert "recomputed floor   : 22" in text
+    assert "MISMATCH" not in text
+    assert "contractspecv0" in text and "functions" in text
+    assert "stellar contract info interface" in text
+
+
+def test_inspect_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "c.wasm"
+    cli.main(["build", str(EXAMPLES / "counter.py"), "--out", str(out), "--quiet"])
+    assert cli.main(["inspect", str(out), "--json"]) == cli.EXIT_OK
+    facts = json.loads(capsys.readouterr().out)
+    assert facts["declared_protocol"] == facts["recomputed_protocol"] == 20
+    assert facts["protocol_mismatch"] is False
+    assert isinstance(facts["imports"], list) and facts["imports"][0]["host_fn"]
+
+
+def test_inspect_wat_appends_a_disassembly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "c.wasm"
+    cli.main(["build", str(EXAMPLES / "counter.py"), "--out", str(out), "--quiet"])
+    assert cli.main(["inspect", str(out), "--wat"]) == cli.EXIT_OK
+    assert "(func" in capsys.readouterr().out
+
+
+def test_inspect_malformed_is_exit_1(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    bad = tmp_path / "bad.wasm"
+    bad.write_bytes(b"not wasm")
+    assert cli.main(["inspect", str(bad)]) == cli.EXIT_REJECTED
+    assert "not a wasm module" in capsys.readouterr().err
+
+
+def test_inspect_missing_file_is_exit_3(tmp_path: Path) -> None:
+    assert cli.main(["inspect", str(tmp_path / "nope.wasm")]) == cli.EXIT_ENVIRONMENT

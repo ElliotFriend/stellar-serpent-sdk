@@ -27,7 +27,6 @@ import subprocess
 
 import pytest
 from stellar_sdk import xdr
-from xdrlib3 import Unpacker
 
 import serpent
 from serpent import (
@@ -64,6 +63,7 @@ from serpent.spec import (
     build_meta,
     build_spec_entries,
 )
+from serpent.spec.decode import decode_meta, decode_spec_entries
 from serpent.spec.sections import _DATA_FORMATS, _PARAM_LOCATIONS
 from tests.fixtures import token_style
 
@@ -205,22 +205,18 @@ class Burned(Event):
 
 
 def _unpack(payload: bytes) -> list[xdr.SCSpecEntry]:
-    """Decode a `contractspecv0` payload: a bare stream of `SCSpecEntry`."""
-    unpacker = Unpacker(payload)
-    entries: list[xdr.SCSpecEntry] = []
-    while unpacker.get_position() < len(payload):
-        entries.append(xdr.SCSpecEntry.unpack(unpacker))
-    return entries
+    """Decode a `contractspecv0` payload: a bare stream of `SCSpecEntry`.
+
+    The decoder itself now ships in `serpent.spec.decode` (M1-G Task 3), which
+    is where `stellar-serpent inspect` reads it from; the name stays here
+    because `test_examples.py` and `test_env_differential.py` import it.
+    """
+    return decode_spec_entries(payload)
 
 
 def _unpack_meta(payload: bytes) -> list[tuple[bytes, bytes]]:
-    unpacker = Unpacker(payload)
-    pairs: list[tuple[bytes, bytes]] = []
-    while unpacker.get_position() < len(payload):
-        entry = xdr.SCMetaEntry.unpack(unpacker)
-        assert entry.v0 is not None
-        pairs.append((entry.v0.key, entry.v0.val))
-    return pairs
+    """`contractmetav0`'s pairs as the RAW bytes these assertions compare."""
+    return [(key.encode(), value.encode()) for key, value in decode_meta(payload)]
 
 
 def _shape(entries: list[xdr.SCSpecEntry]) -> list[tuple[str, str]]:
@@ -1224,6 +1220,10 @@ def test_spec_package_exports_the_builders_and_errors() -> None:
         "build_env_meta",
         "build_meta",
         "build_spec_entries",
+        "decode_env_meta",
+        "decode_meta",
+        "decode_spec_entries",
+        "spec_entry_names_by_kind",
         "to_spec_type",
     ]
 
