@@ -1124,3 +1124,75 @@ entry.
   a tier-2a default flip pinned by the deployed bytes; E9 shrinks accepts
   on a shape that is a bug every time; E11's tag is deletable until
   pushed; E10 and E12 decide nothing irreversible.
+
+## 2026-09-10 M1-G plan-review rulings (all 45 findings adopted; two rulings, one ratification)
+- Context: adversarial review of the M1-G plan (Opus; 7 blockers, 16
+  majors, 22 minors, all probe-evidenced against the live tree: the
+  strict-mock flip was actually applied and the suite run, Task 4's two
+  legs were executed verbatim, the argparse goldens were rendered under
+  3.11/3.12/3.13; triage record: .superpowers/sdd/2026-09-10-m1g-cli-and-
+  ship/plan-review.md). Zero disputes; plan v2 integrates every fix.
+  Findings with lasting consequence:
+- RATIFIED (plan-author correction to ruling E2): `serpent/cli.py` stays a
+  CORE module under the zero-dep walk rather than joining EXEMPT. The
+  review proved E2's letter would have been worse than a no-op: EXEMPT is
+  consumed as a tuple of DIRECTORIES (`e in p.parents`, `exempt.rglob`),
+  so a file entry leaves cli.py in the walk anyway and makes the
+  per-exemption stellar_sdk test fail on an empty set. cli.py never spells
+  a foreign import; the XDR it needs lives in `serpent.spec.decode` (the
+  exempt subpackage). The not-reachable-from-root half of E2 stands.
+- RULING (B6, the mock's ladder differential): making `FullHost.obj_cmp`
+  strict by default breaks exactly thirteen tests in
+  tests/unit/test_harness_hostfns.py -- the mock's own obj_cmp-vs-val_cmp
+  ladder over 676 ordered pairs -- and NOTHING else (measured: no emitter,
+  semantics, or example test relied on the lax path, which is the positive
+  evidence that M1-F Task 0's guard made the two-small-Val obj_cmp
+  unreachable). Those tests assert the DELEGATION (`ObjectStore.compare ==
+  val_cmp`), not the binding, so they are repointed at `store.compare`
+  and renamed; the binding keeps the host's refusal.
+- RULING (M4, the derived bridge gate): the module-wide raise walk excludes
+  dunder methods by construction (runtime surface, not declarations) and
+  gains a SECOND text-keyed list, `_UNBRIDGED_DEBT`, for user-reachable
+  raises with no honest registry code today -- the seven M1-E Task 5
+  event-convention raises M1-E2's gate declined to fix. A debt list makes
+  the gap VISIBLE and enumerated (a new raise still fails; each entry cites
+  the M2 registry item "event-convention shape codes") without pretending
+  the gap is by design. Two raises DO have honest codes today and are
+  bridged in G with existing codes, no registry edit: `topics=()` with a
+  non-Symbol first field -> SPT3019; `enumvalue()` outside a ContractEnum
+  subclass -> SPT4025.
+- RULING (M13, the byte-equality flip): after the deployment record lands,
+  no edit may move an emitted byte of examples/shapes.py or
+  examples/bounty_board.py; the "differs until the next deploy" test is
+  deleted in 11c and its byte-EQUALITY replacement is written by the
+  controller at Completion, AFTER the Fable fix wave and immediately before
+  the merge, so it pins the bytes that actually ship. The attention file
+  states the freeze in its first paragraph.
+- Also structural (adopted): one `--external-validate {auto,require,skip}`
+  flag replaces the mutually-exclusive pair (argparse wraps such groups
+  differently on 3.13, which would have made the --help golden
+  interpreter-dependent across CI's own matrix); `--meta` parses via
+  `type=` so a malformed pair is argparse's own exit 2; NO YAML library
+  enters the core gate path (pyyaml has no py.typed and would fail
+  `mypy --strict`; the workflow and mkdocs.yml tests read text); the
+  protocol-gate witness in the inspect tests is the lowest gate STRICTLY
+  above BASE_PROTOCOL with `protocol_gated_dummy` (min 19, the synthetic
+  pin entry) excluded by name; container returns on the mini-host leg go
+  through `chain_value_as(word, Vec[U32])`; `posted_at` pins the shared
+  `DEFAULT_LEDGER_SEQUENCE` constant rather than re-reading the ledger
+  outside a frame; the 0.1.0 bump moves test_sections.py's META_SELF_PIN
+  and NOT the wat goldens (they record payload size, and both versions
+  are five bytes); Task 4's review and Task 7 entirely move to Opus; no
+  subagent installs anything outside the repository (CI's cli-install job
+  is the proof of the tool-install path); process.md's State section is
+  controller-only; the G promise net mirrors the F net's two needle shapes
+  and deliberately has no "m1-g" needle (provenance comments are the
+  repo's convention), with the four live "(G)" forward references asserted
+  gone by a dedicated test.
+- Also decided WITH Elliot (2026-09-10, in-session): every G commit is
+  made with `--no-gpg-sign` and logged; Elliot re-signs the run at the end
+  with `git rebase --rebase-merges --exec 'git commit --amend --no-edit
+  -S' 11de4bd` (the last signed main commit before the branch).
+- Reversal cost: per-item low pre-execution; the B6 repoint is a test
+  edit; the `_UNBRIDGED_DEBT` list is deleted entry by entry as M2's
+  registry pass lands codes; the M13 sequencing is process.

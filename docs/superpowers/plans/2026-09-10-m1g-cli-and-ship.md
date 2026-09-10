@@ -1,5 +1,7 @@
 # M1-G: CLI plugin + ship — Implementation Plan
 
+> **v2 (2026-09-10)** after the adversarial plan review (`.superpowers/sdd/2026-09-10-m1g-cli-and-ship/plan-review.md`: 7 blockers, 16 majors, 22 minors, ALL adopted; rulings in decisions.md "M1-G plan-review rulings"). Every finding is folded into the task text below; the review's finding ids are cited inline as `[B1]`, `[M4]`, `[m7]` where a step changed because of one.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship serpent's M1 in the shape a user meets it: the `stellar-serpent` Stellar CLI plugin (`build`/`inspect`/`doctor`), a seventh example that touches every M1 surface, the docs site, CI's Rust and docs jobs, the carried hygiene pass, and the one user-approved testnet deployment that closes M1 and retires the B1 divergence.
@@ -18,7 +20,8 @@
 - **`decisions.md`, `spikes/` (except `spikes/README.md` in Task 10), and `sandbox/counter.py`/`sandbox/hello_world.py` are never edited by an implementer** (process.md; C7 item 4).
 - **The four gates on every task**, non-negotiable: `uv run --no-sync ruff check .`; `uv run --no-sync ruff format --check src tests examples`; `uv run --no-sync mypy --strict`; `SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q`. The host extension is built in this checkout (K14); use `--no-sync` always (D10's prune trap). Baseline at main 7671bcb: 4614 passed / 7 skipped.
 - **No pushes, no publishes, no deployments by an implementer** (D16). Task 11's chain writes are Elliot's, after an explicit in-session approval.
-- **Commit style**: conventional commits, imperative, no emoji, no em dashes, Oxford commas; AI attribution trailer on model-authored commits; try signed with a 40 s timeout, fall back to `--no-gpg-sign` + append `<sha> <subject>` to `.git/unsigned-commits.log` (process.md).
+- **Commit style**: conventional commits, imperative, subject ≤ 72 characters, no emoji, no em dashes, Oxford commas. **Every commit in G is made with `git commit --no-gpg-sign`** (Elliot, 2026-09-10: 1Password is expected to be flaky; he re-signs the whole run afterwards) and appended to `.git/unsigned-commits.log` as `<sha> <subject>`. Every commit body ends with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` [m8]. The `git commit -m` blocks below omit the trailer and the flag for brevity; the implementer adds both, every time.
+- **No writes outside the repository**: no `uv tool install`, no `pip install --user`, nothing under `$HOME` [M10]. The `uv tool install` proof of F.1.1 is CI's `cli-install` job, not a local step.
 - **Version pins the plan relies on** (K7/K8): `mkdocs-material>=9.7,<10`, `mkdocstrings-python>=2,<3`, wasm-tools `1.258.0` (ci.yml), stellar-cli `28.0.0` (CI smoke tarball), Python 3.11 for the Rust job.
 - **Exit codes** (ruling E4/D.1): 0 ok; 1 the contract was rejected (rendered diagnostics) or the artifact is malformed; 2 usage (argparse's own); 3 environment (missing extra, missing/unwritable file, reserved meta key, wasm-tools required but absent, a `fail` doctor row).
 - **Determinism**: every `--help` golden is rendered at a fixed width (80 columns) via the parser's `formatter_class`, never the terminal's.
@@ -63,7 +66,7 @@
 | `README.md`, `sandbox/README.md`, `sandbox/compile.py`, `spikes/README.md`, `docs/testing.md`, `tests/unit/test_no_stale_promises.py` | Task 10. |
 | `tests/real_host/test_testnet_fixtures.py`, `tests/real_host/fixtures/testnet/**` | Task 11 (table-driven fixture sets; the flip; re-recorded fixtures). |
 
-**Model seating** (process.md): Tasks 1, 2, 4, 7, 8, 9, 10 → Sonnet implementer + Sonnet review; Tasks 3, 5, 6 → Opus implementer + Opus review (protocol recomputation, frontend semantics, the tier-2a oracle); Task 11 → controller + Elliot (code halves: Sonnet).
+**Model seating** (process.md) [M11]: Tasks 1, 2, 8, 9, 10 → Sonnet implementer + Sonnet review; Task 4 → Sonnet implementer (the sequences are Elliot's already-passing code) + **Opus review** (a three-way differential with pinned literals is a divergence guard); Tasks 3, 5, 6, 7 → Opus implementer + Opus review (protocol recomputation; frontend semantics; the tier-2a oracle; the frozen registry + a sink behaviour change for a whole code band); Task 11 → controller + Elliot (code halves: Sonnet).
 
 **Task order**: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11. Tasks 5, 6, 7 are independent of each other and of 4; Task 9 (CI) needs 8 (the docs job builds `mkdocs.yml`) and 1 (the pin test); Task 10 needs everything before it (the README describes the shipped shape); Task 11 is last and gated.
 
@@ -354,10 +357,13 @@ def test_plugin_on_path_is_ok() -> None:
     assert _row(cli.run_doctor(probes, None), "plugin on PATH").status == "ok"
 
 
-def test_serpent_host_absent_is_info_with_the_rebuild_command() -> None:
+def test_serpent_host_absent_is_info_with_a_rebuild_pointer() -> None:
+    """With `serpent.testing._marker` importable (the dev venv) the remedy IS
+    `REBUILD_COMMAND`; on a bare install it is the docs pointer. Both name where
+    to look; neither is a third copy of the maturin command [m6]."""
     row = _row(cli.run_doctor(_probes(), None), "serpent_host")
     assert row.status == "info"
-    assert "maturin develop" in row.remedy
+    assert "maturin develop" in row.remedy or "docs/testing.md" in row.remedy
 
 
 def test_doctor_exit_code_is_zero_without_a_fail_row() -> None:
@@ -376,11 +382,12 @@ def test_doctor_json_is_a_list_of_rows(capsys: pytest.CaptureFixture[str]) -> No
     assert {r["status"] for r in rows} <= {"ok", "warn", "fail", "info"}
 
 
-def test_doctor_human_output_has_one_line_per_row(capsys: pytest.CaptureFixture[str]) -> None:
+def test_doctor_human_output_names_every_row_once(capsys: pytest.CaptureFixture[str]) -> None:
+    """[m13] one `[status] name` line per row, in order; remedy lines are indented."""
     cli.main(["doctor"])
-    out = capsys.readouterr().out
-    for name in ("python", "serpent", "spec extra", "wasm-tools"):
-        assert name in out
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("[")]
+    names = [line.split("]", 1)[1].split("  ")[0].strip() for line in lines]
+    assert names == [c.name for c in cli.run_doctor(cli.Probes(), None)]
 
 
 def test_network_probe_reports_the_protocol() -> None:
@@ -483,9 +490,9 @@ PLUGIN_PATH_HINT = (
     "`stellar serpent ...` looks for `stellar-serpent` on PATH; "
     "put the `uv tool` bin directory on PATH (`uv tool update-shell`)"
 )
-HOST_HINT_FALLBACK = (
-    "VIRTUAL_ENV=$PWD/.venv uvx maturin develop --release --manifest-path host/Cargo.toml"
-)
+#: Deliberately NOT a third spelling of the maturin command (`_marker.REBUILD_COMMAND`
+#: and host/README.md are asserted byte-identical; a copy here would drift) [m6].
+HOST_HINT_FALLBACK = "build the host extension (docs/testing.md, 'Building the extension')"
 NETWORK_RPC = {
     "testnet": "https://soroban-testnet.stellar.org",
     "mainnet": "https://mainnet.sorobanrpc.com",
@@ -654,6 +661,14 @@ def exit_code_for(checks: Sequence[Check]) -> int:
     return EXIT_ENVIRONMENT if any(c.status == "fail" for c in checks) else EXIT_OK
 
 
+def _parse_meta(pair: str) -> tuple[str, str]:
+    """`KEY=VALUE` for `build --meta`; anything else is argparse's usage error (exit 2)."""
+    key, sep, value = pair.partition("=")
+    if not sep or not key:
+        raise argparse.ArgumentTypeError(f"--meta wants KEY=VALUE, got {pair!r}")
+    return key, value
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     checks = run_doctor(Probes(), args.network)
     if args.json:
@@ -712,23 +727,29 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         action="append",
         default=[],
+        type=_parse_meta,  # a malformed pair is a usage error (exit 2) [M15]
         help="a contractmetav0 pair; repeatable",
     )
-    build.add_argument("--version", dest="contract_version", metavar="STR", help="the contractmetav0 `version` entry")
+    build.add_argument(
+        "--version",
+        dest="contract_version",
+        metavar="STR",
+        help="the contract's own `version` meta entry (not serpent's version)",  # [m21]
+    )
     build.add_argument(
         "--target-protocol",
         type=int,
         metavar="N",
         help="declare exactly protocol N; a host function gated above N is a compile error",
     )
-    external = build.add_mutually_exclusive_group()
-    external.add_argument(
-        "--require-external-validate",
-        action="store_true",
-        help="fail if wasm-tools is not installed (default: run it when present)",
-    )
-    external.add_argument(
-        "--no-external-validate", action="store_true", help="skip wasm-tools even when present"
+    # One tri-state flag rather than a mutually-exclusive pair: argparse wraps a
+    # mutually-exclusive group differently on Python 3.13, which would make the
+    # --help golden interpreter-dependent across CI's own matrix [B2].
+    build.add_argument(
+        "--external-validate",
+        choices=("auto", "require", "skip"),
+        default="auto",
+        help="wasm-tools: auto = run it when installed (default); require = fail if absent; skip = never",
     )
     build.add_argument("--json", action="store_true", help="print the build facts as JSON")
     build.add_argument("--quiet", action="store_true", help="print nothing on success")
@@ -843,6 +864,8 @@ Append to `tests/unit/test_cli.py`:
 ```python
 # --- build ----------------------------------------------------------------------------
 
+from tests.unit.test_emitter_end_to_end import EXAMPLES as ALL_EXAMPLES
+
 _ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = _ROOT / "examples"
 
@@ -851,17 +874,21 @@ def test_build_help_golden() -> None:
     golden("build", cli.subparser("build").format_help())
 
 
-def test_build_writes_the_same_bytes_build_file_returns(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    from serpent.emitter import build_file
-
-    out = tmp_path / "counter.wasm"
-    code = cli.main(["build", str(EXAMPLES / "counter.py"), "--out", str(out)])
-    assert code == cli.EXIT_OK
-    expected = build_file(EXAMPLES / "counter.py").wasm
-    assert out.read_bytes() == expected
-    printed = capsys.readouterr().out
+@pytest.mark.parametrize("path", ALL_EXAMPLES, ids=lambda p: p.stem)
+def test_build_writes_the_same_bytes_build_file_returns(path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """[M9] over EVERY example: the sha256 the CLI prints is the on-chain wasm
+    hash Task 11b compares against `stellar contract info hash`, so the claim
+    "the CLI writes what build_file returns" is proven for the constructor,
+    memory, and union/enum paths, not sampled."""
     import hashlib
 
+    from serpent.emitter import build_file
+
+    out = tmp_path / f"{path.stem}.wasm"
+    assert cli.main(["build", str(path), "--out", str(out)]) == cli.EXIT_OK
+    expected = build_file(path).wasm
+    assert out.read_bytes() == expected
+    printed = capsys.readouterr().out
     assert hashlib.sha256(expected).hexdigest() in printed
     assert "declared protocol" in printed
 
@@ -935,28 +962,29 @@ def test_build_require_external_validate_without_the_tool_is_environment(tmp_pat
     import shutil
 
     monkeypatch.setattr(shutil, "which", lambda _name: None)
-    code = cli.main(["build", str(EXAMPLES / "counter.py"), "--out", str(tmp_path / "c.wasm"), "--require-external-validate"])
+    code = cli.main(["build", str(EXAMPLES / "counter.py"), "--out", str(tmp_path / "c.wasm"), "--external-validate", "require"])
     assert code == cli.EXIT_ENVIRONMENT
     assert "wasm-tools" in capsys.readouterr().err
 
 
-def test_build_without_the_spec_extra_names_the_hint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    """Simulate a bare install: make `stellar_sdk` unimportable for this call."""
-    import builtins
-
-    real_import = builtins.__import__
-
-    def no_sdk(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "stellar_sdk" or name.startswith("stellar_sdk."):
-            raise ModuleNotFoundError(name, name=name)
-        return real_import(name, *args, **kwargs)
-
-    for cached in [m for m in sys.modules if m == "stellar_sdk" or m.startswith(("stellar_sdk.", "serpent.emitter", "serpent.spec"))]:
-        monkeypatch.delitem(sys.modules, cached)
-    monkeypatch.setattr(builtins, "__import__", no_sdk)
-    code = cli.main(["build", str(EXAMPLES / "counter.py"), "--out", str(tmp_path / "c.wasm")])
-    assert code == cli.EXIT_ENVIRONMENT
-    assert cli.SPEC_EXTRA_HINT in capsys.readouterr().err
+def test_build_without_the_spec_extra_names_the_hint(tmp_path: Path) -> None:
+    """A bare install, simulated in a SUBPROCESS [m22] (the pattern
+    `test_core_zero_dep.py::test_importing_serpent_does_not_load_stellar_sdk`
+    uses): a meta-path finder that refuses `stellar_sdk`, then `cli.main`."""
+    probe = (
+        "import sys, importlib.abc\n"
+        "class Refuse(importlib.abc.MetaPathFinder):\n"
+        "    def find_spec(self, name, path, target=None):\n"
+        "        if name == 'stellar_sdk' or name.startswith('stellar_sdk.'):\n"
+        "            raise ModuleNotFoundError(name, name=name)\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, Refuse())\n"
+        "from serpent import cli\n"
+        f"raise SystemExit(cli.main(['build', {str(EXAMPLES / 'counter.py')!r}, '--out', {str(tmp_path / 'c.wasm')!r}]))\n"
+    )
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=False)
+    assert done.returncode == cli.EXIT_ENVIRONMENT, done.stderr
+    assert cli.SPEC_EXTRA_HINT in done.stderr
 ```
 
 The `decode_meta` import in `test_build_meta_pairs_land_in_contractmetav0` lands in Task 3; until then, mark that one test `@pytest.mark.skip(reason="serpent.spec.decode lands in Task 3")` and REMOVE the skip in Task 3, Step 4.
@@ -968,14 +996,6 @@ Run: `uv run --no-sync pytest -q tests/unit/test_cli.py -k build` → FAIL (stub
 Replace the stub in `src/serpent/cli.py`:
 
 ```python
-def _parse_meta(pair: str) -> tuple[str, str]:
-    """`KEY=VALUE` for `--meta`; anything else is a usage error (exit 2)."""
-    key, sep, value = pair.partition("=")
-    if not sep or not key:
-        raise argparse.ArgumentTypeError(f"--meta wants KEY=VALUE, got {pair!r}")
-    return key, value
-
-
 def build_facts(result: Any, *, source: Path, out: Path, external: str) -> dict[str, object]:
     """The facts `build` prints (human and `--json`), from one `BuildResult`.
 
@@ -1033,16 +1053,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         print(f"no such contract module: {source}", file=sys.stderr)
         return EXIT_ENVIRONMENT
     out = Path(args.out) if args.out else source.with_suffix(".wasm")
-    try:
-        meta = dict(_parse_meta(pair) for pair in args.meta)
-    except argparse.ArgumentTypeError as exc:
-        build_parser().error(str(exc))  # exits 2
-
-    validate_external: bool | None = None
-    if args.require_external_validate:
-        validate_external = True
-    elif args.no_external_validate:
-        validate_external = False
+    meta: dict[str, str] = dict(args.meta)  # already (key, value) pairs: `type=_parse_meta` [M15]
+    validate_external: bool | None = {"auto": None, "require": True, "skip": False}[args.external_validate]
 
     try:
         result = build_file(
@@ -1070,7 +1082,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         return EXIT_ENVIRONMENT
 
     if validate_external is False:
-        external = "skipped (--no-external-validate)"
+        external = "skipped (--external-validate skip)"
     elif shutil.which("wasm-tools") is None:
         external = "not installed (skipped)"
     else:
@@ -1083,7 +1095,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
     return EXIT_OK
 ```
 
-Add `import hashlib` and `from pathlib import Path` to the module imports. Register `--meta` with `type=_parse_meta` (in Task 1's `build_parser`, change that argument to `type=_parse_meta`), so argparse itself turns a malformed pair into a usage error (exit 2) and `args.meta` is already a list of `(key, value)` tuples; in `_cmd_build` the try/except around `_parse_meta` above is therefore replaced by the single line `meta = dict(args.meta)`.
+Add `import hashlib` and `from pathlib import Path` to the module imports. `_parse_meta` and the `type=_parse_meta` registration already landed in Task 1, so `args.meta` is a `list[tuple[str, str]]` and the only parsing here is `dict(args.meta)` [M15].
 
 Note `CompileError` also covers `ProtocolGateError`-derived SPT6001 rejects (frontend raises a located `CompileError`), and `CompilerBugError` (an `AssertionError`) is deliberately not caught.
 
@@ -1201,9 +1213,11 @@ from __future__ import annotations
 from stellar_sdk import xdr
 from xdrlib3 import Unpacker
 
-#: The kind order `spec_entry_names_by_kind` reports, and the human names
-#: `stellar-serpent inspect` prints -- the XDR kind order ruling E7 fixed
-#: for emission, functions first because that is what a reader looks for.
+#: The order `spec_entry_names_by_kind` REPORTS and `stellar-serpent inspect`
+#: prints -- functions first because that is what a reader looks for. This is
+#: NOT the emission order (ruling E7 emits declared types first, then
+#: functions, then events; the deployed shapes bytes are union, enum, then
+#: functions) [m2].
 KIND_ORDER: tuple[str, ...] = ("functions", "structs", "unions", "enums", "error_enums", "events")
 
 
@@ -1340,12 +1354,32 @@ def test_imports_carry_their_protocol_gates() -> None:
         assert imp.min_protocol == by_name[imp.host_fn].min_protocol
 
 
+def _gated_witness() -> Any:
+    """The lowest-gated REAL host function strictly above BASE_PROTOCOL [B3].
+
+    `protocol_gated_dummy` (min_protocol 19, the synthetic pin entry that also
+    carries the only `max_protocol`) is excluded by name: a gate at or below
+    `BASE_PROTOCOL` (20) contributes nothing to `compute_protocol_floor`, so it
+    cannot witness a recomputation. Today this selects a protocol-21 function.
+    """
+    from serpent._host import BASE_PROTOCOL
+
+    candidates = [
+        fn
+        for fn in HOST_FUNCTIONS
+        if fn.min_protocol is not None
+        and fn.min_protocol > BASE_PROTOCOL
+        and fn.name != "protocol_gated_dummy"
+    ]
+    return min(candidates, key=lambda f: f.min_protocol or 0)
+
+
 def test_a_gated_import_recomputes_its_gate() -> None:
-    """A hand-made module importing ONE host function gated above 20 (pick the
-    lowest-gated `HostFn` with `min_protocol is not None` from the pin) must
-    recompute exactly that gate; declared is None (no env-meta), so
-    `protocol_mismatch` is False by definition."""
-    gated = min((fn for fn in HOST_FUNCTIONS if fn.min_protocol is not None), key=lambda f: f.min_protocol or 0)
+    """A hand-made module importing ONE gated host function recomputes exactly
+    that gate; declared is None (no env-meta), so `protocol_mismatch` is False
+    by definition."""
+    gated = _gated_witness()
+    assert gated.min_protocol is not None and gated.min_protocol > 20
     wasm = _module_importing(gated.module, gated.export, params=len(gated.arg_types))
     art = inspect_artifact(wasm)
     assert art.declared_protocol is None
@@ -1357,7 +1391,7 @@ def test_a_mismatch_is_reported() -> None:
     """The same module, with a contractenvmetav0 declaring 20 spliced in."""
     from serpent.spec import build_env_meta
 
-    gated = min((fn for fn in HOST_FUNCTIONS if fn.min_protocol is not None), key=lambda f: f.min_protocol or 0)
+    gated = _gated_witness()
     wasm = _module_importing(gated.module, gated.export, params=len(gated.arg_types), env_meta=build_env_meta(20))
     art = inspect_artifact(wasm)
     assert art.declared_protocol == 20 and art.recomputed_protocol == gated.min_protocol
@@ -1382,15 +1416,15 @@ def _module_importing(module: str, field: str, *, params: int, env_meta: bytes |
 
     functype = bytes([0x60, params, *([0x7E] * params), 0x01, 0x7E])
     type_section = encode.section(1, encode.uleb(1) + functype)
-    import_entry = encode.name(module) + encode.name(field) + bytes([0x00]) + encode.uleb(0)
+    import_entry = encode.wasm_name(module) + encode.wasm_name(field) + bytes([0x00]) + encode.uleb(0)
     import_section = encode.section(2, encode.uleb(1) + import_entry)
     custom = b""
     if env_meta is not None:
-        custom = encode.section(0, encode.name("contractenvmetav0") + env_meta)
+        custom = encode.custom_section("contractenvmetav0", env_meta)
     return b"\x00asm\x01\x00\x00\x00" + type_section + import_section + custom
 ```
 
-`encode.section`/`encode.uleb`/`encode.name` are the names to CONFIRM in `src/serpent/emitter/encode.py` (the module's docstring says "LEB128 + section framing"); use whatever it exports for "frame a section with id N", "uleb128", and "a wasm name (uleb length + utf-8)". Run → FAIL (`serpent.emitter.artifact` missing).
+`encode.uleb`, `encode.section(sid, payload)`, `encode.wasm_name(s)`, and `encode.custom_section(name, payload)` are `serpent.emitter.encode`'s real exports [m1]. Run → FAIL (`serpent.emitter.artifact` missing).
 
 - [ ] **Step 4: Implement `artifact.py`**
 
@@ -1498,7 +1532,16 @@ def inspect_artifact(wasm: bytes) -> Artifact:
                 continue
             sections.append(Section(sid, _SECTION_NAMES.get(sid), len(payload)))
             if sid == 2:
-                for module, field, _typeidx in printer._decode_imports(payload):  # noqa: SLF001
+                # `_decode_imports` raises EmitError on a non-function import
+                # (memory/table/global), which serpent never emits; a Rust
+                # artifact with one is "not serpent's", not malformed [m15].
+                try:
+                    decoded = printer._decode_imports(payload)  # noqa: SLF001
+                except EmitError as exc:
+                    raise MalformedArtifact(
+                        f"not a serpent artifact: {exc} (serpent modules import host functions only)"
+                    ) from exc
+                for module, field, _typeidx in decoded:
                     fn = _BY_IMPORT.get((module, field))
                     imports.append(Import(module, field, fn.name if fn else None, fn.min_protocol if fn else None))
             elif sid == 7:
@@ -1656,7 +1699,7 @@ Remove the Task 2 skip on `test_build_meta_pairs_land_in_contractmetav0`. Regene
 
 ```bash
 git add src/serpent/spec/decode.py src/serpent/spec/__init__.py src/serpent/emitter/artifact.py src/serpent/emitter/printer.py src/serpent/cli.py tests/unit/test_spec_decode.py tests/unit/test_artifact.py tests/unit/test_sections.py tests/unit/test_cli.py tests/goldens/cli/inspect.help.txt
-git commit -m "feat(cli): add stellar-serpent inspect with section and protocol decoding
+git commit -m "feat(cli): add stellar-serpent inspect over the custom sections
 
 serpent.spec.decode reads the three custom sections back through the
 same stellar_sdk XDR classes that build them, and
@@ -1675,11 +1718,11 @@ the rendered interface."
 - Move: `sandbox/bounty_board.py` → `examples/bounty_board.py` (`git mv`; content edits limited to the docstring's last paragraph and `ruff format`)
 - Delete: `sandbox/test_bounty_board.py` (its content is re-homed below)
 - Create: `tests/real_host/test_example_bounty_board_real.py`, `tests/goldens/wasm/bounty_board.wat.txt`
-- Modify: `tests/unit/test_emitter_end_to_end.py:102-115` (`EXAMPLE_BOUNTY_BOARD`, `EXAMPLES`) and `:673-682` (`CONSTRUCTOR_BEARING`); `tests/unit/test_examples.py:150-160` (the `{"errors", "allowance_token"}` set) + a new section + the cross-inventory test; `tests/unit/test_emitter_printer.py:380-392` (`FIXTURE_SOURCES`); `tests/unit/test_harness_hostfns.py:1001-1013` (`_FIXTURES`); `tests/unit/test_frontend_fuzz.py:1078-1085` (the exact `examples` list + its docstring sentence); `tests/real_host/test_examples_real.py:38-45` (import the new constant)
+- Modify: `tests/unit/test_emitter_end_to_end.py:102-115` (`EXAMPLE_BOUNTY_BOARD`, `EXAMPLES`) and `:677-685` (`CONSTRUCTOR_BEARING`); `tests/unit/test_examples.py:150-160` (the `{"errors", "allowance_token"}` set) + a new section + the cross-inventory test; `tests/unit/test_emitter_printer.py:381-392` (`FIXTURE_SOURCES`; `GOLDEN_DIR` is at `:348`); `tests/unit/test_harness_hostfns.py:1001-1013` (`_FIXTURES`); `tests/unit/test_frontend_fuzz.py:1088-1095` (the exact `examples` list + its docstring sentence) [m14]
 - Test: everything above; `SERPENT_REQUIRE_REAL_HOST=1` for the real leg
 
 **Interfaces:**
-- Consumes: `load_example(path) -> ModuleType`, `start(path) -> (BuildResult, FullHost, MiniHost)`, `answer(host, mini, name, *words) -> object`, `host.val_word(chain_value) -> int`, `val.pack_u32val(n)`, `val.VOID_VAL`, `host.events: list[tuple[tuple[int, ...], int]]`, `host.chain_value(word)`; `Env(auths=...)`, `deploy(cls, env, *ctor)`, `env.frame()`, `env.advance(n)`, `env.published_events`; `RealEnv(auths=...)`, `deploy_source(path, *ctor)`, `RealContract.invoke/events_for_sequence/storage(bucket).get/ttl/auths`, `RealHostError.underlying`, `RealContractError.code`; `stellar_sdk.strkey.StrKey.encode_contract`.
+- Consumes: `load_example(path) -> ModuleType`, `start(path) -> (BuildResult, FullHost, MiniHost)`, `answer(host, mini, name, *words) -> object` (SCALAR returns only: `host.chain_value` answers a rank placeholder for a container by design), **`host.chain_value_as(word, ty)`** (the typed container decoder F Task 8 added; the ONLY way to read a `Vec[U32]` return on this leg) [B4], `host.val_word(chain_value) -> int`, `val.pack_u32val(n)`, `val.VOID_VAL`, `host.events: list[tuple[tuple[int, ...], int]]`, `host.chain_value(word)`, `serpent.env.DEFAULT_LEDGER_SEQUENCE` (== the mini host's `ledger_sequence`, the reason `posted_at` compares) [B5]; `Env(auths=...)`, `deploy(cls, env, *ctor)`, `env.frame()`, `env.advance(n)`, `env.published_events`; `RealEnv(auths=...)`, `deploy_source(path, *ctor)`, `RealContract.invoke/events_for_sequence/storage(bucket).get/ttl/auths`, `RealHostError.underlying`, `RealContractError.code`; `stellar_sdk.strkey.StrKey.encode_contract`.
 - Produces: `tests.unit.test_emitter_end_to_end.EXAMPLE_BOUNTY_BOARD: Path`; `tests/unit/test_examples.py::test_every_example_is_in_every_hand_kept_inventory`.
 
 - [ ] **Step 1: Move the contract; fix the docstring pointer; format**
@@ -1711,22 +1754,18 @@ Run `uv run --no-sync pytest -q tests/unit/test_examples.py::test_examples_is_a_
 3. `tests/unit/test_emitter_printer.py` `FIXTURE_SOURCES`: append `("examples/bounty_board.py", "bounty_board")`.
 4. `tests/unit/test_harness_hostfns.py` `_FIXTURES`: append `_ROOT / "examples" / "bounty_board.py"`; its comment gains "and M1-G the seventh, `bounty_board.py`".
 5. `tests/unit/test_frontend_fuzz.py`: the exact `examples` list gains `"examples/bounty_board.py"` (sorted position: after `allowance_token.py`); the docstring gains "and M1-G Task 4 added `examples/bounty_board.py` (the seventh: every M1 surface in one contract)".
-6. `tests/real_host/test_examples_real.py`: add `EXAMPLE_BOUNTY_BOARD` to the import list (the real leg's own tests live in the new module; the import keeps the inventory visible from this file's docstring census).
+6. `tests/real_host/test_examples_real.py`: NOT edited [M6] -- an unused import fails `ruff check .` (F401), and the cross-inventory census (Step 5) reads the new module's own `EXAMPLE_BOUNTY_BOARD` import, which is what makes the constant visible.
 
 Generate the golden: `SERPENT_REGEN_GOLDENS=1 uv run --no-sync pytest -q tests/unit/test_emitter_printer.py -k bounty_board` → writes `tests/goldens/wasm/bounty_board.wat.txt`. Read it: `symsmall_cmp` must appear (the `tag() != Symbol("Open")` compares), `obj_cmp` must not be called on two small words.
 
 - [ ] **Step 3: The tier-1 vs mini-host two-leg test**
 
-Append to `tests/unit/test_examples.py` (import `EXAMPLE_BOUNTY_BOARD` alongside the others; `hashlib`, `StrKey` as needed):
+Append to `tests/unit/test_examples.py`. Put `import hashlib`, `from stellar_sdk.strkey import StrKey`, and `from serpent.env import DEFAULT_LEDGER_SEQUENCE` in the module's EXISTING header import block (a mid-file import block trips `I001`) [m16], and add `EXAMPLE_BOUNTY_BOARD` to the `test_emitter_end_to_end` import list there:
 
 ```python
 # ===========================================================================
 # bounty_board: every M1 surface in one contract (M1-G, U1)
 # ===========================================================================
-
-import hashlib
-
-from stellar_sdk.strkey import StrKey
 
 
 def _role(label: str) -> Address:
@@ -1753,7 +1792,7 @@ def test_the_bounty_board_example_answers_the_same_at_tier_1_and_as_wasm() -> No
     admin, poster, worker = _role("admin"), _role("poster"), _role("worker")
     env = Env(auths=(admin, poster, worker))
     board = deploy(module.BountyBoard, env, admin)
-    with env.frame():
+    with env.frame():  # one frame for the whole sequence: auth is not consumed per frame
         tier_1: list[object] = [
             board.post(env, poster, U32(50), module.Priority.High),
             board.post(env, poster, U32(20), module.Priority.Low),
@@ -1778,18 +1817,26 @@ def test_the_bounty_board_example_answers_the_same_at_tier_1_and_as_wasm() -> No
     high, low = val.pack_u32val(2), val.pack_u32val(0)
     one, two = val.pack_u32val(1), val.pack_u32val(2)
     assert mini.invoke("__constructor", admin_w) == val.VOID_VAL
+    def open_ids() -> object:
+        # A container RETURN: `answer`/`chain_value` deliberately gives a rank
+        # placeholder for a vec; the typed decoder is the public replacement
+        # for the old reach into `host._vec` (F Task 8, O4/E7) [B4].
+        word = mini.invoke("open_ids")
+        assert word is not None
+        return host.chain_value_as(word, Vec[U32])
+
     from_wasm: list[object] = [
         answer(host, mini, "post", poster_w, val.pack_u32val(50), high),
         answer(host, mini, "post", poster_w, val.pack_u32val(20), low),
         answer(host, mini, "total_posted"),
         answer(host, mini, "status_of", one),
-        answer(host, mini, "open_ids"),
+        open_ids(),
     ]
     assert mini.invoke("claim", one, worker_w) == val.VOID_VAL
     from_wasm += [
         answer(host, mini, "status_of", one),
         answer(host, mini, "worker_of", one),
-        answer(host, mini, "open_ids"),
+        open_ids(),
     ]
     from_wasm += [answer(host, mini, "complete", one), answer(host, mini, "status_of", one)]
     from_wasm += [
@@ -1812,7 +1859,11 @@ def test_the_bounty_board_example_answers_the_same_at_tier_1_and_as_wasm() -> No
         U32(1), U32(2), U32(2), Symbol("Open"), Vec(U32, [U32(1), U32(2)]),
         Symbol("Claimed"), worker, Vec(U32, [U32(2)]),
         U32(50), Symbol("Paid"),
-        Bool(True), U32(20), U32(env.ledger().sequence().value),
+        # `posted_at` is the SHARED default ledger sequence (serpent.env's
+        # constant, which tests/harness/hostfns.py imports), which is WHY the
+        # two legs agree on it; `env.ledger()` may not be read outside a
+        # frame, so the constant is pinned, not re-read [B5].
+        Bool(True), U32(20), U32(DEFAULT_LEDGER_SEQUENCE),
     ]
     assert tier_1_topics == [Symbol("posted"), Symbol("posted"), Symbol("claimed"), Symbol("completed")]
 ```
@@ -2033,10 +2084,11 @@ def test_every_example_is_in_every_hand_kept_inventory() -> None:
     assert {f"examples/{path.name}" for path in EXAMPLES} <= {name for name, _ in CORPUS}
     for stem in stems:
         assert (GOLDEN_DIR / f"{stem}.wat.txt").is_file(), f"no golden for {stem}"
-    real_leg = (Path(__file__).resolve().parents[1] / "real_host").glob("test_example*_real.py")
-    real_text = "".join(p.read_text(encoding="utf-8") for p in real_leg) + (
-        Path(__file__).resolve().parents[1] / "real_host" / "test_examples_real.py"
-    ).read_text(encoding="utf-8")
+    real_dir = Path(__file__).resolve().parents[1] / "real_host"
+    real_text = "".join(
+        p.read_text(encoding="utf-8")
+        for p in [real_dir / "test_examples_real.py", *sorted(real_dir.glob("test_example_*_real.py"))]
+    )  # [m12] the per-example modules plus the shared one, each read once
     for path in EXAMPLES:
         constant = f"EXAMPLE_{path.stem.upper()}"
         assert constant in real_text, f"{constant} is not used by any real-host example module"
@@ -2046,10 +2098,10 @@ def test_every_example_is_in_every_hand_kept_inventory() -> None:
 
 - [ ] **Step 6: Gates, commit**
 
-Four gates. Expected suite: baseline + the new tests (≈ +12 unit, +5 real). The real-host count grows; note the new total in the ledger for Task 9's CI assertion.
+Four gates. Expected suite: baseline + the new tests (≈ +19 unit incl. Task 2's parametrization gaining a seventh example, +5 real). The real-host count grows (218 → 223 collected); note the new total in the ledger for Task 9's CI floor.
 
 ```bash
-git add examples/bounty_board.py sandbox/ tests/unit/test_emitter_end_to_end.py tests/unit/test_examples.py tests/unit/test_emitter_printer.py tests/unit/test_harness_hostfns.py tests/unit/test_frontend_fuzz.py tests/real_host/test_examples_real.py tests/real_host/test_example_bounty_board_real.py tests/goldens/wasm/bounty_board.wat.txt
+git add examples/bounty_board.py sandbox/ tests/unit/test_emitter_end_to_end.py tests/unit/test_examples.py tests/unit/test_emitter_printer.py tests/unit/test_harness_hostfns.py tests/unit/test_frontend_fuzz.py tests/real_host/test_example_bounty_board_real.py tests/goldens/wasm/bounty_board.wat.txt
 git commit -m "feat(examples): promote the bounty board to the seventh example
 
 One contract that touches every M1 authoring surface: a constructor,
@@ -2072,7 +2124,7 @@ fails on the next example that misses one of the hand-kept lists."
 
 **Interfaces:**
 - Consumes: `Diagnostics.error(code, loc, message, *, help=None, notes=())`; `_INTENT` (frontend.py:141); `serpent.compiler.ctx._SHADOW_HELP`; `FuncSig.params: list[tuple[str, Ty, Loc]]`; `frontend._reserved_names(loaded) -> dict[str, str]` (values: "an imported name", "a module constant", "a module-level helper", "a declared type", "the contract class").
-- Produces: SPT2004 at the PARAMETER's `Loc` when its name is in `module_reserved`, message `f"{_INTENT['SPT2004']}"`, note `f"parameter \`{name}\` already names {kind}"`, help `_SHADOW_HELP`.
+- Produces: SPT2004 at the PARAMETER's `Loc` when its name is in `module_reserved`, message `_INTENT['SPT2004']`, note in `ctx.py:156`'s existing shape `f"\`{name}\` already names {kind}"`, and a parameter-specific help `_PARAM_SHADOW_HELP` (ctx.py's `_SHADOW_HELP` says "give the local a name", wrong advice for a parameter) [m7].
 
 - [ ] **Step 1: The fixtures (failing first)**
 
@@ -2136,13 +2188,21 @@ In `src/serpent/compiler/frontend.py`, replace lines 441-443:
                 "SPT2004",
                 loc,
                 _INTENT["SPT2004"],
-                help=_SHADOW_HELP,
-                notes=(f"parameter `{name}` already names {taken}",),
+                help=_PARAM_SHADOW_HELP,
+                notes=(f"`{name}` already names {taken}",),  # ctx.py:156's shape [m7]
             )
         reserved[name] = "a parameter"
 ```
 
-Add `from serpent.compiler.ctx import _SHADOW_HELP` to the ctx import line (the in-package private import has precedent: `_class_doc`). Confirm `_INTENT["SPT2004"]` reads "name shadows an existing declaration" (the fixtures' `serpent:message`).
+Define, next to `_INTENT` (frontend.py:141):
+
+```python
+_PARAM_SHADOW_HELP = (
+    "give the parameter a name no module constant, import, helper, or declared type already uses"
+)
+```
+
+Confirm `_INTENT["SPT2004"]` reads "name shadows an existing declaration" (the fixtures' `serpent:message`).
 
 Run the two fixtures → pass. Run the WHOLE suite: any example, fixture, or fuzz shape that used a parameter named like a module-level name now rejects — each such failure is a real finding; fix the contract (rename the parameter) if it is in `tests/fixtures/` or `examples/`, and report every rename in the task report. If `examples/` needs a rename, that is an authoring-surface change to a shipped example — report BLOCKED for a controller decision rather than renaming silently.
 
@@ -2159,32 +2219,37 @@ def test_a_parameter_named_like_a_declared_type_is_spt2004_at_the_parameter() ->
         compile_module(source, "shadow.py")
     (diag,) = [d for d in info.value.diagnostics if d.code == "SPT2004"]
     assert diag.loc.line == 11
-    assert "parameter `Point` already names a declared type" in diag.notes
+    assert "`Point` already names a declared type" in diag.notes
+    assert "parameter" in (diag.help or "")
 ```
 
 Adjust the line number to where the `def` sits in the string (count the `\n`s); adjust `diag.notes`'s type if it is a tuple of strings (`in` works either way).
 
 - [ ] **Step 4: Regenerate the subset doc**
 
-`uv run --no-sync python -m serpent.compiler._render_docs`; `git diff --stat docs/subset.md` shows only the two new SPT2004 entries. The drift test (`grep -n "subset" tests/unit/test_must_reject.py tests/unit/test_diagnostics.py` names it) passes.
+`uv run --no-sync python -m serpent.compiler._render_docs`; `git diff --stat docs/subset.md` shows only the two new SPT2004 entries. The byte-drift gate is `tests/unit/test_subset_docs.py` [m5]; it passes.
 
 - [ ] **Step 5: The bridge gate derives its sites (failing first)**
 
 In `tests/unit/test_bridging_completeness.py`, replace `_BRIDGED_RAISE_SOURCES` (lines 508-527) and the body of `test_every_declaration_layer_raise_carries_a_bridge_needle` with:
 
 ```python
-#: The declaration-layer MODULES (not functions): every `raise` anywhere in
-#: them is either bridged (its message carries a `loader._BRIDGE_RULES`
-#: needle) or listed below with a reason. M1-E2's version of this gate named
-#: FUNCTIONS, so a raise added to any other function was invisible
-#: (one-directional blind spot, E2 attn §3; O-HYG4/D11) -- deriving the walk
-#: from the module closes it.
+#: The declaration-layer MODULES (not functions): every `raise` in them --
+#: outside dunder methods, which are RUNTIME surface (`__setattr__`'s
+#: immutability refusals are reached by a contract body, never a declaration)
+#: and are excluded by construction -- is either bridged (its message carries
+#: a `loader._BRIDGE_RULES` needle), listed in `_UNBRIDGED_BY_DESIGN` with a
+#: reason, or listed in `_UNBRIDGED_DEBT` with the M2 item that owes it a
+#: code. M1-E2's version of this gate named FUNCTIONS, so a raise added to any
+#: other function was invisible (one-directional blind spot, E2 attn §3;
+#: O-HYG4/D11) -- deriving the walk from the module closes it [M4].
 _DECLARATION_LAYER_MODULES: tuple[str, ...] = ("serpent.decorators", "serpent.types._udt")
 
 #: `(module, message fragment)` for raises a USER cannot reach through a
 #: declaration -- internal invariants, or paths the loader intercepts before
 #: the decorator runs -- each with its reason. Keyed on TEXT (the M1-F
-#: allowlist lesson), so a reworded message re-enters the gate.
+#: allowlist lesson), so a reworded message re-enters the gate. MAY NOT hold a
+#: user-reachable raise: that is `_UNBRIDGED_DEBT`'s job.
 _UNBRIDGED_BY_DESIGN: frozenset[tuple[str, str]] = frozenset(
     {
         # populated in Step 6 from the first run's list, one entry per raise,
@@ -2192,45 +2257,79 @@ _UNBRIDGED_BY_DESIGN: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+#: User-REACHABLE declaration raises with NO honest registry code today: the
+#: M1-E Task 5 event-convention shapes M1-E2's gate declined to fix and this
+#: gate now makes VISIBLE (a new raise here fails the gate; an entry here is a
+#: named debt, not a design). Each entry cites the M2 registry item owing it a
+#: code ("event-convention shape codes: data_format, prefix-topic cap,
+#: bare-string topics, no topics"). Keyed on TEXT like the list above.
+_UNBRIDGED_DEBT: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("serpent.decorators", "an event declares at most"),  # prefix-topic cap
+        ("serpent.decorators", "topics= takes a sequence of topics, not one string"),
+        ("serpent.decorators", "data_format must be one of"),
+        ("serpent.decorators", "data_format 'single-value' publishes exactly one"),
+        ("serpent.decorators", "publishes the non-topic"),  # data_format map/vec with no data fields
+        ("serpent.decorators", "publishes the data fields as one"),  # vec with mixed types
+        ("serpent.decorators", "an event publishes at least one topic, and this one has"),
+    }
+)
+
+
+def _raises_outside_dunders(tree: ast.Module) -> list[ast.Raise]:
+    """Every `raise` in the module except those inside a dunder method (runtime surface)."""
+    dunder_bodies: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("__") and node.name.endswith("__"):
+            dunder_bodies.update(id(n) for n in ast.walk(node))
+    return [n for n in ast.walk(tree) if isinstance(n, ast.Raise) and id(n) not in dunder_bodies]
+
 
 def test_every_declaration_layer_raise_carries_a_bridge_needle() -> None:
     needles = [rule.needle for rule in loader._BRIDGE_RULES if rule.needle]
+    listed = _UNBRIDGED_BY_DESIGN | _UNBRIDGED_DEBT
     unbridged: list[tuple[str, int, str]] = []
     for module_name in _DECLARATION_LAYER_MODULES:
         module = importlib.import_module(module_name)
         tree = ast.parse(pathlib.Path(module.__file__ or "").read_text(encoding="utf-8"))
-        for raised in (n for n in ast.walk(tree) if isinstance(n, ast.Raise)):
+        for raised in _raises_outside_dunders(tree):
             chunks = _raise_message_chunks(raised)
             if any(needle in chunk for chunk in chunks for needle in needles):
                 continue
-            if any(fragment in chunk for chunk in chunks for m, fragment in _UNBRIDGED_BY_DESIGN if m == module_name):
+            if any(fragment in chunk for chunk in chunks for m, fragment in listed if m == module_name):
                 continue
             unbridged.append((module_name, raised.lineno, " | ".join(chunks) or "<no literal message>"))
     assert not unbridged, (
         "declaration-site raise(s) with neither a `loader._BRIDGE_RULES` needle nor an "
-        f"`_UNBRIDGED_BY_DESIGN` entry -- each would fall to SPT1037: {unbridged}"
+        f"`_UNBRIDGED_BY_DESIGN`/`_UNBRIDGED_DEBT` entry -- each would fall to SPT1037: {unbridged}"
     )
 
 
-def test_the_by_design_list_is_live() -> None:
-    """Every allowlisted fragment still matches a raise in its module -- a stale
-    entry is deleted, not kept."""
-    for module_name, fragment in _UNBRIDGED_BY_DESIGN:
+def test_the_unbridged_lists_are_live_and_disjoint() -> None:
+    """Every listed fragment still matches exactly one raise in its module (a
+    stale entry is deleted, not kept), and no fragment is in both lists."""
+    assert not (_UNBRIDGED_BY_DESIGN & _UNBRIDGED_DEBT)
+    for module_name, fragment in _UNBRIDGED_BY_DESIGN | _UNBRIDGED_DEBT:
         module = importlib.import_module(module_name)
         source = pathlib.Path(module.__file__ or "").read_text(encoding="utf-8")
-        assert fragment in source, (module_name, fragment)
+        assert source.count(fragment) >= 1, (module_name, fragment)
 ```
 
-Run → FAIL listing every raise outside the old eight+four functions.
+Run → FAIL listing the raises outside the old eight+four functions that are neither bridged nor in the two lists. The review's census [M4] found fifteen unbridged raises module-wide: four `__setattr__`/`__delattr__` immutability refusals in `_udt.py` (now excluded by construction), the seven event-convention raises above (now `_UNBRIDGED_DEBT`), and two with an honest code TODAY, which Step 6 bridges.
 
-- [ ] **Step 6: Classify each listed raise**
+- [ ] **Step 6: Bridge the two raises that have an honest code; classify the rest**
 
-For each `(module, line, message)` in the failure: read the raise. If a user's declaration can reach it (a decorator argument shape, a field annotation, a case declaration), it needs a needle: add a `_BridgeRule` in `loader.py` mapping a distinctive fragment of its message to the EXISTING code whose intent fits (`SPT4xxx` shape codes, `SPT5xxx` limits, `SPT2004` shadowing) — if NO existing code's intent honestly fits, return BLOCKED naming the raise (registry additions are the controller's). If it is an internal invariant (an `AssertionError`, a "should be unreachable", a re-raise of a TypeError the loader already intercepted), add `(module, fragment)` to `_UNBRIDGED_BY_DESIGN` with a reason comment. Re-run until green; then run the whole suite (new bridge rules change which code a shape gets — `test_must_reject` and `test_bridging_completeness`'s `_ROWS` must agree; add a `_ROWS` row per new rule).
+Two `_BridgeRule`s in `loader.py` (controller-sanctioned; existing codes, no registry edit) [M4]:
+
+1. `decorators.py:767` (`with `topics=()` this field is the event's topics[0], which names the event and must therefore be a Symbol`) → **SPT3019** ("the first event topic must be a Symbol naming the event"): `_BridgeRule(_VALUE_ERROR, "this field is the event's topics[0]", "SPT3019")`.
+2. `_udt.py:809` (`enumvalue() declares a member of a ContractEnum subclass, and X is not one`) → **SPT4025** ("union classes must inherit ContractUnion and int enums ContractEnum"): `_BridgeRule((TypeError,), "declares a member of a ContractEnum subclass", "SPT4025")`.
+
+For each: a `_ROWS` row in `test_bridging_completeness.py` with a COMPILING fixture body that reaches the raise (`test_every_bridge_rule_needle_has_a_row` requires it), and a must_reject fixture under `shape/` (SPT4025) and `types/` (SPT3019) with the runner's four directives, then a subset regen. Whatever else the failing run lists after that: an internal invariant (an `AssertionError`-class message, a "should be unreachable", a loader-intercepted re-raise) goes to `_UNBRIDGED_BY_DESIGN` with a reason comment; a user-reachable raise with no honest code goes to `_UNBRIDGED_DEBT` with the M2 pointer (report each, and return BLOCKED only if the census differs from the review's fifteen in a way that needs a code). `_UNBRIDGED_BY_DESIGN` may never hold a user-reachable raise. Re-run until green; then the whole suite.
 
 - [ ] **Step 7: Gates, commit**
 
 ```bash
-git add src/serpent/compiler/frontend.py src/serpent/compiler/loader.py tests/must_reject/names/ tests/unit/test_frontend.py tests/unit/test_bridging_completeness.py docs/subset.md
+git add src/serpent/compiler/frontend.py src/serpent/compiler/loader.py tests/must_reject/ tests/unit/test_frontend.py tests/unit/test_bridging_completeness.py docs/subset.md
 git commit -m "fix(frontend): reject a parameter that shadows a module-level name
 
 A parameter named like a declared type, module constant, helper, or
@@ -2246,7 +2345,7 @@ declaration-layer modules instead of a hand-kept list of functions."
 ### Task 6: The mock refuses what the host refuses — `FullHost(strict_obj_cmp=True)` (O-MOCK1, ruling E8)
 
 **Files:**
-- Modify: `tests/harness/hostfns.py:170-260` (`FullHost.__init__`, `obj_cmp`); `tests/unit/test_emitter_symbol_compare.py:100-235` (retire `StrictObjCmpHost`, keep `RoutingProbeHost` over `FullHost`)
+- Modify: `tests/harness/hostfns.py:170-260` (`FullHost.__init__`, `obj_cmp`); `tests/unit/test_emitter_symbol_compare.py:100-235` (retire `StrictObjCmpHost`, keep `RoutingProbeHost` over `FullHost`); `tests/unit/test_harness_hostfns.py` (the THIRTEEN ladder-differential tests listed in Step 3a) [B6]
 - Create: `tests/unit/test_harness_strict_obj_cmp.py`
 - Test: the new module + the whole suite (every tier-2a test now runs strict)
 
@@ -2351,14 +2450,18 @@ In `tests/harness/hostfns.py`, `FullHost.__init__` becomes `def __init__(self, *
 
 Update the module docstring's "`obj_cmp` delegates; it does not decide" paragraph (hostfns.py:34-50) with one sentence: the ONE thing it decides is the refusal above. `HostTrap` is already importable in `hostfns.py` (check the import; add `from tests.harness.errors import HostTrap` if not).
 
+- [ ] **Step 3a: Repoint the mock's own ladder differential at the delegation [B6]**
+
+Thirteen tests in `tests/unit/test_harness_hostfns.py` call `store.obj_cmp(...)` directly on two SMALL words and would now trap: `test_obj_cmp_agrees_with_val_cmp_on_every_supported_rank_pair` (676 ordered pairs), the eight `test_obj_cmp_orders_within_each_rank[Bool|U32|I32|U64|Timepoint|Duration|U128|Symbol]`, `test_obj_cmp_gives_the_tier1_ascii_answer_for_underscore_versus_A`, and the three `test_obj_cmp_names_a_tag_tier1_has_no_type_for[void|error|u256_small]`. They are NOT emitter findings: they assert that `ObjectStore.compare` agrees with tier-1 `val_cmp` -- the delegation, not the binding. Ruling (plan review B6): replace `val.as_i64(store.obj_cmp(l, r))` with `store.compare(l, r)` in all thirteen (`compare` already answers the sign `-1/0/1`; `objects.py:654-661`), rename the four test functions' `obj_cmp` to `compare` where the name is the claim (`test_compare_agrees_with_val_cmp_...`, `test_compare_orders_within_each_rank`, `test_compare_gives_the_tier1_ascii_answer_...`, `test_compare_names_a_tag_tier1_has_no_type_for`), and add ONE line to that file's module docstring saying why: the binding (`obj_cmp`) now refuses two small words as the host does, so the ladder is proven on the store's `compare`, which is what `obj_cmp` delegates to for object words. `test_the_lax_mock_still_answers_for_archaeology` (Step 1) keeps the `strict_obj_cmp=False` path alive. Run `uv run --no-sync pytest -q tests/unit/test_harness_hostfns.py` → green.
+
 - [ ] **Step 3: Retire the subclass**
 
-In `tests/unit/test_emitter_symbol_compare.py`: delete `StrictObjCmpHost`; `RoutingProbeHost(FullHost)`; `_strict` builds `FullHost()`; retype `_call`'s `host` parameter and the docstring at lines 104-108 ("That host is defined HERE ... making it strict would change what every other tier-2a test is asserting") becomes: "The mock is strict by default since M1-G (ruling E8), so the behavioural pins run under plain `FullHost`; `RoutingProbeHost` only adds the Void answer." Run the WHOLE suite: any other tier-2a test that relied on lax `obj_cmp` for two small words now traps — that would be a real emitter finding (the guard should make it unreachable); report rather than loosen.
+In `tests/unit/test_emitter_symbol_compare.py`: delete `StrictObjCmpHost`; `RoutingProbeHost(FullHost)`; `_strict` builds `FullHost()`; retype `_call`'s `host` parameter and the docstring at lines 104-108 ("That host is defined HERE ... making it strict would change what every other tier-2a test is asserting") becomes: "The mock is strict by default since M1-G (ruling E8), so the behavioural pins run under plain `FullHost`; `RoutingProbeHost` only adds the Void answer." Run the WHOLE suite. The plan review measured this exact flip: with the thirteen tests of Step 3a repointed, NOTHING else fails -- no emitter, semantics, or example test relied on the lax path, which is the positive evidence that the M1-F Task 0 guard made the two-small-Val `obj_cmp` unreachable. Any OTHER failure is therefore a genuine finding: report it rather than loosening.
 
 - [ ] **Step 4: Gates, commit**
 
 ```bash
-git add tests/harness/hostfns.py tests/unit/test_harness_strict_obj_cmp.py tests/unit/test_emitter_symbol_compare.py
+git add tests/harness/hostfns.py tests/unit/test_harness_strict_obj_cmp.py tests/unit/test_emitter_symbol_compare.py tests/unit/test_harness_hostfns.py
 git commit -m "test(harness): make the mock refuse obj_cmp on two non-object words
 
 The real host traps on obj_cmp over two small Vals; the mini host used
@@ -2373,19 +2476,20 @@ do on chain, and the test-local strict subclass is retired."
 ### Task 7: The sanctioned registry wording pass and the shapes docstring (O-HYG1, O-HYG2, O-HYG3, O-HYG6, O-HYG7)
 
 **Files:**
-- Modify (SANCTIONED, enumerated below, nothing else): `src/serpent/compiler/codes.py`; `src/serpent/compiler/diagnostics.py` (the SPT1xxx subset note); `src/serpent/spec/sections.py` + `src/serpent/compiler/frontend.py:131` (`_class_doc` → public `class_doc`); `src/serpent/compiler/frontend.py:86-93` (`_host._protocol` → `serpent._host`); `examples/shapes.py:224-228`; `tests/must_reject/shape/struct_field_non_chain_type.py` + `tests/must_reject/types/union_option_payload.py` headers; `tests/unit/test_diagnostics.py` (the `owning_task == "Task 8"` pin and any intent pins); `docs/subset.md`; `tests/goldens/wasm/shapes.wat.txt`
+- Modify (SANCTIONED, enumerated below, nothing else): `src/serpent/compiler/codes.py`; `src/serpent/compiler/diagnostics.py` (the SPT1xxx subset note); `src/serpent/spec/sections.py` + `src/serpent/spec/__init__.py` + `src/serpent/compiler/frontend.py:131` + `src/serpent/compiler/limits.py:99-100,176,209` + `src/serpent/compiler/decls.py:33,76,290,302,341` (`_class_doc`/`_own_doc` → public `class_doc`/`own_doc`) [M2]; `src/serpent/compiler/frontend.py:86-93` (`_host._protocol` → `serpent._host`); `examples/shapes.py:224-228`; must_reject fixture headers for SPT4012 (`shape/struct_field_non_chain_type.py`, `types/union_option_payload.py`), SPT5004, SPT5005, SPT5006, SPT1020 (whichever fixtures carry those `serpent:message` lines -- the runner names them); `tests/unit/test_diagnostics.py:360,367,379,406-408` (the SIX `owning_task` pins) [M3]; `tests/unit/test_loader.py` (the `_HELP` order net); `docs/subset.md`; `tests/goldens/wasm/shapes.wat.txt`
+- **Never edit a `raise` message that a `loader._BRIDGE_RULES` needle matches** (they are text-keyed; `loader.py:358-432`); and never edit `tests/unit/test_udt_values.py` or `src/serpent/types/_udt.py` in this task [M12].
 - Test: the whole suite (snapshot pins, the subset drift test, the goldens)
 
 **The sanction (ruling 2026-09-10 "Also ruled")** — text-only, no new code, no renumbering, no meaning reversal:
 
 1. **SPT4012** (O-HYG1): construct `"@contracttype -- non-chain field annotation"` → `"@contracttype/@contractevent field or @contractunion variant payload -- non-chain annotation"`; intent `"struct fields need a chain-type annotation"` → `"fields and variant payloads need a chain-type annotation"`. Both fixtures' `# serpent:message` lines change to the new intent; the loader `_HELP["SPT4012"]` text is re-read for consistency (widen, do not narrow).
-2. **Origin fields** (O-HYG2): every `owning_task` without a sub-plan prefix gains `"M1-C "` (`"Task 5"` → `"M1-C Task 5"`, `"Task 4/6"` → `"M1-C Task 4/6"`, …); the prefixed ones (`"M1-D Task 10"`, `"M1-E2 Task 2"`) are already in the target form. `tests/unit/test_diagnostics.py`'s `owning_task == "Task 8"` pin becomes `"M1-C Task 8"`.
-3. **Limit numbers out of intents** (O-HYG7 / M1-C final minor 2): `SPT5004` → `"docstring is too long"`, `SPT5005` → `"an exported method has too many parameters"`, `SPT5006` → `"a variant payload carries too many values"`, `SPT8001` → `"the compiled module exceeds the network's contract size limit"`, `SPT8002` → `"the literal pool overflows into the scratch region"`, `SPT8003` → `"the scratch region exceeds the module's single memory page"`, `SPT1020` → `"range() supports only range(stop) and range(start, stop)"` (drop "in M1"). For each, the EMITTING site's message must still carry the number (`limits.py` for SPT5004/5005, `_udt.py`/loader for SPT5006, the emitter's `BuildLimitError` text for SPT8xxx — verify each message already states the limit; if one does not, add the number to the site's message, not the intent). Fixture `# serpent:message` headers for SPT5004/5005/5006 and SPT1020 change to the new intents.
+2. **Origin fields** (O-HYG2): every `owning_task` without a sub-plan prefix gains `"M1-C "` (sixteen distinct bare values across the rows: `"Task 3"`×20, `"Task 5"`×28, `"Task 6"`×20, `"Task 7a"`, `"Task 7b"`, `"Task 9"`, `"Task 4"`, and the one-offs `"Task 4/5"`, `"Task 4/6"`, `"Task 5/6"`, `"Task 6/7b"`, `"Task 8"`, `"Task 10"`, …); the prefixed ones (`"M1-D Task 10"`, `"M1-E2 Task 2/4/5"`) are already in the target form. SIX pins move in `tests/unit/test_diagnostics.py` [M3]: `:360` `"Task 8"`, `:367` `"Task 7a"`, `:379` `"Task 5"`, `:406-408` `"Task 6"`, `"Task 6"`, `"Task 3"` -- each gains the `"M1-C "` prefix (`test_recognize_env.py:269`'s `"7a" in entry.owning_task` survives unchanged). Add the invariant O-HYG2 actually wants, in `test_diagnostics.py`: every `entry.owning_task` matches `^M1-[A-F]2? Task ` (`re.fullmatch(r"M1-[A-F]2? Task .+", ...)`), so the next sub-plan cannot regress the convention.
+3. **Limit numbers out of intents** (O-HYG7 / M1-C final minor 2): `SPT5004` → `"docstring is too long"`, `SPT5005` → `"an exported method has too many parameters"`, `SPT5006` → `"a variant payload carries too many values"`, `SPT8001` → `"the compiled module exceeds the network's contract size limit"`, `SPT8002` → `"the literal pool overflows into the scratch region"`, `SPT8003` → `"the scratch region exceeds the module's single memory page"`, `SPT1020` → `"range() supports only range(stop) and range(start, stop)"` (drop "in M1"). **No emitting site needs an edit** -- the review pre-verified where each number already lives [M12, M16]: SPT5004 `limits.py:322` ("(max {DOC_LIMIT})" in the message); SPT5005 `limits.py:123` (`_PARAM_COUNT_HELP` carries 32 in the HELP, and the message names the method's own count -- ruled sufficient); SPT5006 the bridged NOTE (`loader.py:1092-1099` appends `ValueError: a variant payload carries at most 12 ...`; the needle at `loader.py:398` and `test_udt_values.py:400` depend on that raise text -- do NOT touch `_udt.py`); SPT8001 `validate.py:311-316`; SPT8002/8003 `layout.py:112-122`. The bridged diagnostics' MESSAGE is `_INTENT[code]` (`loader.py:1092`), so an intent-only edit propagates and `test_must_reject.py:311-315`'s intent-in-message sweep stays green. Fixture `# serpent:message` headers for SPT5004/5005/5006 and SPT1020 change to the new intents.
 4. **SPT3020 construct list**: append `"a variant call with the wrong arity (\`Circle(1, 2)\` on a one-payload variant), positional struct arguments"` to the construct field (the two honest uses ruled in M1-E2 plan review M2 and M1-C 11b). **SPT3014**: census `grep -rn SPT3014 src/serpent/compiler` and append any emitting shape the construct field omits.
-5. **SPT1xxx help cites the subset doc** (O-HYG7): in `diagnostics.py`'s `Diagnostics.error`, when `code.startswith("SPT1")` and no note already mentions `docs/subset.md`, append the note `f"the supported subset is documented at docs/subset.md#{code.lower()}"`. One unit test in `test_diagnostics.py` (an SPT1 code gains the note; an SPT3 code does not; a pre-existing subset note is not duplicated). Check `docs/subset.md`'s anchors: its headings are `#### SPT1001`, so the anchor is `#spt1001`.
+5. **SPT1xxx help cites the subset doc** (O-HYG7): in `diagnostics.py`'s `Diagnostics.error`, when `code.startswith("SPT1")`, the code is NOT in `codes.NO_FIXTURE_ALLOWLIST` (SPT1009 and SPT1032 have no `#### SPTxxxx` heading in `docs/subset.md`, so their anchor would be dead [m3]), and no note already mentions `docs/subset.md`, append the note `f"the supported subset is documented at docs/subset.md#{code.lower()}"`. The anchor convention is the CODE (`#spt1001`; the headings are `#### SPT1001`); the one pre-existing semantic anchor (`test_diagnostics.py:87,96`'s `#comprehensions`) stays as it is -- it already carries a subset note, so the rule leaves it alone, and that test's render golden does not move [m4]. Tests in `test_diagnostics.py` (Step 3): an SPT1 code gains the note; an SPT3 code does not; a pre-existing subset note is not duplicated; an allowlisted SPT1 code gets none; and a BRIDGED SPT1xxx diagnostic (through `loader.py:662`'s `help=_HELP[code]` path, the one users actually hit) carries it too [B7].
 6. **`_class_doc` promotion** (M1-C attn §9): rename `spec.sections._class_doc` → `class_doc` and `_own_doc` → `own_doc`, add both to `serpent.spec.__all__`, update `frontend.py:131`'s import.
 7. **`frontend.py:86-93`**: import `BASE_PROTOCOL`, `CONSTRUCTOR_MIN_PROTOCOL`, `DEFAULT_TARGET_PROTOCOL`, `ProtocolGateError`, `check_protocol_target`, `compute_protocol_floor`, `declared_protocol` from `serpent._host` (all re-exported there, C11) instead of `serpent._host._protocol`.
-8. **`_HELP` order** (O-HYG3): assert with a five-line test in `tests/unit/test_loader.py` that `list(loader._HELP)` is sorted; fix the order if it is not (C9 says it already is).
+8. **`_HELP` order** (O-HYG3): CLOSED already -- `list(loader._HELP)` IS sorted today (review m9 verified) [m9]. Add the five-line regression net in `tests/unit/test_loader.py` and nothing else.
 9. **`examples/shapes.py:224-228`** (O-HYG6): `is_pinned`'s docstring describes the METHOD: "Whether the current shape is in the pinned set: a union used as a storage KEY, looked up by value. `pin()` writes the current shape; this reads it back under a freshly built equal key." Regenerate `tests/goldens/wasm/shapes.wat.txt` (docstrings are in `contractspecv0`, so the bytes move) in the same commit.
 
 - [ ] **Step 1: Snapshot what will move (before editing)**
@@ -2402,8 +2506,10 @@ In `tests/unit/test_diagnostics.py`:
 
 ```python
 def test_spt1xxx_diagnostics_cite_the_subset_doc() -> None:
+    # `Diagnostics.error` REFUSES an SPT1xxx diagnostic without `help` (F.2.11,
+    # diagnostics.py:176-180), so every call here carries one [B7].
     sink = Diagnostics()
-    sink.error("SPT1001", Loc.whole_file("x.py"), "nested functions are not supported")
+    sink.error("SPT1001", Loc.whole_file("x.py"), "nested functions are not supported", help="hoist it")
     sink.error("SPT3018", Loc.whole_file("x.py"), "type mismatch")
     one, three = sink.diagnostics
     assert any("docs/subset.md#spt1001" in note for note in one.notes)
@@ -2412,12 +2518,34 @@ def test_spt1xxx_diagnostics_cite_the_subset_doc() -> None:
 
 def test_an_existing_subset_note_is_not_duplicated() -> None:
     sink = Diagnostics()
-    sink.error("SPT1005", Loc.whole_file("x.py"), "m", notes=("the supported subset is documented at docs/subset.md#comprehensions",))
+    sink.error(
+        "SPT1005",
+        Loc.whole_file("x.py"),
+        "m",
+        help="write a loop",
+        notes=("the supported subset is documented at docs/subset.md#comprehensions",),
+    )
     (diag,) = sink.diagnostics
     assert sum("subset.md" in n for n in diag.notes) == 1
+
+
+def test_an_allowlisted_spt1xxx_code_gets_no_dead_anchor() -> None:
+    sink = Diagnostics()
+    sink.error("SPT1009", Loc.whole_file("x.py"), "m", help="use .slice()")
+    (diag,) = sink.diagnostics
+    assert not any("subset.md" in n for n in diag.notes)
+
+
+def test_a_bridged_spt1xxx_diagnostic_carries_the_note() -> None:
+    """The loader's bridge path (help=_HELP[code]) is the one users hit."""
+    source = "from serpent import Env, U32, contract\n\n\n@contract\nclass C:\n    def f(self, env: Env) -> U32:\n        def inner() -> U32:\n            return U32(1)\n        return inner()\n"
+    with pytest.raises(CompileError) as info:
+        compile_module(source, "nested.py")
+    (diag,) = [d for d in info.value.diagnostics if d.code == "SPT1001"]
+    assert any(f"docs/subset.md#{diag.code.lower()}" in n for n in diag.notes)
 ```
 
-Implement in `Diagnostics.error` (diagnostics.py:162+): after building `notes`, `if code.startswith("SPT1") and not any("docs/subset.md" in n for n in notes): notes = (*notes, f"the supported subset is documented at docs/subset.md#{code.lower()}")`. Run `tests/unit/test_diagnostics.py` and `tests/unit/test_must_reject.py` (the runner matches `message`, not notes, so fixtures are unaffected; any RENDER golden of an SPT1xxx diagnostic moves — regenerate it and list it in the report).
+Implement in `Diagnostics.error` (diagnostics.py:162+), AFTER the existing SPT1xxx-needs-help check: `if code.startswith("SPT1") and code not in codes.NO_FIXTURE_ALLOWLIST and not any("docs/subset.md" in n for n in notes): notes = (*notes, f"the supported subset is documented at docs/subset.md#{code.lower()}")` (import `codes` lazily or at module top -- `diagnostics.py` must not create an import cycle with `codes.py`; check `codes.py`'s imports first). Run `tests/unit/test_diagnostics.py`, `tests/unit/test_must_reject.py` (the runner matches `message`, not notes, so fixtures are unaffected), and `tests/unit/test_subset_docs.py` -- `_render_docs.py:473` renders notes, so `docs/subset.md` moves for every SPT1xxx entry; regenerate it in this commit and say so in the report.
 
 - [ ] **Step 4: Items 6–9**
 
@@ -2426,7 +2554,7 @@ Make the renames (grep for every `_class_doc`/`_own_doc` use across `src/` and `
 - [ ] **Step 5: Gates, commit (one commit; the sanction is one edit)**
 
 ```bash
-git add src/serpent/compiler/codes.py src/serpent/compiler/diagnostics.py src/serpent/compiler/frontend.py src/serpent/compiler/loader.py src/serpent/spec/sections.py src/serpent/spec/__init__.py examples/shapes.py tests/must_reject tests/unit/test_diagnostics.py tests/unit/test_loader.py docs/subset.md tests/goldens/wasm/shapes.wat.txt
+git add src/serpent/compiler/codes.py src/serpent/compiler/diagnostics.py src/serpent/compiler/frontend.py src/serpent/compiler/loader.py src/serpent/compiler/limits.py src/serpent/compiler/decls.py src/serpent/spec/sections.py src/serpent/spec/__init__.py examples/shapes.py tests/must_reject tests/unit/test_diagnostics.py tests/unit/test_loader.py docs/subset.md tests/goldens/wasm/shapes.wat.txt
 git commit -m "refactor(compiler): apply the sanctioned registry wording pass
 
 Text-only edits under the append-only discipline: SPT4012 names every
@@ -2465,7 +2593,7 @@ docs = [
 ]
 ```
 
-Run `uv sync --all-groups --inexact` (keeps `serpent_host`; re-check `import serpent_host`). `uv run --no-sync mkdocs --version` prints 1.6.x.
+Run `uv sync --all-groups --inexact` (keeps `serpent_host`; re-check `import serpent_host`). `uv run --no-sync mkdocs --version` prints 1.6.x. NO YAML library enters the test path [B1]: `pyyaml` has no `py.typed` (it fails `mypy --strict` without `types-PyYAML`) and reaches the venv only through the non-default `docs` group; the tests below read `mkdocs.yml` as TEXT.
 
 - [ ] **Step 2: The drift tests (failing first)**
 
@@ -2484,7 +2612,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 from tests.unit.test_emitter_end_to_end import EXAMPLES
 
@@ -2493,15 +2620,16 @@ _DOCS = _ROOT / "docs"
 _CONFIG = _ROOT / "mkdocs.yml"
 
 
-def _config() -> dict[str, object]:
-    return dict(yaml.safe_load(_CONFIG.read_text(encoding="utf-8")))
+def _config_text() -> str:
+    """`mkdocs.yml` as TEXT: no YAML library in the core test path [B1]."""
+    return _CONFIG.read_text(encoding="utf-8")
 
 
 def test_the_config_is_strict_and_excludes_the_planning_record() -> None:
-    config = _config()
-    assert config["strict"] is True
-    excluded = str(config["exclude_docs"])
-    assert "superpowers/" in excluded and "gen_subset.py" in excluded
+    text = _config_text()
+    assert "\nstrict: true\n" in text
+    exclude_block = text.split("exclude_docs: |", 1)[1].split("\n\n", 1)[0]
+    assert "superpowers/" in exclude_block and "gen_subset.py" in exclude_block
 
 
 def test_every_example_has_a_page_rendering_its_source() -> None:
@@ -2513,13 +2641,14 @@ def test_every_example_has_a_page_rendering_its_source() -> None:
 
 
 def test_every_example_page_is_in_the_nav_and_nothing_else_is() -> None:
-    config = _config()
-    nav = config["nav"]
-    assert isinstance(nav, list)
-    examples_section = next(item["Examples"] for item in nav if isinstance(item, dict) and "Examples" in item)
-    listed = {list(entry.values())[0] if isinstance(entry, dict) else entry for entry in examples_section}
-    listed.discard("examples/index.md")
-    assert listed == {f"examples/{p.stem}.md" for p in EXAMPLES}
+    import re
+
+    text = _config_text()
+    section = text.split("  - Examples:\n", 1)[1]
+    section = section.split("\n  - ", 1)[0]  # up to the next top-level nav entry
+    listed = set(re.findall(r"examples/([a-z_]+)\.md", section))
+    listed.discard("index")
+    assert listed == {p.stem for p in EXAMPLES}
 
 
 def test_the_cli_reference_renders_every_help_golden() -> None:
@@ -2547,7 +2676,7 @@ def _mkdocs_importable() -> bool:
     return True
 ```
 
-Move `_mkdocs_importable` above its use in the decorator. `yaml` is pyyaml, which mkdocs depends on; it is present with `--all-groups` (the CI `test` job syncs all groups). Run → FAIL (`mkdocs.yml` missing).
+Move `_mkdocs_importable` above its use in the decorator. Run → FAIL (`mkdocs.yml` missing).
 
 - [ ] **Step 3: `mkdocs.yml`**
 
@@ -2606,6 +2735,9 @@ markdown_extensions:
   - toc:
       permalink: true
   - pymdownx.superfences
+  # `base_path` resolves against the PROCESS working directory, not this
+  # file's location: run `mkdocs build`/`serve` from the repository root
+  # (CI and tests/unit/test_docs_site.py both do) [m19].
   - pymdownx.snippets:
       base_path: ["."]
       check_paths: true
@@ -2715,7 +2847,7 @@ counter-example per rule, in [The subset](subset.md).
 ```python
 from serpent import U32
 from serpent.env import Env, deploy
-from counter import Counter, Error
+from counter import Counter
 
 env = Env()
 counter = deploy(Counter, env)
@@ -2818,7 +2950,7 @@ Task 11 appends the two M1-end rows.
 
 - [ ] **Step 5: Build strictly, iterate to zero warnings**
 
-`uv run --no-sync mkdocs build --strict`. Expect warnings from `subset.md` (relative links) or mkdocstrings (docstring parsing). A `subset.md` warning is fixed in `src/serpent/compiler/_render_docs.py` and regenerated (never by editing the .md — the drift test guards it); a docstring warning is fixed by the handler option in Step 3, not by editing docstrings. `uv run --no-sync pytest -q tests/unit/test_docs_site.py` → 5 passed.
+`uv run --no-sync mkdocs build --strict`. Expect warnings from `subset.md` (relative links) or mkdocstrings (docstring parsing). A `subset.md` warning is fixed in `src/serpent/compiler/_render_docs.py` and regenerated (never by editing the .md — the drift test guards it); a docstring warning is fixed by the handler option in Step 3, not by editing docstrings. `uv run --no-sync pytest -q tests/unit/test_docs_site.py` → 5 passed. `uv run --no-sync mypy --strict` stays clean: the module imports no YAML library [B1].
 
 - [ ] **Step 6: Gates, commit**
 
@@ -2852,22 +2984,39 @@ deployed."
 Append to `tests/unit/test_pins.py`:
 
 ```python
-def test_ci_has_the_four_jobs_and_the_real_host_switch() -> None:
-    import yaml
+import re
 
-    workflow = yaml.safe_load(_CI.read_text(encoding="utf-8"))
-    jobs = workflow["jobs"]
+
+def _job_blocks(text: str) -> dict[str, str]:
+    """`jobs:` split into `{job_name: block_text}` by the two-space job keys --
+    TEXT, not YAML, so no library joins the core gate path [B1]."""
+    jobs_text = text.split("\njobs:\n", 1)[1]
+    names = re.findall(r"^  ([a-z-]+):\n", jobs_text, flags=re.M)
+    parts = re.split(r"^  [a-z-]+:\n", jobs_text, flags=re.M)[1:]
+    return dict(zip(names, parts, strict=True))
+
+
+def test_ci_has_the_four_jobs_and_the_real_host_switch() -> None:
+    jobs = _job_blocks(_CI.read_text(encoding="utf-8"))
     assert set(jobs) == {"test", "real-host", "docs", "cli-install"}
-    real_steps = "\n".join(str(step.get("run", "")) for step in jobs["real-host"]["steps"])
-    assert "SERPENT_REQUIRE_REAL_HOST=1" in real_steps
-    assert "maturin develop --release" in real_steps
-    assert "cargo clippy" in real_steps
-    assert "--no-sync" in real_steps
-    docs_steps = "\n".join(str(step.get("run", "")) for step in jobs["docs"]["steps"])
-    assert "mkdocs build --strict" in docs_steps
-    cli_steps = "\n".join(str(step.get("run", "")) for step in jobs["cli-install"]["steps"])
-    assert "uv tool install" in cli_steps and "stellar serpent doctor" in cli_steps
-    assert "stellar plugin ls" in cli_steps
+    real = jobs["real-host"]
+    assert "SERPENT_REQUIRE_REAL_HOST=1" in real
+    assert "maturin develop --release" in real
+    assert "cargo clippy" in real
+    assert "--no-sync" in real
+    assert "mkdocs build --strict" in jobs["docs"]
+    cli = jobs["cli-install"]
+    assert "uv tool install" in cli and "stellar serpent doctor" in cli
+    assert "stellar plugin ls" in cli
+
+
+def test_the_pages_deploy_workflow_is_dispatch_only() -> None:
+    """Publishing is a hard stop (D16): the only trigger is a human's click."""
+    text = (_CI.parent / "docs-deploy.yml").read_text(encoding="utf-8")
+    trigger = text.split("\non:\n", 1)[1].split("\n", 1)[0].strip()
+    assert trigger == "workflow_dispatch:", trigger
+    assert "deploy-pages" in text
+    assert "push:" not in text and "pull_request:" not in text and "schedule:" not in text
 ```
 
 Run → FAIL (one job today).
@@ -2931,12 +3080,18 @@ Append to `.github/workflows/ci.yml` under `jobs:` (keep `test` exactly as it is
       - name: The extension is importable from the suite's interpreter
         run: uv run --no-sync python -c "import serpent_host; print(serpent_host.__file__)"
 
+      # The floor is the count measured at the end of M1-G Task 4 (223) less a
+      # small margin; bump it deliberately when a sub-plan adds real-host tests,
+      # never lower it [m10].
       - name: Enough real-host tests are selected (never a vacuous run)
+        env:
+          REAL_HOST_FLOOR: "220"
         run: |
-          summary=$(uv run --no-sync pytest -q -m real_host --collect-only -p no:cacheprovider | tail -1)
+          output=$(uv run --no-sync pytest -q -m real_host --collect-only -p no:cacheprovider)
+          summary=$(echo "$output" | grep -Eo '[0-9]+/[0-9]+ tests collected' | tail -1)
           echo "$summary"
           collected=$(echo "$summary" | grep -Eo '^[0-9]+' || echo 0)
-          test "$collected" -ge 220 || { echo "only $collected real_host tests collected"; exit 1; }
+          test "$collected" -ge "$REAL_HOST_FLOOR" || { echo "only $collected real_host tests collected (floor $REAL_HOST_FLOOR)"; exit 1; }
 
       - name: Test with the real host REQUIRED
         run: SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q
@@ -2968,6 +3123,10 @@ Append to `.github/workflows/ci.yml` under `jobs:` (keep `test` exactly as it is
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.11"
+      # The requirement spelling is UNVERIFIED locally on purpose (no tool
+      # installs outside the repo, M10); if uv refuses the direct-URL form, the
+      # documented fallback is `uv tool install ".[spec]"` -- a one-line
+      # workflow edit, not a product failure.
       - name: Install the plugin as a tool, from this checkout
         run: |
           uv tool install "serpent[spec] @ file://${PWD}"
@@ -2988,6 +3147,8 @@ Append to `.github/workflows/ci.yml` under `jobs:` (keep `test` exactly as it is
           stellar-serpent build "$GITHUB_WORKSPACE/examples/counter.py" --out counter.wasm
           stellar-serpent inspect counter.wasm
           stellar contract info env-meta --wasm counter.wasm
+      # `plugin ls`'s listing format is verified on 27.1.0 only (four-space
+      # indented names); a format change on 28.0.0 is a workflow-only fix [m11].
       - name: The Stellar CLI dispatches to it
         run: |
           stellar plugin ls | grep -Ex ' *serpent'
@@ -3037,13 +3198,13 @@ jobs:
         uses: actions/deploy-pages@<SHA> # <version>
 ```
 
-Resolve the two `<SHA>`s here the same way as below (`actions/upload-pages-artifact`, `actions/deploy-pages`: latest release tag → commit SHA). The `test_ci_has_the_four_jobs...` test reads `ci.yml` only; add one assertion to it that `docs-deploy.yml` parses, has `workflow_dispatch` as its ONLY trigger (`set(workflow["on"]) == {"workflow_dispatch"}` — note PyYAML loads the key `on` as the boolean `True`, so read `workflow.get("on", workflow.get(True))`), and contains `deploy-pages`.
+Resolve the two `<SHA>`s here the same way as below (`actions/upload-pages-artifact`, `actions/deploy-pages`: latest release tag → commit SHA). `test_the_pages_deploy_workflow_is_dispatch_only` (Step 1) is the net over this file.
 
-Resolve the two `<SHA>`s: `gh api repos/dtolnay/rust-toolchain/commits/master --jq .sha` (comment `# master, <date>`; this action is versioned by toolchain, not release) and `gh api repos/Swatinem/rust-cache/releases/latest --jq .tag_name` then `gh api repos/Swatinem/rust-cache/git/ref/tags/<tag> --jq .object.sha` (dereference an annotated tag if the object type is `tag`). Confirm the stellar-cli tarball's inner path (`tar tzf stellar-cli.tar.gz`) — if the binary is nested, adjust the `install` line. Confirm `uv tool install "serpent[spec] @ file://${PWD}"` locally FIRST: run it in this checkout, then `stellar-serpent doctor` from `/tmp`, then `uv tool uninstall serpent`; if the `@ file://` form is refused, use `uv tool install ".[spec]"` — whichever works is the spelling for both CI and `docs/getting-started.md`'s "from a checkout" note.
+Resolve the two `<SHA>`s: `gh api repos/dtolnay/rust-toolchain/commits/master --jq .sha` (comment `# master, <date>`; this action is versioned by toolchain, not release) and `gh api repos/Swatinem/rust-cache/releases/latest --jq .tag_name` then `gh api repos/Swatinem/rust-cache/git/ref/tags/<tag> --jq .object.sha` (dereference an annotated tag if the object type is `tag`). Confirm the stellar-cli tarball's inner path by LISTING the asset without installing anything (`curl -sL <url> | tar tz | head`) — if the binary is nested, adjust the `install` line. Do NOT run `uv tool install` locally [M10]: the `cli-install` job is the proof, its first run (when Elliot pushes) tells us whether the direct-URL spelling is accepted, and the fallback is written into the workflow comment.
 
 - [ ] **Step 3: Run every new step locally, in order**
 
-From the repo root, in a fresh shell: the `real-host` job's commands (skipping the Rust install; the toolchain is local), then the collected-count step (expect ≥ 220: K14's 218 + Task 4's five), then `SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q`; the `docs` job's build; the `cli-install` job's tool install + doctor + build + inspect + `stellar plugin ls | grep -Ex ' *serpent'` + `stellar serpent doctor` (on the local 27.1.0). Record each command's exit code in the task report. Then `uv tool uninstall serpent` so the machine is as found.
+From the repo root, in a fresh shell: the `real-host` job's commands (skipping the Rust install; the toolchain is local), then the collected-count step (expect 223: K14's 218 + Task 4's five), then `SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q`; the `docs` job's build; from the `cli-install` job ONLY the steps that write nothing outside the repo: `.venv/bin/stellar-serpent doctor|build|inspect` from `/tmp`, and `PATH="$PWD/.venv/bin:$PATH" stellar plugin ls | grep -Ex ' *serpent'` + `PATH="$PWD/.venv/bin:$PATH" stellar serpent doctor` (dispatch through the local 27.1.0 to the REPO script -- no `uv tool install` [M10]). Record each command's exit code in the task report.
 
 - [ ] **Step 4: Gates, commit**
 
@@ -3066,7 +3227,7 @@ stellar-cli 28.0.0's plugin dispatch from outside the repository."
 ### Task 10: README, the sandbox, spikes/README, docs/testing.md (O-DOC3, O-DOC4, O-CLI2, O-CLI3, U2, E13)
 
 **Files:**
-- Modify: `README.md`, `sandbox/README.md`, `sandbox/compile.py`, `spikes/README.md`, `docs/testing.md`, `src/serpent/_host/_protocol.py:14-16` (a comment only)
+- Modify: `README.md`, `sandbox/README.md`, `sandbox/compile.py`, `spikes/README.md`, `docs/testing.md`, `docs/deployments.md` (the M3 notes), `examples/counter.py:22-24` (docstring only) [M8], `src/serpent/_host/_protocol.py:14-16` (a comment only)
 - Test: the whole suite (the F promise net walks `docs/` and `README.md` is not in it, but `docs/testing.md` is); `uv run --no-sync mkdocs build --strict` (testing.md is a page)
 
 - [ ] **Step 1: `README.md`**
@@ -3106,6 +3267,10 @@ walkthrough is `docs/getting-started.md`; the site is built with
 ```
 
 In **Architecture at a glance**: the Examples bullet becomes "seven complete contracts (a counter, error codes, structs, events, an allowance-style token, tagged unions and int enums, and a bounty board that touches every M1 surface)"; add a bullet after Emitter: "**CLI** (`serpent/cli.py`) -- `stellar-serpent build|inspect|doctor`; `build` wraps `build_file`, `inspect` reads a module's sections, imports (with protocol gates), and declared-vs-recomputed protocol, `doctor` checks the toolchain offline." Keep the Val codec / chain types / decorators / Env / `_host` / spec / emitter bullets and the "Tagged unions and int enums: the fence" and "Testing" sections VERBATIM. Replace the Phase 0 paragraph's "This repo has no release yet" sentence (now in Status). Final check: `grep -n "in progress\|five\|six complete" README.md` → nothing.
+
+- [ ] **Step 1b: the first build command a docs reader sees [M8]**
+
+`examples/counter.py:22-24`'s docstring paragraph "Compile it to wasm (the script prints ...): `uv run python sandbox/compile.py examples/counter.py`" becomes "Build it to wasm (the CLI prints the module's size, sha256, and protocol): `stellar serpent build examples/counter.py`". Docstrings are not emitted, so no golden or byte-identity test moves (the review verified). Sweep: `grep -rn "sandbox/compile.py" examples/ docs/ README.md` must return nothing after this task (the sandbox's own README and the pointer script are the only mentions left).
 
 - [ ] **Step 2: `sandbox/`**
 
@@ -3219,6 +3384,10 @@ version locally. Nothing polls for a newer release on purpose.
 
 Also in the "Version pins" table add a row `| wasm-tools | 1.258.0 (src/serpent/_pins.py) |`.
 
+- [ ] **Step 4b: the M3 notes rulings E12 and S3 asked for [m17]**
+
+Append to `docs/deployments.md`, under a heading `## Not yet done (M3)`: "**PyPI**: no release; the name `serpent` is taken on PyPI (checked 2026-09-10), while `stellar-serpent`, `serpent-sdk`, and `soroban-serpent` were free that day -- the distribution name is M3's decision. **Plugin registry**: the `stellar-plugin` GitHub topic that makes `stellar plugin search` find this repository is registered at publication (M3), not before."
+
 - [ ] **Step 5: O-CLI3 — document the target default**
 
 In `src/serpent/_host/_protocol.py`, extend `DEFAULT_TARGET_PROTOCOL`'s comment: "27 is MAINNET's protocol (testnet is 28 as of 2026-09): the target is an upper bound on what a module may use, so the default keeps a default build deployable on the lowest live network; `stellar serpent build --target-protocol 28` opts in (M1-G ruling E10). Revisit when mainnet moves." No code change.
@@ -3228,8 +3397,8 @@ In `src/serpent/_host/_protocol.py`, extend `DEFAULT_TARGET_PROTOCOL`'s comment:
 `uv run --no-sync mkdocs build --strict`; four gates (the F promise net walks `docs/testing.md`; a new "sub-plan F" mention there would fail it — write none).
 
 ```bash
-git add README.md sandbox/README.md sandbox/compile.py spikes/README.md docs/testing.md src/serpent/_host/_protocol.py
-git commit -m "docs: describe the shipped M1 shape in the README, sandbox, spikes, and testing docs
+git add README.md sandbox/README.md sandbox/compile.py spikes/README.md docs/testing.md docs/deployments.md examples/counter.py src/serpent/_host/_protocol.py
+git commit -m "docs: describe the shipped M1 shape across the README and guides
 
 The README states M1 complete with the install and build commands, the
 sandbox points at the CLI and names the two files a test reads, spikes/
@@ -3252,7 +3421,7 @@ This task has three halves. **11a** and **11c** are implementer code; **11b** is
 
 - [ ] **Step 1: Version 0.1.0 (ruling E11)**
 
-`src/serpent/__init__.py`: `__version__ = "0.1.0"`; `pyproject.toml`: `version = "0.1.0"`; `tests/unit/test_public_api.py::test_version_string`: `"0.1.0"`. `uv sync --all-groups --inexact` so `importlib.metadata.version("serpent")` agrees (`tests/unit/test_sections.py:1206` and `test_emitter_module.py:1036` pin that). Every golden that embeds `serpentver` moves: regenerate `tests/goldens/wasm/*.wat.txt` with `SERPENT_REGEN_GOLDENS=1 uv run --no-sync pytest -q tests/unit/test_emitter_printer.py` and confirm the diff is ONLY the `serpentver` bytes in each data/meta section. `git diff --stat` must list the goldens and nothing unexpected.
+`src/serpent/__init__.py`: `__version__ = "0.1.0"`; `pyproject.toml`: `version = "0.1.0"`; `tests/unit/test_public_api.py::test_version_string`: `"0.1.0"`. `uv sync --all-groups --inexact` so `importlib.metadata.version("serpent")` agrees (`tests/unit/test_sections.py:1206` and `test_emitter_module.py:1036` pin that). What moves and what does not [M1]: the wat goldens under `tests/goldens/wasm/` do NOT move -- they record each custom section's payload SIZE, and `0.0.1` and `0.1.0` are both five bytes (`git diff --stat tests/goldens` must be EMPTY); `tests/unit/test_sections.py:1158` `META_SELF_PIN` (a hex pin of `build_meta("counter", "1.0.0")`) and its guard at `:1166` (`assert serpent.__version__ == "0.0.1", "regenerate META_SELF_PIN for the new version"`) DO move -- regenerate the hex with `uv run --no-sync python -c "from serpent.spec import build_meta; print(build_meta('counter', '1.0.0').hex())"` and set the guard to `"0.1.0"`.
 
 - [ ] **Step 2: Table-driven fixture sets (behavior-preserving refactor, failing-first by construction)**
 
@@ -3280,6 +3449,19 @@ class FixtureSet:
     def fixtures(self) -> list[Fixture]:
         return fixtures_under(self.directory)
 
+    def contract_class(self) -> type:
+        """The example's single `@contract` class, found by its `_serpent_type_`
+        metadata rather than by name (`shapes.Drawing`, `bounty_board.BountyBoard`)
+        so the set needs no per-example spelling [M5]."""
+        module = load_example(self.example)
+        classes = [
+            obj
+            for obj in vars(module).values()
+            if isinstance(obj, type) and getattr(obj, "_serpent_type_", {}).get("kind") == "contract"
+        ]
+        (cls,) = classes
+        return cls
+
 
 _TESTNET = Path(__file__).parent / "fixtures" / "testnet"
 
@@ -3295,12 +3477,12 @@ SHAPES = FixtureSet(
 SETS: tuple[FixtureSet, ...] = (SHAPES,)
 ```
 
-and parametrize `test_the_fixtures_were_recorded_against_the_deployed_bytes`, `test_every_committed_fixture_round_trips_through_the_recorded_json`, and `test_the_real_host_and_tier_1_agree_with_testnet` over `SETS` (the last over `[(s, f) for s in SETS for f in s.fixtures]` with ids `f"{s.name}:{f.method}"`), reading `set.contract_id`/`set.deployed_sha256`/`set.divergences` where the module constants were read. `test_this_trees_shapes_build_differs_from_the_deployed_bytes_until_the_next_deploy` stays as is (it flips in 11c). Run `SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q tests/real_host/test_testnet_fixtures.py` → the same pass count as before the refactor.
+and parametrize `test_the_fixtures_were_recorded_against_the_deployed_bytes`, `test_every_committed_fixture_round_trips_through_the_recorded_json`, and `test_the_real_host_and_tier_1_agree_with_testnet` over `SETS` (the last over `[(s, f) for s in SETS for f in s.fixtures]` with ids `f"{s.name}:{f.method}"`), reading `set.contract_id`/`set.deployed_sha256`/`set.divergences` where the module constants were read, AND replacing the replay body's by-name `shapes.Drawing` (`:299-330`: `_return_ty(shapes.Drawing, ...)`, `_param_types(shapes.Drawing, ...)`, `deploy(shapes.Drawing, env)`) with `fixture_set.contract_class()` and `deploy(cls, env, *fixture_set.ctor)` [M5]. Confirm the metadata spelling `_serpent_type_["kind"] == "contract"` against `serpent.decorators.contract` before writing `contract_class` (use whatever key the decorator stores). `test_this_trees_shapes_build_differs_from_the_deployed_bytes_until_the_next_deploy` stays as is (it flips at Completion, M13). Prove the refactor reaches the second set BEFORE the deployment: `SETS = (SHAPES, pytest.param(BOUNTY_BOARD_PLACEHOLDER, marks=pytest.mark.skip(reason="recorded in 11c")))` is NOT used (a skipped param proves nothing); instead add a unit test in the same module that builds a throwaway `FixtureSet` for `EXAMPLE_BOUNTY_BOARD` with an empty `tmp_path` directory and asserts `contract_class().__name__ == "BountyBoard"` and `fixtures == []`. Run `SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q tests/real_host/test_testnet_fixtures.py` → the same pass count as before the refactor, plus that one.
 
 - [ ] **Step 3: Gates, commit**
 
 ```bash
-git add src/serpent/__init__.py pyproject.toml uv.lock tests/unit/test_public_api.py tests/goldens/wasm tests/real_host/test_testnet_fixtures.py
+git add src/serpent/__init__.py pyproject.toml uv.lock tests/unit/test_public_api.py tests/unit/test_sections.py tests/real_host/test_testnet_fixtures.py
 git commit -m "chore: bump serpent to 0.1.0 and table-drive the tier-3 fixture sets
 
 The M1-end deployment artifacts carry serpentver 0.1.0, so the bump
@@ -3356,36 +3538,25 @@ BOUNTY_BOARD = FixtureSet(
 SETS = (SHAPES, BOUNTY_BOARD)
 ```
 
-(the tier-1 leg deploys with `ctor`; an account-strkey admin is fine at tier 1 — `Env(auths=...)` is not involved in a read). Flip the differs test:
-
-```python
-@pytest.mark.parametrize("fixture_set", SETS, ids=lambda s: s.name)
-def test_this_trees_build_equals_the_deployed_bytes(fixture_set: FixtureSet) -> None:
-    """Retired B1: since the M1-end deployment (2026-09, docs/deployments.md)
-    HEAD's build of each deployed example IS the deployed artifact, byte for
-    byte -- Phase 0's fidelity rule, now for every fixture set."""
-    built = build_file(fixture_set.example).wasm
-    assert hashlib.sha256(built).hexdigest() == fixture_set.deployed_sha256
-```
-
-Update the module docstring's B1 paragraph to past tense; `tests/real_host/fixtures/testnet/README.md`'s `area.json` section becomes a historical note and its table gains the board. Run `SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q tests/real_host/test_testnet_fixtures.py` → green, `area` now agrees three ways.
+(the tier-1 leg deploys with `ctor`; an account-strkey admin is fine at tier 1 — `Env(auths=...)` is not involved in a read). The `differs_until_the_next_deploy` test is DELETED here (it is now false), and its replacement -- the byte-EQUALITY assertion -- is written by the controller at Completion, AFTER the Fable fix wave and immediately before the merge [M13], because after 11c any edit that moves an emitted byte of `examples/shapes.py` or `examples/bounty_board.py` (a docstring, a lowering) would turn main red with no remedy short of another approved deployment. Between 11c and the merge the rule is: **no edit may touch `examples/shapes.py`, `examples/bounty_board.py`, or anything the emitter reads for them**; the attention file states this in its first paragraph. Update the module docstring's B1 paragraph to past tense; `tests/real_host/fixtures/testnet/README.md`'s `area.json` section becomes a historical note and its table gains the board. Run `SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q tests/real_host/test_testnet_fixtures.py` → green, `area` now agrees three ways.
 
 - [ ] **Step 3: The record, the prose, the G net**
 
-`docs/deployments.md`: two rows (`shapes (M1 close)`, `bounty_board (M1 close)`) with ids, shas, "Built from `examples/<x>.py` at <commit>", ledger and date from the fixtures' headers. `README.md` Status: the sentence already says it; add the two ids. `docs/superpowers/process.md` State: "M1 COMPLETE (2026-09-xx): ... NEXT: M2 (dossier from the C/D/E/E2/F/G attention files' M2 items)". `tests/semantics/env_scenarios.py:110-114`: the `_ADMIN` comment says "a real decodable contract strkey (the FIRST shapes deployment's id, kept as an opaque address after the M1-end redeploy)". The fourth promise net in `tests/unit/test_no_stale_promises.py`, mirroring the F net (needles `"sub-plan g"`, `"m1-g"`, `"(g)"`; walk `_WALKED_F`; text-keyed allowlist seeded with `tests/unit/test_address.py`'s "Neither an account (G) nor a contract (C) strkey", `tests/unit/test_decorators.py`'s "(g) Pinned so a future edit", and the two "sub-plan G's wave 1" history comments; a teeth test). Every other live "(G)" mention must be gone by now (the fixtures README, the testnet test) — the net proves it.
+`docs/deployments.md`: two rows (`shapes (M1 close)`, `bounty_board (M1 close)`) with ids, shas, "Built from `examples/<x>.py` at <commit>", ledger and date from the fixtures' headers. `README.md` Status: the sentence already says it; add the two ids. `docs/superpowers/process.md` is NOT touched here -- the controller owns its State section (Completion §4) [M14]. `tests/semantics/env_scenarios.py:110-114`: the `_ADMIN` comment says "a real decodable contract strkey (the FIRST shapes deployment's id, kept as an opaque address after the M1-end redeploy)". The fourth promise net in `tests/unit/test_no_stale_promises.py` mirrors the F net's TWO needle shapes exactly [M7]: `"sub-plan g"` (case-insensitive) and `\bG's\b` (case-sensitive), over `_WALKED_F` with `docs/superpowers` excluded, with a text-keyed allowlist seeded with the two "sub-plan G's wave 1" history comments (`test_emitter_end_to_end.py:95`, `test_harness_hostfns.py:991`) and a teeth test. **No `"m1-g"` needle** -- "M1-G Task N" provenance comments are the repo's convention and this plan writes about fifteen of them; the F net deliberately has no `"m1-f"` needle for the same reason, and the net's comment says so. **No `"(g)"` needle** either (it is regex-special and matches two innocent strkey/lettering comments); the four live forward references the deployment retires (`tests/real_host/test_testnet_fixtures.py:67,182`, `tests/real_host/fixtures/testnet/README.md:71`, `docs/testing.md`'s "CI's Rust job") are asserted GONE by a dedicated test that greps each file for `"deployment (G)"` and `"(G):"` and expects zero hits.
 
 - [ ] **Step 4: Gates, commit, tag (controller)**
 
 ```bash
-git add tests/real_host tests/semantics/env_scenarios.py tests/unit/test_no_stale_promises.py docs/deployments.md README.md docs/superpowers/process.md
+git add tests/real_host tests/semantics/env_scenarios.py tests/unit/test_no_stale_promises.py docs/deployments.md README.md
 git commit -m "test(tier3): record the M1-end deployments and retire the B1 divergence
 
 The fixed shapes contract and the bounty board are deployed to testnet;
-their fixtures are re-recorded against the fetched bytes, HEAD's build of
-each example equals its deployed artifact, area agrees three ways, and
-the deployment record names both contracts. A fourth promise net keeps
-sub-plan G from being cited as a future."
-git tag -a v0.1.0 -m "serpent 0.1.0: M1 complete"   # LOCAL; Elliot pushes (D16)
+their fixtures are re-recorded against the fetched bytes, area agrees
+three ways, and the deployment record names both contracts. A fourth
+promise net keeps sub-plan G from being cited as a future."
+```
+
+The byte-equality test and the `v0.1.0` tag land at Completion (controller), not here [M13].
 ```
 
 ---
@@ -3403,8 +3574,21 @@ Everything G DOES act on from earlier attention files is in Tasks 5–7 and 10 (
 
 ## Completion (process, not tasks)
 
-1. **Attention file** `.superpowers/sdd/2026-09-10-m1g-cli-and-ship/final-review-attention.md`, reconciled against the ledger: every inventory and golden that moved (Tasks 4, 7, 11a), the E2 plan-author correction, the strict-mock default flip, every registry string edited, the new bridge rules and `_UNBRIDGED_BY_DESIGN` entries with reasons, the CI job commands' local exit codes, the deployment ids and shas, deferred minors per task, and obligations carried to M2/M3 (the dossier §A.6's M2/M3 list plus anything new).
-2. **Fable final whole-branch review** on `main..m1g-cli-and-ship`, fed the attention file; one fix wave; scoped re-review; local merge (fast-forward if possible). No push.
+1. **Attention file** `.superpowers/sdd/2026-09-10-m1g-cli-and-ship/final-review-attention.md`, reconciled against the ledger: the post-11c byte freeze (first paragraph); every inventory and golden that moved (Tasks 4, 7, 11a); the E2 plan-author correction; the strict-mock default flip and the thirteen repointed ladder tests; every registry string edited; the two new bridge rules, the `_UNBRIDGED_BY_DESIGN` entries with reasons, and the `_UNBRIDGED_DEBT` list as an M2 registry item ("event-convention shape codes"); the CI job commands' local exit codes and the two things only CI's first run can prove (the `uv tool install` requirement spelling; `stellar plugin ls`'s format on 28.0.0); O-CI3 (the spike.wasm-anchored tests never run in CI, by design, U2) [m18]; the deployment ids and shas; deferred minors per task; and obligations carried to M2/M3 (the dossier §A.6's M2/M3 list plus anything new).
+2. **Fable final whole-branch review** on `main..m1g-cli-and-ship`, fed the attention file (whose first paragraph states the post-11c freeze: no edit may move an emitted byte of `examples/shapes.py` or `examples/bounty_board.py`); one fix wave; scoped re-review. THEN, controller-only, immediately before the merge [M13]: the byte-equality test replaces the deleted "differs until" test in `tests/real_host/test_testnet_fixtures.py`:
+
+```python
+@pytest.mark.parametrize("fixture_set", SETS, ids=lambda s: s.name)
+def test_this_trees_build_equals_the_deployed_bytes(fixture_set: FixtureSet) -> None:
+    """Retired B1: since the M1-end deployment (docs/deployments.md) HEAD's
+    build of each deployed example IS the deployed artifact, byte for byte --
+    Phase 0's fidelity rule, now for every fixture set. Written AFTER the
+    final review's fix wave so it pins the bytes that actually ship."""
+    built = build_file(fixture_set.example).wasm
+    assert hashlib.sha256(built).hexdigest() == fixture_set.deployed_sha256
+```
+
+then the gates, the commit, the LOCAL annotated tag `git tag -a v0.1.0 -m "serpent 0.1.0: M1 complete"` (Elliot pushes both), and the fast-forward merge. No push.
 3. **decisions.md**: the plan-review rulings entry; ratification (or overturn) of the E2 correction; the final-review rulings entry.
 4. **process.md**: the State section (M1 COMPLETE; the two contract ids; suite counts; carried obligations pointer); NEXT: M2.
 5. **Memory**: update `project_serpent_python_soroban_sdk.md`'s "How to apply" if the pickup path changes (it should not: process.md remains the entry point).
