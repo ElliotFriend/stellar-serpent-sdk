@@ -78,7 +78,7 @@ def _tier1(steps: list[Step], *, advance_before: dict[int, int] | None = None) -
         if advance_before and n in advance_before:
             env.advance(advance_before[n])
         with env.frame():
-            answers.append(_outcome(lambda: getattr(inst, method)(env, *args)))
+            answers.append(_outcome(lambda m=method, a=args: getattr(inst, m)(env, *a)))
     return answers, env.published_events
 
 
