@@ -1,0 +1,9 @@
+usage: stellar-serpent doctor [-h] [--network NAME|URL] [--json]
+
+Offline toolchain checks, one row each, with a remedy where a row is not ok.
+
+options:
+  -h, --help          show this help message and exit
+  --network NAME|URL  also ask one RPC endpoint (testnet, mainnet, or a URL) for
+                      its protocol
+  --json              print the rows as JSON

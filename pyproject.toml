@@ -7,6 +7,13 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = []
 
+# `stellar-serpent` is the Stellar CLI plugin name (spec §9): `stellar serpent
+# build x.py` runs whatever `stellar-serpent` is on PATH with the rest of the
+# argv (verified against stellar-cli 27.1.0 in the G dossier, K4). The script
+# itself is zero-dep; `build`/`inspect` need the `spec` extra and say so.
+[project.scripts]
+stellar-serpent = "serpent.cli:main"
+
 # `serpent.spec` -- and ONLY `serpent.spec` -- needs stellar-sdk, for the XDR
 # classes that build the Soroban custom sections (spec Sec.7). It is an extra,
 # not a dependency, so `pip install serpent` stays zero-dep and an authored

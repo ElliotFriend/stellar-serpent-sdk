@@ -1,0 +1,14 @@
+usage: stellar-serpent [-h] [--version] <command> ...
+
+Write Soroban smart contracts in Python. Invoked as `stellar serpent <command>` through the Stellar CLI's plugin discovery, or directly.
+
+positional arguments:
+  <command>
+    build     compile a contract module to a deployable .wasm
+    inspect   the sections, imports, and protocol facts of a built .wasm
+    doctor    check the toolchain: Python, the spec extra, wasm-tools, the
+              Stellar CLI
+
+options:
+  -h, --help  show this help message and exit
+  --version   show program's version number and exit

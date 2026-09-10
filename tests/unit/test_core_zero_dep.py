@@ -126,6 +126,23 @@ def test_serpent_testing_is_not_reachable_from_the_package_root() -> None:
     assert "from serpent import testing" not in source
 
 
+def test_serpent_cli_is_not_reachable_from_the_package_root() -> None:
+    """`serpent.cli` is a TOOL, not authoring surface (ruling G-E2): `import
+    serpent` must never load it (it would drag `argparse` and, through
+    `build`/`inspect`, the `spec` extra into every contract's import). It is
+    NOT in `EXEMPT`: `cli.py` spells no foreign import at any level -- the XDR
+    it needs lives in `serpent.spec.decode` -- so the zero-dep walk covers it
+    like any other core module (plan-author correction to E2's letter)."""
+    assert "cli" not in serpent.__all__
+    source = (SRC / "__init__.py").read_text(encoding="utf-8")
+    assert "from serpent.cli" not in source
+    assert "import serpent.cli" not in source
+    assert "from .cli" not in source
+    assert "from . import cli" not in source
+    assert "from serpent import cli" not in source
+    assert (SRC / "cli.py").is_file()
+
+
 def test_importing_serpent_does_not_load_stellar_sdk() -> None:
     """The dynamic half of the boundary, in a fresh interpreter: this test
     process has already imported `serpent.spec` (test_typemap does), which sets
@@ -136,6 +153,7 @@ def test_importing_serpent_does_not_load_stellar_sdk() -> None:
         "assert 'stellar_sdk' not in sys.modules, 'serpent core pulled in stellar_sdk';"
         "assert 'serpent.spec' not in sys.modules, 'serpent core pulled in serpent.spec';"
         "assert 'serpent.testing' not in sys.modules, 'serpent core pulled in serpent.testing';"
+        "assert 'serpent.cli' not in sys.modules, 'serpent core pulled in serpent.cli';"
         "print('ok')"
     )
     result = subprocess.run(
