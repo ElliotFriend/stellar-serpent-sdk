@@ -1422,3 +1422,72 @@ entry.
   every emitter task, not only at close.
 - Reversal cost: the authoring names and the two codes are public once
   documented (medium/high); everything else is internal or text.
+
+## 2026-09-11 M2-A plan-review rulings (all 33 findings adopted; four rulings, one seating kept, one decomposition defect fixed)
+- Context: the Opus adversarial review of plan v1
+  (`.superpowers/sdd/2026-09-11-m2a-env-reach/plan-review.md`, 948 lines,
+  live probes; 4 Blockers, 14 Majors, 15 Minors; "READY WITH FIXES, one task
+  needing a redesign"). Task 1's primitives were extracted verbatim and
+  survived every attempt to break them (37/37 tests, an independent keccak,
+  PyNaCl over 200 ed25519 vectors, 300 secp256k1 and 200 P-256 round trips).
+  Tasks 10 and 11 could not run as written.
+- RULING (B4, the third decomposition defect): the ninth example is
+  RESHAPED inside A, not fed from C. `examples/raffle.py` stores entrants
+  indexed under a count (the `bounty_board.open_ids` pattern), builds the
+  `Vec[Address]` in a loop where needed, and draws the winner with
+  `env.prng().seed(secret)` then `env.prng().shuffle(field).get(U32(0))`.
+  No `U64 <-> U32` narrowing and no typed container read enter A; both stay
+  C's. The shuffle thereby gets its only end-to-end witness (F5).
+  `u64_in_range` keeps its coverage through `tests/fixtures/prng_surface.py`
+  and `PRNG_VECTORS`. Task 11's compile check is an explicit BLOCKED
+  condition quoting the codes, never "simplify until green". Seating stays
+  Sonnet implementer + Opus review because the construction is now ruled
+  into the plan (the reviewer's cheaper amendment).
+- RULING (B1-B3, the differential runner): `tests/unit/test_env_differential.py`
+  joins Task 10's Files. The tier-1 `host_error` arm accepts a tuple of the
+  model's traps (`StorageTrap`, `CryptoTrap`, `PrngTrap`); `_wasm` gains a
+  `host_error` arm (`pytest.raises(HostTrap)`, `trapped=True`) while the two
+  existing TTL rows KEEP their `mini_host_gap` (no accidental scope grab);
+  `_DECODABLE` gains `Bytes`; the mini host's bindings RE-TYPE to the
+  facade's classes (`Bytes32` for the hashes and the network id, `Bytes65`
+  for the recovery) so `answer_type` compares equal without relaxing it.
+  Roadmap row A now names this slice of D's "testing ergonomics".
+- RULING (M3): the frame-local PRNG is a SAVE/RESTORE around `_invocation`
+  (outer state restored in `finally`), not a reset-on-entry clobber; a
+  nested-frame test pins it; roadmap row B inherits it as a stack discipline.
+- RULING (M14): a commit's trailer names the model that authored it (the
+  M1-G ruling restated); the plan drops the hardcoded Fable literal and
+  each implementer uses its own harness trailer.
+- Adopted as amendments (no ruling needed): M1 (`test_recognize_env.py:451`
+  replaced by a positive `version()` test), M2 (log message `Const` exempted
+  from `_collect_host_fns`, with a test), M4 (the starred-argument arm
+  deleted; SPT1007 already answers), M5 (two lines wrapped), M6 (a fourth
+  `_recognize_env_top_level` arm: bare `env.current_contract_address` is
+  SPT1038), M7 (`test_examples.py:154-159`), M8 (counts 4829/4839/4857),
+  M9 (the `x == 0 && sign` branch dropped; dalek has no such refusal), M10
+  (ed25519's final check compares COMPRESSED BYTES, with a negative test),
+  M11 (`_prng.u64_in_inclusive_range` range-checks its arguments), M12
+  (the measure-once rows carry the quoted real-host `-s` output in a
+  comment and the Task 10 review MUST confirm it predates the tier-1 run;
+  the shuffle differential decodes through `chain_value_as(word, Vec[U64])`
+  and compares VALUES), M13 (`docs/subset.md` excluded from the A promise
+  net), and all fifteen minors (line ranges, counts, names, `_HELP
+  ["SPT1033"]`, `_CHAIN_HELP`/`_NO_ARG_CHAIN_STEPS`, `env.py.__all__` gains
+  `Crypto`/`Prng`/`Logs`, the protocol-23 fixture floor stated, `_gen_index`
+  comment, the net banner, `u64_of`/`items_and_ctx` named as created, an
+  `int.to_bytes` sentence and fixture).
+- Ratified with the reviewer (the plan author's own decisions): the
+  `String` `surrogateescape` widening; `s.to_bytes()`/`b.to_string()`;
+  SPT1041 NOT added (SPT3008 reproduced through `_coerce_literal`'s generic
+  arm; the diagnostic is quoted in the plan); the single-shape SPT1034
+  widening; `Ty.Bytes` slots with a targeted length check; the `M2-A`
+  needle; the `Ty.BytesN` spelling; the F3 relocation to
+  `edwards_decompress` with no real-host row (recorded UNVERIFIED).
+- Correction to the M2-A rulings entry (m4): measured P-256 verify and
+  secp256k1 recovery cost ~12 ms each, not the 6 ms band quoted; the
+  strategy ruling (E1) stands, the number is corrected here.
+- Process: the sub-plan dossier template gains a "does the example compile
+  today, minus the new surfaces?" probe (process.md); three of B4's four
+  diagnostics were reachable against HEAD before the plan was written.
+- Reversal cost: the raffle shape is one example's design; the runner arms
+  are test code; the trailer rule is process.

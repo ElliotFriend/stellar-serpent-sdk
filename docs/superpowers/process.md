@@ -131,20 +131,32 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   frame rollback + the SEP-41 example -> C U256/I256 + time algebra + typed
   container reads -> D tier-1 fidelity + testing ergonomics -> E language
   sugar + the registry pass + the env package promotion + docs, ending in
-  the user-approved M2 testnet deployment (hard stop). **M2-A is in
-  flight**: ledger `.superpowers/sdd/2026-09-11-m2a-env-reach/progress.md`
-  (dossier -> plan -> Opus plan review -> SDD -> Fable review -> merge).
-  M3 items (wheels, PyPI name, plugin topic, maturin pin) are listed in
-  decisions.md 2026-09-11. Signing during the M2 run: `commit.gpgsign` is
-  locally false and `.git/hooks/post-commit` logs every unsigned sha; the
-  M1-G run was NOT re-signed either, so the single re-sign base is still
-  11de4bd and v0.1.0 must be re-pointed afterwards.
+  the user-approved M2 testnet deployment (hard stop). **M2-A: PLANNED,
+  NOT STARTED.** Dossier (`specs/2026-09-11-m2a-inputs-dossier.md`), plan
+  v2 (`plans/2026-09-11-m2a-env-reach.md`, 13 tasks, 5244 lines, every
+  plan-review finding folded in), and the rulings (decisions.md 2026-09-11
+  x2, "M2-A rulings" and "M2-A plan-review rulings") are all on main.
+  Ledger: `.superpowers/sdd/2026-09-11-m2a-env-reach/progress.md`. **The
+  next session resumes at loop step 4**: create branch `m2a-env-reach` from
+  main in this checkout (the built host extension lives in this `.venv`),
+  write `global-constraints.md` from the plan's Global Constraints, run the
+  pre-flight conflict scan, then dispatch Task 1 and Task 2 in parallel
+  (Opus). M3 items (wheels, PyPI name, plugin topic, maturin pin) are
+  listed in decisions.md 2026-09-11. Signing: the planning session ran with
+  `commit.gpgsign` locally false plus a `.git/hooks/post-commit` logger and
+  RESTORED both at its end; an autonomous execution session re-applies them
+  (`git config --local commit.gpgsign false`; the hook body is in decisions.md
+  "M2 roadmap decomposition and the M2 run's mechanics"). The M1-G run was
+  NOT re-signed either, so the single re-sign base is still 11de4bd and
+  v0.1.0 must be re-pointed afterwards.
 
 ## How each sub-plan runs (the loop that built A, B, C)
 
 1. **Inputs dossier** (if the sub-plan is complex): compile banked items from
    `docs/superpowers/decisions.md` + prior ledgers into a citation-ID'd spec
-   (`docs/superpowers/specs/`). M1-C's is the model:
+   (`docs/superpowers/specs/`). If the sub-plan ships an example, the dossier
+   PROBES whether that example compiles today minus the new surfaces (M2-A
+   plan review: three of four raffle rejections were reachable pre-plan). M1-C's is the model:
    `2026-08-27-m1c-inputs-dossier.md`.
 2. **Plan** via superpowers:writing-plans →
    `docs/superpowers/plans/YYYY-MM-DD-<name>.md`.
