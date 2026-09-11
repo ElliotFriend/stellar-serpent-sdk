@@ -1196,3 +1196,63 @@ entry.
 - Reversal cost: per-item low pre-execution; the B6 repoint is a test
   edit; the `_UNBRIDGED_DEBT` list is deleted entry by entry as M2's
   registry pass lands codes; the M13 sequencing is process.
+
+## 2026-09-11 M1-G execution and final-review rulings
+- Context: sub-plan G executed under subagent-driven development (11 tasks,
+  4 single-round fix loops, every task review clean) and closed by a Fable
+  whole-branch review (0 Critical / 3 Important / 8 Minor; "merge with
+  fixes"; one fix wave). Rulings with lasting consequence, all also in the
+  SDD ledger with their costs:
+- `serpent.emitter.artifact` is a SECOND emitter module allowed to import
+  `serpent.spec` (the READ side of the custom sections, beside sections.py's
+  WRITE side); `test_emitter_module.py`'s allow-list names exactly the two
+  and a test asserts nothing else in the emitter imports artifact. Moving
+  the reader under serpent.spec would have reversed the emitter->spec
+  dependency direction.
+- `inspect`'s MISMATCH marker (AMENDS the 2026-09-10 ruling E3): the marker
+  is the BELOW-floor check -- the artifact declares a protocol its own
+  imports contradict (an under-declaration that could deploy and never
+  run). A declaration ABOVE the recomputed floor is what `build
+  --target-protocol N` produces by design and renders as an informational
+  note; `Artifact.protocol_mismatch` is the below-floor predicate and
+  `Artifact.declared_above_floor` the other direction, both in `--json`.
+  The plan under-specified this; the final review caught it.
+- The strict mock keeps a REAL-ARTIFACT regression forever: the first
+  shapes deployment's bytes (sha 6a9dd135...6e33, 4171 B, the B1 lowering)
+  are committed as `tests/fixtures/shapes_first_deploy.wasm` (sha-pinned)
+  because the M1-end redeploy replaced `deployed.wasm` with fixed bytes and
+  would otherwise have left `FullHost(strict_obj_cmp=True)` with only
+  hand-built-word tests. The plan did not foresee that 11c's fixture
+  replacement invalidates Task 6's fixture.
+- The bridge gate's `_unreachable` case: `enumvalue()` outside a
+  ContractEnum subclass (`_udt.py:809`) is unreachable from contract source
+  (dominated by SPT4015/4020/4008/4022, measured); its sanctioned SPT4025
+  bridge rule stays as defence-in-depth with the needle in
+  `_UNREACHABLE_NEEDLES`, no fixture. `_UNBRIDGED_DEBT` has EIGHT entries,
+  not seven: the non-Symbol prefix-topic raise joins (SPT5001 is about
+  identifier names, not topic literals, so no honest code exists today).
+  Raises whose message is built by a helper are resolved ONE hop, from the
+  exception's top-level bare Call/Name argument only.
+- Commit trailers name the model that authored the commit (Opus- and
+  Sonnet-seated implementers' harness trailers are kept; uniformity is not
+  worth amend churn, and every G commit is unsigned by Elliot's instruction
+  and re-signed by him in one rebase from 11de4bd).
+- Also ruled in execution: six `serpent._host` import names (not the plan's
+  seven -- one was never used); docs-preview commands use `--no-sync`
+  (the plan's `uv run --group docs mkdocs serve` would have pruned the host
+  extension); `Artifact.protocol_mismatch` JSON field kept alongside the
+  new one.
+- Carried out of G (attention file §5 + the final review's triage): to M3 --
+  pin maturin (`uvx maturin` is unpinned in CI and REBUILD_COMMAND), the
+  mkdocs 2.0 banner before any `uv lock --upgrade`, the actions/checkout
+  SHA-pin policy question, the CI-first-run proofs (the `serpent[spec] @
+  file://` spelling, `stellar plugin ls` on 28.0.0, the toolchain action on
+  Ubuntu, cold cargo build time), the home of shapes_first_deploy.wasm
+  (tests/goldens/wasm/ reads better), wheels, sdk 28.0.0 stable, the live
+  tier-3 suite (recorder arguments), the PyPI name, the stellar-plugin
+  topic; to M2 -- the event-convention registry item (the eight
+  `_UNBRIDGED_DEBT` raises), the self-referential subset notes, and the
+  dossier §A.6 M2 list.
+- Reversal cost: the MISMATCH semantics are one predicate + wording; the
+  second emitter->spec seam is one allow-list entry; the historical fixture
+  is a 4 KB artifact; the rest is prose.

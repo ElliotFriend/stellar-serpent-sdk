@@ -12,7 +12,7 @@ oracle" that mirrors on-chain semantics exactly. Spec:
 (§13's verified-facts appendix is REQUIRED READING before touching compiler or
 harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
 
-## State (as of 2026-09-02, post M1-F merge)
+## State (as of 2026-09-11, post M1-G merge: M1 COMPLETE)
 
 - **Phase 0**: COMPLETE (GO). Testnet contract
   `CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI`.
@@ -89,12 +89,40 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   tier-1 frame rollback, minimum-TTL floors for all buckets, container
   ordering (host order recorded), account authorizers, key-level footprint,
   archival.
-- **NEXT: G (CLI as a Stellar CLI plugin + ship).** Start at step 1 of the
-  loop (dossier: ingest the F attention file's "To G" items). M1 ENDS with
-  a user-approved testnet deployment (HARD STOP -- Elliot must explicitly
-  approve it in-session); that deployment also REPLACES the deployed shapes
-  contract whose `area` traps.
-
+- **M1-G (CLI plugin + ship): merged to main 2026-09-11** (fast-forward;
+  21 commits, ALL UNSIGNED by Elliot's instruction -- re-sign with
+  `git rebase --rebase-merges --exec 'git commit --amend --no-edit -S' 11de4bd`).
+  Delivered: `stellar-serpent` (`serpent/cli.py`: `build`/`inspect`/
+  `doctor`; `[project.scripts]`; the Stellar CLI dispatches `stellar
+  serpent ...` to it -- proven on 27.1.0, CI smokes 28.0.0), `serpent/spec/
+  decode.py` + `serpent/emitter/artifact.py` (declared vs RECOMPUTED
+  protocol; MISMATCH = below-floor), the seventh example
+  `examples/bounty_board.py` (every M1 surface; Elliot's contract), the
+  hygiene passes (SPT2004 for a parameter shadowing a module-level name;
+  the derived bridge gate with `_UNBRIDGED_DEBT`; `FullHost` strict
+  `obj_cmp` by default with the FIRST shapes deployment's bytes as the
+  regression fixture; the sanctioned registry wording pass; the SPT1xxx
+  subset note), the mkdocs site (`mkdocs.yml`; built strictly in CI; NOT
+  published -- `docs-deploy.yml` is dispatch-only), CI's `real-host`
+  (REQUIRE=1, cargo gates, floor 220), `docs`, and `cli-install` jobs,
+  README/guides, serpent 0.1.0 (the v0.1.0 tag is Elliot's, placed on the re-signed tip).
+  **M1 IS COMPLETE**: the M1-end testnet deployment happened 2026-09-11
+  (Elliot, identity pyserpent): shapes
+  `CD3KZQVZSUIM6YDGZAC2VSXNN7COV7AR7U5J5N725BAMECARV4LENHYY` (retires the
+  first deployment's `area` trap) and bounty_board
+  `CBBIB2C6C3ULRHJTTPK7FPDU6RFHAJM2IQ5RHHWVDP4C7GXBZ5VF2FEW`; tier-3
+  fixtures re-recorded; HEAD's build of each example == its deployed bytes
+  (pinned). Suite 4742 passed / 7 skipped; real_host 223 collected; all gates + the Rust
+  gate + `mkdocs build --strict` green. Carried obligations live in
+  `.superpowers/sdd/2026-09-10-m1g-cli-and-ship/final-review-attention.md`
+  §5 and the final review's triage (kept, like C/D/E/E2/F's).
+- **NEXT: M2 (reach).** Start at step 1 of the loop with a dossier that
+  ingests the C/D/E/E2/F/G attention files' M2 items (cross-contract calls,
+  crypto host fns, PRNG, deployer, TTL helpers, SEP-41 token, U256/I256;
+  the tier-1 model gaps: frame rollback, TTL floors, container ordering,
+  account authorizers, footprint, archival; the event-convention registry
+  item). M3 items (wheels, PyPI name, plugin topic, maturin pin) are
+  listed in decisions.md 2026-09-11.
 
 ## How each sub-plan runs (the loop that built A, B, C)
 
@@ -146,8 +174,11 @@ record of those decisions for review later."
   re-reviews; Opus for semantics-critical implementation AND review (anything
   feeding divergence guards, oracle edits, assembly); Fable for final
   whole-branch reviews. Always set the model explicitly on dispatch.
-- **Commit signing**: 1Password SSH signing is flaky. Try signed (~40s
-  timeout); on failure `git commit --no-gpg-sign` and append
+- **Commit signing**: 1Password SSH signing is flaky. When Elliot is away
+  (M1-G onward, by his instruction) EVERY commit in a run is made with
+  `--no-gpg-sign` and logged, and he re-signs the whole run afterwards with
+  the rebase below; otherwise try signed (~40s timeout); on failure
+  `git commit --no-gpg-sign` and append
   `<sha> <subject>` to `.git/unsigned-commits.log`. NOTE: `git log %G?`
   shows N locally because `gpg.ssh.allowedSignersFile` is unset — check for
   a `gpgsig` header (`git cat-file commit <sha> | grep gpgsig`) before
@@ -167,8 +198,8 @@ record of those decisions for review later."
    history) and the most recent SDD ledger under `.superpowers/sdd/`.
 3. If mid-sub-plan: the ledger's first line names its plan; tasks with a
    `complete` line are DONE — resume at the first task without one.
-4. If starting a sub-plan (F is next): begin at step 1 of the loop above
-   (dossier if warranted → plan → Opus plan review → execute). M1-C's
+4. If starting a sub-plan (M2's first is next): begin at step 1 of the loop
+   above (dossier if warranted → plan → Opus plan review → execute). M1-C's
    carried obligations for D are in
    `.superpowers/sdd/2026-08-27-m1c-compiler-frontend/final-review-attention.md`
    §"Obligations carried OUT of M1-C" — the D dossier/plan MUST ingest them
