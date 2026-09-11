@@ -1,6 +1,6 @@
 [project]
 name = "serpent"
-version = "0.0.1"
+version = "0.1.0"
 description = "Write Soroban smart contracts in Python (experimental)"
 readme = "README.md"
 requires-python = ">=3.11"

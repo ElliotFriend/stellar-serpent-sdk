@@ -25,6 +25,7 @@ import hashlib
 import inspect
 import re
 import typing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -45,20 +46,51 @@ from serpent.testing.testnet import (
     fixtures_under,
     load_fixture,
 )
-from tests.unit.test_emitter_end_to_end import EXAMPLE_SHAPES
+from tests.unit.test_emitter_end_to_end import EXAMPLE_BOUNTY_BOARD, EXAMPLE_SHAPES
 from tests.unit.test_examples import load_example
 
-#: The recorded tier-3 corpus, and the module the chain was running when it was
-#: recorded. Both live in the same directory so neither can be replaced alone.
-FIXTURE_DIR = Path(__file__).parent / "fixtures" / "testnet" / "shapes"
-DEPLOYED = FIXTURE_DIR / "deployed.wasm"
-FIXTURES = fixtures_under(FIXTURE_DIR)
 
-#: The deployed shapes contract, and the sha256 of the bytes it runs -- both
-#: read off the chain during recording and pinned here.
-CONTRACT_ID = "CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW"
-DEPLOYED_SHA256 = "6a9dd13549bac20f2609ab3d74668963b5249a7943dc7f027cdf6c42bec86e33"
+@dataclass(frozen=True)
+class FixtureSet:
+    """One deployed contract's recorded corpus (dossier D.6 step 4)."""
 
+    name: str
+    directory: Path
+    contract_id: str
+    deployed_sha256: str
+    example: Path
+    ctor: tuple[Any, ...]
+    #: Declared three-way divergences, `method -> tier-1 answer` (B1's `area`).
+    divergences: dict[str, object]
+
+    @property
+    def deployed(self) -> Path:
+        return self.directory / "deployed.wasm"
+
+    @property
+    def fixtures(self) -> list[Fixture]:
+        return fixtures_under(self.directory)
+
+    def contract_class(self) -> type:
+        """The example's single `@contract` class, found by its `_serpent_type_`
+        metadata rather than by name (`shapes.Drawing`, `bounty_board.BountyBoard`)
+        so the set needs no per-example spelling [M5]."""
+        module = load_example(self.example)
+        classes = [
+            obj
+            for obj in vars(module).values()
+            if isinstance(obj, type)
+            and getattr(obj, "_serpent_type_", {}).get("kind") == "contract"
+        ]
+        (cls,) = classes
+        return cls
+
+
+_TESTNET = Path(__file__).parent / "fixtures" / "testnet"
+
+#: The deployed shapes contract: its recorded corpus, and the sha256 of the
+#: bytes it runs -- both read off the chain during recording and pinned here.
+#:
 #: The one declared three-way divergence, with its reason (B1). `area` lowers
 #: `shape.tag() == Symbol("Rect")` to an `obj_cmp` on two SMALL symbols in the
 #: DEPLOYED bytes, which the host refuses -- so the chain traps and so does the
@@ -66,7 +98,21 @@ DEPLOYED_SHA256 = "6a9dd13549bac20f2609ab3d74668963b5249a7943dc7f027cdf6c42bec86
 #: lowering) answers the area of the `Rect(5, 2)` the chain holds. The row
 #: retires at the next approved deployment (G): re-record, and this table goes
 #: empty.
-B1_DIVERGENCE: dict[str, object] = {"area": U32(10)}
+SHAPES = FixtureSet(
+    name="shapes",
+    directory=_TESTNET / "shapes",
+    contract_id="CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW",
+    deployed_sha256="6a9dd13549bac20f2609ab3d74668963b5249a7943dc7f027cdf6c42bec86e33",
+    example=EXAMPLE_SHAPES,
+    ctor=(),
+    divergences={"area": U32(10)},
+)
+
+#: The recorded tier-3 corpus, one `FixtureSet` per deployed contract. The
+#: bounty board joins after the M1-end deployment (11c); until then this is a
+#: one-element tuple and the module behaves exactly as it did before the
+#: refactor.
+SETS: tuple[FixtureSet, ...] = (SHAPES,)
 
 real = pytest.mark.real_host  # per-test (M12); only the replay leg needs the host, and it says so
 
@@ -164,15 +210,18 @@ def test_the_default_source_is_a_valid_public_key() -> None:
     assert StrKey.is_valid_ed25519_public_key(DEFAULT_SOURCE)
 
 
-def test_the_fixtures_were_recorded_against_the_deployed_bytes() -> None:
+@pytest.mark.parametrize("fixture_set", SETS, ids=lambda s: s.name)
+def test_the_fixtures_were_recorded_against_the_deployed_bytes(fixture_set: FixtureSet) -> None:
     """The header check (M4): a fixture that has drifted from the contract, the
     bytes committed beside it or the protocol it was recorded under is a
     failure here, not a wrong answer three tests later."""
-    assert FIXTURES, "no fixtures recorded"
-    assert hashlib.sha256(DEPLOYED.read_bytes()).hexdigest() == DEPLOYED_SHA256
-    for fixture in FIXTURES:
-        assert fixture.contract_id == CONTRACT_ID
-        assert fixture.wasm_sha256 == DEPLOYED_SHA256
+    assert fixture_set.fixtures, "no fixtures recorded"
+    assert (
+        hashlib.sha256(fixture_set.deployed.read_bytes()).hexdigest() == fixture_set.deployed_sha256
+    )
+    for fixture in fixture_set.fixtures:
+        assert fixture.contract_id == fixture_set.contract_id
+        assert fixture.wasm_sha256 == fixture_set.deployed_sha256
         assert fixture.protocol == DEFAULT_PROTOCOL
 
 
@@ -181,21 +230,45 @@ def test_this_trees_shapes_build_differs_from_the_deployed_bytes_until_the_next_
     longer builds the deployed bytes. This inverts when Elliot approves the
     M1-end deployment (G): flip the assertion then and retire this docstring."""
     built = build_file(EXAMPLE_SHAPES).wasm
-    assert hashlib.sha256(built).hexdigest() != DEPLOYED_SHA256
+    assert hashlib.sha256(built).hexdigest() != SHAPES.deployed_sha256
 
 
-def test_every_committed_fixture_round_trips_through_the_recorded_json(tmp_path: Path) -> None:
+@pytest.mark.parametrize("fixture_set", SETS, ids=lambda s: s.name)
+def test_every_committed_fixture_round_trips_through_the_recorded_json(
+    fixture_set: FixtureSet, tmp_path: Path
+) -> None:
     """`Fixture`'s fields, `_as_json`'s keys and `load_fixture`'s readers are
     three spellings of one field set, and nothing but this test stops them
     drifting apart. Re-serializing also reproduces the committed file BYTE FOR
     BYTE, which pins the recorded format itself."""
-    assert FIXTURES, "no fixtures recorded"
-    for fixture in FIXTURES:
+    assert fixture_set.fixtures, "no fixtures recorded"
+    for fixture in fixture_set.fixtures:
         rewritten = _as_json(fixture)
-        assert rewritten == (FIXTURE_DIR / f"{fixture.method}.json").read_text(encoding="utf-8")
+        assert rewritten == (fixture_set.directory / f"{fixture.method}.json").read_text(
+            encoding="utf-8"
+        )
         path = tmp_path / f"{fixture.method}.json"
         path.write_text(rewritten, encoding="utf-8")
         assert load_fixture(path) == fixture
+
+
+def test_a_fixture_set_finds_its_contract_class_by_metadata_not_by_name(tmp_path: Path) -> None:
+    """The refactor reaches the second set BEFORE the deployment (M5): a
+    throwaway `FixtureSet` for the bounty board, over an EMPTY directory (no
+    recordings exist until 11c), still resolves its `@contract` class by the
+    `_serpent_type_` metadata the decorator stamps -- proving `contract_class`
+    does not depend on the shapes example's particular spelling."""
+    bounty_board_set = FixtureSet(
+        name="bounty_board",
+        directory=tmp_path,
+        contract_id="unused",
+        deployed_sha256="unused",
+        example=EXAMPLE_BOUNTY_BOARD,
+        ctor=(),
+        divergences={},
+    )
+    assert bounty_board_set.contract_class().__name__ == "BountyBoard"
+    assert bounty_board_set.fixtures == []
 
 
 def _loose(b64: str) -> Any:
@@ -281,25 +354,31 @@ def _testnet_outcome(fixture: Fixture, return_ty: object) -> object:
 
 
 @real
-@pytest.mark.parametrize("fixture", FIXTURES, ids=[fixture.method for fixture in FIXTURES])
-def test_the_real_host_and_tier_1_agree_with_testnet(fixture: Fixture) -> None:
+@pytest.mark.parametrize(
+    ("fixture_set", "fixture"),
+    [(s, f) for s in SETS for f in s.fixtures],
+    ids=[f"{s.name}:{f.method}" for s in SETS for f in s.fixtures],
+)
+def test_the_real_host_and_tier_1_agree_with_testnet(
+    fixture_set: FixtureSet, fixture: Fixture
+) -> None:
     """Three answers to one call, from three places, compared (U5, K6, K7).
 
     Same bytes on the two host legs' terms: the real leg deploys the DEPLOYED
     wasm rather than HEAD's build, because Task 0's B1 fix changed what
     `shapes.py` compiles to and the fixture was recorded against the older
     module. Tier 1 runs HEAD's model, which is the leg that is allowed to
-    differ and does, for exactly one method (`B1_DIVERGENCE`).
+    differ and does, for exactly one method (`fixture_set.divergences`).
 
     Seeding puts both hosts into the ledger state the simulation READ, entry by
     entry, keys and values decoded loosely -- the bare word the chain stores,
     re-typed by the contract's own `get(..., ty)` on every leg (D6/M4).
     """
-    shapes = load_example(EXAMPLE_SHAPES)
-    return_ty = _return_ty(shapes.Drawing, fixture.method)
+    cls = fixture_set.contract_class()
+    return_ty = _return_ty(cls, fixture.method)
     args = [
         from_xdr(base64.b64decode(arg), ty)
-        for arg, ty in zip(fixture.args_xdr, _param_types(shapes.Drawing, fixture.method))
+        for arg, ty in zip(fixture.args_xdr, _param_types(cls, fixture.method))
     ]
 
     # ONE seeding sequence, replayed on both legs: the instance sub-map's pairs
@@ -311,7 +390,7 @@ def test_the_real_host_and_tier_1_agree_with_testnet(fixture: Fixture) -> None:
     ] + [(entry.durability, entry.key_xdr, entry.value_xdr) for entry in fixture.seeded]
 
     real_env = RealEnv(sequence=fixture.ledger)
-    contract = real_env.deploy_wasm(DEPLOYED.read_bytes())
+    contract = real_env.deploy_wasm(fixture_set.deployed.read_bytes(), *fixture_set.ctor)
     for durability, key_xdr, value_xdr in seeding:
         contract.storage(durability).set(_loose(key_xdr), _loose(value_xdr))
     # `invoke_raw` + an explicit decode, not `invoke`: `deploy_wasm` has no
@@ -323,7 +402,7 @@ def test_the_real_host_and_tier_1_agree_with_testnet(fixture: Fixture) -> None:
     )
 
     env = Env(sequence=fixture.ledger)
-    instance: Any = deploy(shapes.Drawing, env)
+    instance: Any = deploy(cls, env, *fixture_set.ctor)
     with env.frame():
         for durability, key_xdr, value_xdr in seeding:
             _tier1_bucket(env, durability).set(_loose(key_xdr), _loose(value_xdr))
@@ -334,9 +413,9 @@ def test_the_real_host_and_tier_1_agree_with_testnet(fixture: Fixture) -> None:
     if fixture.result.ok:
         assert real_answer == tier1_answer == testnet_answer
     else:
-        assert fixture.method in B1_DIVERGENCE, (
+        assert fixture.method in fixture_set.divergences, (
             f"{fixture.method} failed on chain and no divergence is declared for it: "
             f"{fixture.result.error_text}"
         )
         assert real_answer == testnet_answer
-        assert tier1_answer == B1_DIVERGENCE[fixture.method]
+        assert tier1_answer == fixture_set.divergences[fixture.method]

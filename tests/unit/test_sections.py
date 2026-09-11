@@ -1154,12 +1154,12 @@ def test_meta_refuses_a_user_key_colliding_with_a_reserved_one(key: str) -> None
 META_SELF_PIN = (
     "00000000000000046e616d6500000007636f756e74657200000000000000000776657273696f6e"
     "0000000005312e302e30000000000000000000000a73657270656e74766572000000000005302e"
-    "302e31000000"
+    "312e30000000"
 )
 
 
 def test_meta_is_pinned_against_serpents_own_output() -> None:
-    assert serpent.__version__ == "0.0.1", "regenerate META_SELF_PIN for the new version"
+    assert serpent.__version__ == "0.1.0", "regenerate META_SELF_PIN for the new version"
     assert build_meta("counter", "1.0.0").hex() == META_SELF_PIN
     assert len(build_meta("counter", "1.0.0")) == 84
 

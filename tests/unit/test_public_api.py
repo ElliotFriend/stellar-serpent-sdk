@@ -91,7 +91,7 @@ def test_every_name_in_all_is_actually_importable() -> None:
 
 
 def test_version_string() -> None:
-    assert serpent.__version__ == "0.0.1"
+    assert serpent.__version__ == "0.1.0"
 
 
 def test_missing_value_and_abi_check_failed_are_catchable_off_the_root() -> None:
