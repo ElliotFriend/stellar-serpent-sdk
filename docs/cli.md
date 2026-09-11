@@ -57,8 +57,9 @@ the interface does not carry:
 ## What `doctor` checks
 
 One row per tool, each `ok`, `warn`, `fail`, or `info`, with a remedy where a
-row is not `ok`: `python`, `serpent` (this package's own version), the `spec`
-extra (`stellar_sdk` importable), `wasm-tools`, the Stellar CLI, the plugin on
-PATH, `serpent_host` (the embedded real host extension), the pinned
-`env.json` tag, and, with `--network`, one live RPC call for that network's
-protocol.
+row is not `ok`, in this order: `python`, `serpent` (this package's own
+version), the `spec` extra (`stellar_sdk` importable), `wasm-tools`, the
+Stellar CLI, the plugin on PATH, `serpent_host` (the embedded real host
+extension), the pinned `env.json` tag, the default target protocol
+(`build`'s protocol when `--target-protocol` is not given), and, only with
+`--network`, one live RPC call for that network's protocol.
