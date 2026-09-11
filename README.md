@@ -32,7 +32,8 @@ stellar contract deploy --wasm examples/counter.wasm --source alice --network te
 `stellar serpent` is the Stellar CLI's plugin dispatch to the `stellar-serpent`
 console script; deploy, invoke, and bindings are the stock CLI's. The full
 walkthrough is `docs/getting-started.md`; the site is built with
-`uv run --group docs mkdocs serve`.
+`uv sync --all-groups --inexact` once (the docs group) and then
+`uv run --no-sync mkdocs serve`.
 
 ## Architecture at a glance
 

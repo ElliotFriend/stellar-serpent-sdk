@@ -14,10 +14,11 @@ stellar serpent inspect sandbox/counter.wasm
 stellar serpent doctor
 ```
 
-(`uv run python sandbox/compile.py sandbox/counter.py` still works; it just
-calls the CLI.) The diagnostics are the interesting part: break `counter.py`
-on purpose and rebuild -- each rejection carries an `SPT####` code, a location,
-and a rewrite that compiles. The full catalog is `docs/subset.md`.
+(`uv run --no-sync python sandbox/compile.py sandbox/counter.py` still
+works; it just calls the CLI.) The diagnostics are the interesting part:
+break `counter.py` on purpose and rebuild -- each rejection carries an
+`SPT####` code, a location, and a rewrite that compiles. The full catalog is
+`docs/subset.md`.
 
 ## Run it without building
 
