@@ -1,6 +1,6 @@
 # serpent:reject SPT5005
 # serpent:at HERE
-# serpent:message an exported method may have at most 32 parameters
+# serpent:message an exported method has too many parameters
 # serpent:doc-title over-many export parameters
 from serpent import Env, U32, contract
 

@@ -1,6 +1,6 @@
 # serpent:reject SPT5004
 # serpent:at HERE
-# serpent:message docstring is too long (> 1024 encoded bytes)
+# serpent:message docstring is too long
 # serpent:doc-title over-long method docstring
 from serpent import Env, U32, contract
 

@@ -14,7 +14,7 @@ import re
 
 import pytest
 
-from serpent.compiler import codes
+from serpent.compiler import codes, compile_module
 from serpent.compiler.diagnostics import (
     CompileError,
     Diagnostic,
@@ -357,14 +357,14 @@ def test_review_round_findings_landed() -> None:
     recursion = [
         e for e in codes.REGISTRY if e.band == "SPT7xxx" and "recursi" in e.message_intent.lower()
     ]
-    assert recursion and recursion[0].owning_task == "Task 8"
+    assert recursion and recursion[0].owning_task == "M1-C Task 8"
 
     topic_symbol = [
         e
         for e in codes.REGISTRY
         if "topic" in e.construct.lower() and "symbol" in e.message_intent.lower()
     ]
-    assert topic_symbol and topic_symbol[0].owning_task == "Task 7a"
+    assert topic_symbol and topic_symbol[0].owning_task == "M1-C Task 7a"
 
     type_mismatch = [
         e
@@ -376,7 +376,7 @@ def test_review_round_findings_landed() -> None:
     catchall = [
         e for e in codes.REGISTRY if "NODE_KIND_CODES" in e.construct and e.band == "SPT1xxx"
     ]
-    assert catchall and catchall[0].owning_task == "Task 5"
+    assert catchall and catchall[0].owning_task == "M1-C Task 5"
 
     # Finding 2: SPT4018 duplicate deleted; SPT5001 widened to cover B11.
     assert "constructor" not in by_code["SPT4018"].construct.lower()
@@ -403,9 +403,9 @@ def test_review_round_findings_landed() -> None:
     )
 
     # Minor 7: owning-task consistency.
-    assert by_code["SPT1001"].owning_task == "Task 6"
-    assert by_code["SPT1002"].owning_task == "Task 6"
-    assert by_code["SPT4012"].owning_task == "Task 3"
+    assert by_code["SPT1001"].owning_task == "M1-C Task 6"
+    assert by_code["SPT1002"].owning_task == "M1-C Task 6"
+    assert by_code["SPT4012"].owning_task == "M1-C Task 3"
 
     # Minor 8: SPT3005 names the AugAssign desugaring.
     assert "AugAssign" in by_code["SPT3005"].construct
@@ -514,3 +514,74 @@ def test_reserved_codes_documented_in_module_docstring() -> None:
         "CODE_UNSUPPORTED_AT_RUNTIME",
     ):
         assert name in doc, f"{name} missing from the errors module docstring table"
+
+
+def test_every_owning_task_names_its_sub_plan() -> None:
+    """O-HYG2: an origin field is `<sub-plan> Task <n>`, never a bare task.
+
+    The registry is append-only and spans sub-plans, so a bare `"Task 5"` is
+    ambiguous the moment a second sub-plan has a Task 5. Pinning the shape
+    here keeps the convention from regressing the next time a sub-plan
+    appends a row.
+    """
+    offenders = [
+        (entry.code, entry.owning_task)
+        for entry in codes.REGISTRY
+        if not re.fullmatch(r"M1-[A-F]2? Task .+", entry.owning_task)
+    ]
+    assert not offenders, f"owning_task must be '<sub-plan> Task <n>': {offenders}"
+
+
+# --- the SPT1xxx subset-doc note (O-HYG7) -------------------------------
+
+
+def test_spt1xxx_diagnostics_cite_the_subset_doc() -> None:
+    # `Diagnostics.error` REFUSES an SPT1xxx diagnostic without `help` (F.2.11,
+    # diagnostics.py), so every call here carries one.
+    sink = Diagnostics()
+    sink.error(
+        "SPT1001",
+        Loc.whole_file("x.py"),
+        "nested functions are not supported",
+        help="hoist it",
+    )
+    sink.error("SPT3018", Loc.whole_file("x.py"), "type mismatch")
+    one, three = sink.diagnostics
+    assert any("docs/subset.md#spt1001" in note for note in one.notes)
+    assert not any("subset.md" in note for note in three.notes)
+
+
+def test_an_existing_subset_note_is_not_duplicated() -> None:
+    sink = Diagnostics()
+    sink.error(
+        "SPT1005",
+        Loc.whole_file("x.py"),
+        "m",
+        help="write a loop",
+        notes=("the supported subset is documented at docs/subset.md#comprehensions",),
+    )
+    (diag,) = sink.diagnostics
+    assert sum("subset.md" in n for n in diag.notes) == 1
+
+
+def test_an_allowlisted_spt1xxx_code_gets_no_dead_anchor() -> None:
+    sink = Diagnostics()
+    sink.error("SPT1009", Loc.whole_file("x.py"), "m", help="use .slice()")
+    (diag,) = sink.diagnostics
+    assert not any("subset.md" in n for n in diag.notes)
+
+
+def test_a_bridged_spt1xxx_diagnostic_carries_the_note() -> None:
+    """The compile path users actually hit carries the note too."""
+    source = (
+        "from serpent import Env, U32, contract\n\n\n"
+        "@contract\nclass C:\n"
+        "    def f(self, env: Env) -> U32:\n"
+        "        def inner() -> U32:\n"
+        "            return U32(1)\n"
+        "        return inner()\n"
+    )
+    with pytest.raises(CompileError) as info:
+        compile_module(source, "nested.py")
+    (diag,) = [d for d in info.value.diagnostics if d.code == "SPT1001"]
+    assert any(f"docs/subset.md#{diag.code.lower()}" in n for n in diag.notes)

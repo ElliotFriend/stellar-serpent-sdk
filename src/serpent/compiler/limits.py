@@ -96,8 +96,8 @@ from serpent.spec.sections import (
     CONSTRUCTOR_NAME,
     DOC_LIMIT,
     TYPE_NAME_LIMIT,
-    _class_doc,
-    _own_doc,
+    class_doc,
+    own_doc,
 )
 from serpent.val import SCSYMBOL_LIMIT, SYMBOL_CHARS
 
@@ -173,7 +173,7 @@ def validate_limits(loaded: LoadedModule, sink: Diagnostics) -> None:
         _check_contract(loaded.contract_decl, loaded, sink)
     for decl in loaded.decorated_types_in_order:
         _check_type_name(decl, loaded, sink)
-        _check_doc(_class_doc(decl.cls), Loc.from_node(loaded.path, decl.node), decl.name, sink)
+        _check_doc(class_doc(decl.cls), Loc.from_node(loaded.path, decl.node), decl.name, sink)
         if decl.kind in _CASE_RULES:
             _check_cases(decl, loaded, sink)
 
@@ -206,7 +206,7 @@ def _check_contract(decl: DecoratedDecl, loaded: LoadedModule, sink: Diagnostics
             limit=NAME_LIMIT,
             help_text=_NAME_HELP,
         )
-        _check_doc(_own_doc(vars(contract_cls).get(name)), fn_loc, emitted, sink)
+        _check_doc(own_doc(vars(contract_cls).get(name)), fn_loc, emitted, sink)
 
         real_params = _drop_env(params)
         if len(real_params) > EXPORT_PARAM_LIMIT:

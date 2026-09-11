@@ -1,6 +1,6 @@
 # serpent:reject SPT4012
 # serpent:at HERE
-# serpent:message struct fields need a chain-type annotation
+# serpent:message fields and variant payloads need a chain-type annotation
 # serpent:doc-title @contractunion variant with an Option payload
 # A variant payload is an `ScVec` element, and an element has no empty
 # spelling: `Vec` cannot hold a `None`. The idiomatic union answer is a case

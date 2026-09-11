@@ -1,6 +1,6 @@
 # serpent:reject SPT1020
 # serpent:at HERE
-# serpent:message range() supports only range(stop) and range(start, stop) in M1
+# serpent:message range() supports only range(stop) and range(start, stop)
 # serpent:doc-title range() with a step argument
 from serpent import Env, U32, contract
 

@@ -83,7 +83,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from serpent import val
-from serpent._host._protocol import (
+from serpent._host import (
     BASE_PROTOCOL,
     CONSTRUCTOR_MIN_PROTOCOL,
     DEFAULT_TARGET_PROTOCOL,
@@ -126,9 +126,9 @@ from serpent.compiler.stmt import check_function_body
 from serpent.compiler.types_ import Ty, TyTag
 
 # The IR must not disagree with the spec about the same text (F.2.7), so the
-# class docstring comes from `spec.sections`' own reader -- the same deliberate
-# private-name import `decls.py` already makes for exactly this reason.
-from serpent.spec.sections import _class_doc
+# class docstring comes from `spec.sections`' own public reader -- the same one
+# `decls.py` uses, for exactly this reason.
+from serpent.spec.sections import class_doc
 
 __all__ = [
     "CompiledModule",
@@ -420,7 +420,7 @@ def _build_module_ir(
         contract = ContractIR(
             loc=Loc.from_node(loaded.path, loaded.contract_node),
             name=loaded.contract_decl.name,
-            doc=_class_doc(loaded.contract_decl.cls),
+            doc=class_doc(loaded.contract_decl.cls),
             methods=tuple(contract_methods),
         )
 

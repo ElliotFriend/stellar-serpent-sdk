@@ -143,7 +143,7 @@ rebind (`v = vec_push_back(v, x)`); anywhere else it is `SPT1034`.
 
 `if`/`while`/`for x in range(...)`/`for x in <Vec>` all compile, as do
 `return` and `raise <ErrorEnum>.<Member>`. Iteration is narrower
-elsewhere: iterate a Map via map.keys()/map.values(); walk Bytes with a while loop indexed by bytes[i] up to len(b); tuples cannot be iterated; range() supports only range(stop) and range(start, stop) in M1.
+elsewhere: iterate a Map via map.keys()/map.values(); walk Bytes with a while loop indexed by bytes[i] up to len(b); tuples cannot be iterated; range() supports only range(stop) and range(start, stop).
 Every method proves it returns on every
 path and never reads a local before it is definitely assigned;
 5 flow rules are enforced end to end -- see [SPT1xxx](#spt1xxx----unsupported-construct) (statement/loop shape) and [SPT7xxx](#spt7xxx----flow-analysis) (return/definite-assignment/recursion) below for the exact lists.
@@ -175,6 +175,7 @@ class Contract:
 
 - **message:** nested functions and closures are not supported; contracts are a flat set of methods and module-level helpers: `FunctionDef` is not part of the serpent subset
 - **help:** define the helper at module level, or as a private method on the contract class
+- **note:** the supported subset is documented at docs/subset.md#spt1001
 
 #### SPT1002
 
@@ -196,6 +197,7 @@ class Contract:
 
 - **message:** there is no event loop on chain; contract methods are synchronous: `compute` is declared `async`
 - **help:** declare it with `def`, not `async def`
+- **note:** the supported subset is documented at docs/subset.md#spt1002
 
 #### SPT1003
 
@@ -217,6 +219,7 @@ class Contract:
 
 - **message:** comprehensions are not supported; build the container with Vec(T, [...]) or fill it in a while loop: `ListComp` is not part of the serpent subset
 - **help:** build the container explicitly -- Vec(U32, [...]) / Map(Symbol, U32, [...]) -- or fill it in a while loop
+- **note:** the supported subset is documented at docs/subset.md#spt1003
 
 #### SPT1004
 
@@ -238,6 +241,7 @@ class Contract:
 
 - **message:** f-strings are not supported: there is no runtime string formatting host function: `JoinedStr` is not part of the serpent subset
 - **help:** there is no runtime string formatting on chain; String literals are compile-time constants
+- **note:** the supported subset is documented at docs/subset.md#spt1004
 
 #### SPT1005
 
@@ -260,6 +264,7 @@ class Contract:
 
 - **message:** lambdas and closures are not supported: `Lambda` is not part of the serpent subset
 - **help:** give the code a name: write a module-level helper function instead
+- **note:** the supported subset is documented at docs/subset.md#spt1005
 
 #### SPT1006
 
@@ -283,6 +288,7 @@ class Contract:
 
 - **message:** assign on its own line: `NamedExpr` is not part of the serpent subset
 - **help:** assign on its own line, then use the name
+- **note:** the supported subset is documented at docs/subset.md#spt1006
 
 #### SPT1007
 
@@ -304,6 +310,7 @@ class Contract:
 
 - **message:** argument unpacking is not supported; a contract export has a fixed arity: `Starred` is not part of the serpent subset
 - **help:** pass every argument explicitly; a contract export has a fixed arity
+- **note:** the supported subset is documented at docs/subset.md#spt1007
 
 #### SPT1008
 
@@ -326,6 +333,7 @@ class Contract:
 
 - **message:** generators are not supported: `Yield` is not part of the serpent subset
 - **help:** return a value; there are no generators on chain
+- **note:** the supported subset is documented at docs/subset.md#spt1008
 
 #### SPT1010
 
@@ -347,6 +355,7 @@ class Contract:
 
 - **message:** compare two values at a time: a chained comparison evaluates its middle operand once, which has no sound lowering
 - **help:** split it: `a < b and b < c`
+- **note:** the supported subset is documented at docs/subset.md#spt1010
 
 #### SPT1011
 
@@ -368,6 +377,7 @@ class Contract:
 
 - **message:** use Map.has(k) or Vec.first_index_of(v) instead of `in`: `not in` needs an iterator protocol the host does not provide
 - **help:** use Map.has(k), or Vec.first_index_of(v) for a Vec
+- **note:** the supported subset is documented at docs/subset.md#spt1011
 
 #### SPT1012
 
@@ -389,6 +399,7 @@ class Contract:
 
 - **message:** identity has no on-chain meaning; use ==: `is` compares object identity, which no host value has
 - **help:** compare values with ==
+- **note:** the supported subset is documented at docs/subset.md#spt1012
 
 #### SPT1013
 
@@ -410,6 +421,7 @@ class Contract:
 
 - **message:** slicing via subscript is not supported; use .slice(lo, hi): a sub-range is taken with the .slice(lo, hi) method, never a subscript slice
 - **help:** take the sub-range with .slice(lo, hi), e.g. v.slice(U32(0), U32(2))
+- **note:** the supported subset is documented at docs/subset.md#spt1013
 
 #### SPT1014
 
@@ -432,6 +444,7 @@ class Contract:
 
 - **message:** tuple structs are not supported: `Tuple` is not part of the serpent subset
 - **help:** a tuple is only a value as an event's topic tuple, in env.events().publish(topics, data)
+- **note:** the supported subset is documented at docs/subset.md#spt1014
 
 #### SPT1015
 
@@ -454,6 +467,7 @@ class Contract:
 
 - **message:** there is no python list/dict/set on chain; build a Vec(T, [...]) or Map(K, V, [...]): `List` is not part of the serpent subset
 - **help:** build a Vec(T, [...]) or Map(K, V, [...]); there is no python list, dict, or set on chain
+- **note:** the supported subset is documented at docs/subset.md#spt1015
 
 #### SPT1016
 
@@ -475,6 +489,7 @@ class Contract:
 
 - **message:** this property has no host equivalent: `.value` on U32 is tier-1 introspection with no host equivalent
 - **help:** read the value through a chain operation instead; this property is tier-1 only
+- **note:** the supported subset is documented at docs/subset.md#spt1016
 
 #### SPT1017
 
@@ -497,6 +512,7 @@ class Contract:
 
 - **message:** this builtin is not supported: `str` is a python builtin with no on-chain equivalent
 - **help:** use a chain type's own operators and methods
+- **note:** the supported subset is documented at docs/subset.md#spt1017
 
 #### SPT1018
 
@@ -523,6 +539,7 @@ class Contract:
 
 - **message:** the for ... else clause is not supported: a `for ... else` clause is not supported
 - **help:** drop the else clause and put the code after the loop
+- **note:** the supported subset is documented at docs/subset.md#spt1018
 
 #### SPT1019
 
@@ -547,12 +564,13 @@ class Contract:
 
 - **message:** iterate a Map via map.keys()/map.values(); walk Bytes with a while loop indexed by bytes[i] up to len(b); tuples cannot be iterated: Map(Symbol, U32) cannot be iterated
 - **help:** iterate a Vec, or walk the values with a while loop -- map.keys() for a Map, bytes[i] up to len(b) for Bytes
+- **note:** the supported subset is documented at docs/subset.md#spt1019
 
 #### SPT1020
 
 **Construct:** For i in range(...) -- 3-arg or negative-step form
 
-**Intent:** range() supports only range(stop) and range(start, stop) in M1
+**Intent:** range() supports only range(stop) and range(start, stop)
 
 #### range() with a step argument (`constructs/range_three_arg.py`)
 
@@ -569,8 +587,9 @@ class Contract:
         return total
 ```
 
-- **message:** range() supports only range(stop) and range(start, stop) in M1: range() takes one or two positional arguments here, got 3
+- **message:** range() supports only range(stop) and range(start, stop): range() takes one or two positional arguments here, got 3
 - **help:** use range(stop) or range(start, stop)
+- **note:** the supported subset is documented at docs/subset.md#spt1020
 
 #### SPT1021
 
@@ -595,6 +614,7 @@ class Contract:
 - **message:** only raise <ErrorEnum>.<Member> is supported; contract errors are u32 codes, not exception instances: only `raise <ErrorEnum>.<Member>` is supported
 - **help:** raise an error case, e.g. `raise Err.NotFound`
 - **note:** contract errors are u32 codes delivered through fail_with_error, not exception instances (S7/S10)
+- **note:** the supported subset is documented at docs/subset.md#spt1021
 
 #### SPT1022
 
@@ -619,6 +639,7 @@ class Contract:
 
 - **message:** a contract cannot catch its own errors; validate before acting: `Try` is not part of the serpent subset
 - **help:** validate before acting: a failing frame is rolled back by the host, and footprint violations are not recoverable at all
+- **note:** the supported subset is documented at docs/subset.md#spt1022
 
 #### SPT1023
 
@@ -641,6 +662,7 @@ class Contract:
 
 - **message:** there is no context-manager protocol on chain: `With` is not part of the serpent subset
 - **help:** there is no context-manager protocol on chain; call what you need directly
+- **note:** the supported subset is documented at docs/subset.md#spt1023
 
 #### SPT1024
 
@@ -664,6 +686,7 @@ class Contract:
 
 - **message:** structural pattern matching is not supported: `Match` is not part of the serpent subset
 - **help:** use an if/elif chain
+- **note:** the supported subset is documented at docs/subset.md#spt1024
 
 #### SPT1025
 
@@ -686,6 +709,7 @@ class Contract:
 
 - **message:** assert has no on-chain meaning; raise <Error>.<Member> to fail with a code the caller can read: `Assert` is not part of the serpent subset
 - **help:** raise an error case, e.g. `raise Err.NotFound`, so the caller gets a code
+- **note:** the supported subset is documented at docs/subset.md#spt1025
 
 #### SPT1026
 
@@ -709,6 +733,7 @@ class Contract:
 
 - **message:** use storage.del_(key), Vec.del_(i), or Map.del_(k): `Delete` is not part of the serpent subset
 - **help:** use storage.del_(key), Vec.del_(i), or Map.del_(k)
+- **note:** the supported subset is documented at docs/subset.md#spt1026
 
 #### SPT1027
 
@@ -734,6 +759,7 @@ class Contract:
 
 - **message:** contract state lives in storage; module-level names are compile-time constants: `Global` is not part of the serpent subset
 - **help:** contract state lives in storage; module-level names are compile-time constants
+- **note:** the supported subset is documented at docs/subset.md#spt1027
 
 #### SPT1028
 
@@ -756,6 +782,7 @@ class Contract:
 
 - **message:** a non-void expression cannot be a statement on its own; assign it or discard it explicitly: this expression produces a U32 that nothing consumes
 - **help:** assign the value to a local, or drop the line
+- **note:** the supported subset is documented at docs/subset.md#spt1028
 
 #### SPT1029
 
@@ -778,6 +805,7 @@ class Contract:
 
 - **message:** assign one name at a time: tuple unpacking binds several names at once
 - **help:** assign one name at a time
+- **note:** the supported subset is documented at docs/subset.md#spt1029
 
 #### SPT1030
 
@@ -800,6 +828,7 @@ class Contract:
 
 - **message:** use Vec.put(i, v) or Map.set(k, v): container elements are not assigned through a subscript
 - **help:** use Vec.put(i, v) or Map.set(k, v)
+- **note:** the supported subset is documented at docs/subset.md#spt1030
 
 #### SPT1031
 
@@ -825,6 +854,7 @@ class Contract:
 - **help:** a contract module's top level may contain only `from __future__ import annotations`, `from serpent import ...`, module-level chain constants, serpent-decorated classes, and module-level helper functions
 - **note:** `AnnAssign` is not a supported top-level statement
 - **note:** a module constant is written `NAME = U32(1)`; its type is the constructor
+- **note:** the supported subset is documented at docs/subset.md#spt1031
 
 #### SPT1033
 
@@ -847,6 +877,7 @@ class Contract:
 
 - **message:** this Env surface is recognized but not yet supported; it lands in M2: `env.logs` is recognized but not lowerable in M1
 - **help:** this Env surface is deferred to M2; there is no rewrite available yet
+- **note:** the supported subset is documented at docs/subset.md#spt1033
 
 #### SPT1034
 
@@ -870,6 +901,7 @@ class Contract:
 - **message:** host container operations are functional; mutate only a local this method owns, on a statement of its own -- `v.push_back(x)` -- and C rebinds it (v = vec_push_back(v, x)): `v.push_back(value)` cannot mutate it: the receiver is a temporary with no binding to rebind
 - **help:** bind the container to a local first and mutate that: `v = Vec(U32, [...])` on one line, `v.push_back(x)` on the next -- C then rebinds v for you
 - **note:** the host's container operations are functional -- vec_push_back(v, x) returns a NEW VecObject -- while types.Vec.push_back mutates in place, so C lowers a mutation to a rebind of the receiver's own binding (E11). Wherever C does not own that binding the two tiers silently disagree: after `a = b`, `a.push_back(x)` also changes `b` at tier 1 and cannot on chain
+- **note:** the supported subset is documented at docs/subset.md#spt1034
 
 #### SPT1035
 
@@ -891,6 +923,7 @@ class Contract:
 
 - **message:** keyword arguments are only accepted where the recognized API names the parameter: `U32()` does not name a keyword parameter (`value`)
 - **help:** pass the argument positionally
+- **note:** the supported subset is documented at docs/subset.md#spt1035
 
 #### SPT1036
 
@@ -913,6 +946,7 @@ class Contract:
 
 - **message:** uninitialized locals are not supported; give x: T a value: a local with no value would have nothing to hold
 - **help:** give it a value, e.g. `x: U32 = U32(0)`
+- **note:** the supported subset is documented at docs/subset.md#spt1036
 
 #### SPT1037
 
@@ -938,6 +972,7 @@ class Contract:
 - **message:** this construct is not supported by the serpent subset: `__helper` is a name-mangled method
 - **help:** use a single leading underscore for a private method: `_helper`
 - **note:** python rewrites `self.__helper` to `self._<Class>__helper` inside the class body, so the declared name and the compiled name would disagree
+- **note:** the supported subset is documented at docs/subset.md#spt1037
 
 #### non-literal module-level constant (`constructs/non_literal_module_const.py`)
 
@@ -956,6 +991,7 @@ class Contract:
 - **message:** this construct is not supported by the serpent subset: `LIMIT` is not a compile-time literal
 - **help:** a module constant is a compile-time literal, e.g. `ADMIN = Symbol("ADMIN")` or `LIMIT = U32(10)`; compute derived values inside a method
 - **note:** a module constant becomes data in the compiled module, so there is no phase in which a computation could run
+- **note:** the supported subset is documented at docs/subset.md#spt1037
 
 #### SPT1038
 
@@ -978,6 +1014,7 @@ class Contract:
 
 - **message:** env API used with an unsupported call shape: `env.storage` must be called and chained, e.g. `env.storage().<method>(...)`
 - **help:** call it and chain the recognized form, e.g. env.storage().instance().get(...), or env.events().publish((Symbol('name'), ...), data)
+- **note:** the supported subset is documented at docs/subset.md#spt1038
 
 #### SPT1039
 
@@ -1000,6 +1037,7 @@ class Contract:
 
 - **message:** a map literal may not repeat a key: the key 'a' appears more than once
 - **help:** remove the repeated entry: tier 1 keeps the LAST value silently, but a map literal on chain is laid out with unique keys and cannot represent the repeat at all
+- **note:** the supported subset is documented at docs/subset.md#spt1039
 
 ### SPT2xxx -- name resolution / imports / scope
 
@@ -1494,7 +1532,7 @@ class Contract:
 
 #### SPT3014
 
-**Construct:** Subscript -- annotation-only generic form (Vec[T]/Map[K,V]/Optional[X]) used in a value position
+**Construct:** Subscript -- annotation-only generic form (Vec[T]/Map[K,V]/Optional[X]) used in a value position; also a bare type name used as a value (`U32`, a `@contracttype` class) and the annotation-only `bytes_n(N)` form in a value position
 
 **Intent:** this is an annotation-only form; it cannot appear as a value
 
@@ -1651,7 +1689,7 @@ class Contract:
 
 #### SPT3020
 
-**Construct:** Call -- a chain-type constructor or a recognized API call with the wrong arguments (wrong arity, a missing required argument, or a duplicate keyword) -- `U32()`, `U32(1, 2)`, `<bucket>.set(k)`, `addr.require_auth_for_args(a, b)`
+**Construct:** Call -- a chain-type constructor or a recognized API call with the wrong arguments (wrong arity, a missing required argument, or a duplicate keyword) -- `U32()`, `U32(1, 2)`, `<bucket>.set(k)`, `addr.require_auth_for_args(a, b)`, a variant call with the wrong arity (`Circle(1, 2)` on a one-payload variant), positional struct arguments
 
 **Intent:** call has the wrong arguments (missing, extra, or duplicate keyword)
 
@@ -2022,9 +2060,9 @@ class Contract:
 
 #### SPT4012
 
-**Construct:** @contracttype -- non-chain field annotation
+**Construct:** @contracttype/@contractevent field or @contractunion variant payload -- non-chain annotation
 
-**Intent:** struct fields need a chain-type annotation
+**Intent:** fields and variant payloads need a chain-type annotation
 
 #### @contracttype field with a non-chain annotation (`shape/struct_field_non_chain_type.py`)
 
@@ -2043,7 +2081,7 @@ class Contract:
         return x
 ```
 
-- **message:** Point.x: struct fields need a chain-type annotation
+- **message:** Point.x: fields and variant payloads need a chain-type annotation
 - **help:** annotate the field with a chain type, a `@contracttype` struct, or `X | None` of one; a variant payload takes the same set WITHOUT `X | None` (declare a unit variant for the absent case)
 - **note:** ValueError: Point.x: annotation int is not a chain type, a `@contracttype` struct, or `X | None` of one
 
@@ -2069,7 +2107,7 @@ class Contract:
         return U32(0)
 ```
 
-- **message:** Maybe.Some: struct fields need a chain-type annotation
+- **message:** Maybe.Some: fields and variant payloads need a chain-type annotation
 - **help:** annotate the field with a chain type, a `@contracttype` struct, or `X | None` of one; a variant payload takes the same set WITHOUT `X | None` (declare a unit variant for the absent case)
 - **note:** ValueError: Maybe.Some: payload annotation serpent.types.numeric.U32 | None is an Option, and a variant payload cannot be absent in M1 -- the payload is an `ScVec` element, which has no empty spelling. Declare a unit variant for the absent case instead (`Nothing = variant()`)
 
@@ -2693,7 +2731,7 @@ class Contract:
 
 **Construct:** docstring -- encoded length > 1024 bytes (B12)
 
-**Intent:** docstring is too long (> 1024 encoded bytes)
+**Intent:** docstring is too long
 
 #### over-long method docstring (`limits/doc_too_long.py`)
 
@@ -2708,14 +2746,14 @@ class Contract:
         return U32(0)
 ```
 
-- **message:** docstring is too long (> 1024 encoded bytes): `act` docstring is 1025 bytes (max 1024)
+- **message:** docstring is too long: `act` docstring is 1025 bytes (max 1024)
 - **help:** shorten the docstring to at most 1024 encoded bytes
 
 #### SPT5005
 
 **Construct:** exported method -- more than 32 parameters (S23)
 
-**Intent:** an exported method may have at most 32 parameters
+**Intent:** an exported method has too many parameters
 
 #### over-many export parameters (`limits/export_too_many_params.py`)
 
@@ -2729,14 +2767,14 @@ class Contract:
         return p0
 ```
 
-- **message:** an exported method may have at most 32 parameters: `act` takes 33 parameters
+- **message:** an exported method has too many parameters: `act` takes 33 parameters
 - **help:** an exported method may take at most 32 parameters
 
 #### SPT5006
 
 **Construct:** variant payload -- more than 12 values (S4's tuple arity, ruling E6)
 
-**Intent:** a variant payload carries at most 12 values
+**Intent:** a variant payload carries too many values
 
 #### variant payload wider than 12 values (`limits/variant_payload_arity.py`)
 
@@ -2758,7 +2796,7 @@ class Contract:
         return U32(0)
 ```
 
-- **message:** a variant payload carries at most 12 values
+- **message:** a variant payload carries too many values
 - **help:** carry at most 12 payload values in one variant (S4's tuple arity)
 - **note:** ValueError: a variant payload carries at most 12 values (S4's tuple arity), not 13
 

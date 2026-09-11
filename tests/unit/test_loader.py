@@ -34,6 +34,7 @@ import pytest
 from serpent.compiler import codes
 from serpent.compiler.diagnostics import CompileError, Diagnostic, Diagnostics, LocKind
 from serpent.compiler.loader import (
+    _HELP,
     CompilerBugError,
     DecoratedDecl,
     LoadedModule,
@@ -1530,3 +1531,14 @@ def test_the_loader_returns_a_sink_not_a_raised_error_for_shape_problems() -> No
     assert len(loaded.diagnostics) == 1
     with pytest.raises(CompileError):
         loaded.diagnostics.raise_if_any()
+
+
+def test_help_table_is_in_code_order() -> None:
+    """O-HYG3: `_HELP` is a hand-maintained table; keep it sorted by code.
+
+    Already true today -- this is the net that keeps the next appended entry
+    from landing wherever it was typed, which is how such a table stops being
+    scannable against the registry.
+    """
+    keys = list(_HELP)
+    assert keys == sorted(keys), "loader._HELP must be ordered by SPT code"

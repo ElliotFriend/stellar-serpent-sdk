@@ -236,11 +236,12 @@ class Drawing:
         env.storage().temporary().set(shape, Bool(True))
 
     def is_pinned(self, env: Env) -> Bool:
-        """The key is rebuilt from storage, not remembered.
+        """Whether the current shape is in the pinned set.
 
-        A separately built `Shape.Circle(U32(3))` finds the entry the earlier
-        one wrote, because the host compares the value and not the handle --
-        the same property `examples/structs.py`'s struct key relies on.
+        A union used as a storage KEY, looked up by value. `pin()` writes the
+        current shape; this reads it back under a freshly built equal key --
+        the host compares the value and not the handle, the same property
+        `examples/structs.py`'s struct key relies on.
         """
         shape = env.storage().instance().get(SHAPE, Shape, default=Shape.Empty)
         return env.storage().temporary().has(shape)

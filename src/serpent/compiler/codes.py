@@ -75,14 +75,14 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "nested FunctionDef / closures",
         "nested functions and closures are not supported; contracts are a flat set of "
         "methods and module-level helpers",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1002",
         "SPT1xxx",
         "AsyncFunctionDef / AsyncFor / AsyncWith / Await",
         "there is no event loop on chain; contract methods are synchronous",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1003",
@@ -90,112 +90,112 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "ListComp / SetComp / DictComp / GeneratorExp",
         "comprehensions are not supported; build the container with Vec(T, [...]) or fill "
         "it in a while loop",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1004",
         "SPT1xxx",
         "JoinedStr / FormattedValue (f-strings)",
         "f-strings are not supported: there is no runtime string formatting host function",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1005",
         "SPT1xxx",
         "Lambda",
         "lambdas and closures are not supported",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1006",
         "SPT1xxx",
         "NamedExpr (walrus `:=`)",
         "assign on its own line",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1007",
         "SPT1xxx",
         "Starred",
         "argument unpacking is not supported; a contract export has a fixed arity",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1008",
         "SPT1xxx",
         "Yield / YieldFrom",
         "generators are not supported",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1009",
         "SPT1xxx",
         "Slice node outside a supported subscript form",
         "slicing is only supported via the .slice(lo, hi) method",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1010",
         "SPT1xxx",
         "Compare -- chained (`a < b < c`)",
         "compare two values at a time",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1011",
         "SPT1xxx",
         "Compare -- `in` / `not in`",
         "use Map.has(k) or Vec.first_index_of(v) instead of `in`",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1012",
         "SPT1xxx",
         "Compare -- `is` / `is not`",
         "identity has no on-chain meaning; use ==",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1013",
         "SPT1xxx",
         "Subscript slice (`Bytes[a:b]`, `Vec[a:b]`)",
         "slicing via subscript is not supported; use .slice(lo, hi)",
-        "Task 7b",
+        "M1-C Task 7b",
     ),
     CodeEntry(
         "SPT1014",
         "SPT1xxx",
         "Tuple outside event topics",
         "tuple structs are not supported",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1015",
         "SPT1xxx",
         "List / Dict / Set display outside Vec(...)/Map(...)",
         "there is no python list/dict/set on chain; build a Vec(T, [...]) or Map(K, V, [...])",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1016",
         "SPT1xxx",
         "Attribute -- chain-type introspection property (.value/.text/.data/.strkey/...)",
         "this property has no host equivalent",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1017",
         "SPT1xxx",
         "Call -- rejected builtin (sum/min/max/abs/int/str/print/isinstance/...)",
         "this builtin is not supported",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT1018",
         "SPT1xxx",
         "For ... else",
         "the for ... else clause is not supported",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1019",
@@ -203,14 +203,14 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "For ... in map / bytes / tuple",
         "iterate a Map via map.keys()/map.values(); walk Bytes with a while loop indexed "
         "by bytes[i] up to len(b); tuples cannot be iterated",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1020",
         "SPT1xxx",
         "For i in range(...) -- 3-arg or negative-step form",
-        "range() supports only range(stop) and range(start, stop) in M1",
-        "Task 6",
+        "range() supports only range(stop) and range(start, stop)",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1021",
@@ -218,28 +218,28 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Raise -- non-error-enum form (raise X(...), bare raise, raise ... from ...)",
         "only raise <ErrorEnum>.<Member> is supported; contract errors are u32 codes, not "
         "exception instances",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1022",
         "SPT1xxx",
         "Try / TryStar / except / finally",
         "a contract cannot catch its own errors; validate before acting",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1023",
         "SPT1xxx",
         "With",
         "there is no context-manager protocol on chain",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1024",
         "SPT1xxx",
         "Match",
         "structural pattern matching is not supported",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1025",
@@ -247,21 +247,21 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Assert",
         "assert has no on-chain meaning; raise <Error>.<Member> to fail with a code the "
         "caller can read",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1026",
         "SPT1xxx",
         "Delete (`del x`)",
         "use storage.del_(key), Vec.del_(i), or Map.del_(k)",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1027",
         "SPT1xxx",
         "Global / Nonlocal",
         "contract state lives in storage; module-level names are compile-time constants",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1028",
@@ -269,21 +269,21 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Expr statement -- discarded non-void expression",
         "a non-void expression cannot be a statement on its own; assign it or discard it "
         "explicitly",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1029",
         "SPT1xxx",
         "Assign -- tuple/multi target",
         "assign one name at a time",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1030",
         "SPT1xxx",
         "Assign -- subscript target",
         "use Vec.put(i, v) or Map.set(k, v)",
-        "Task 6/7b",
+        "M1-C Task 6/7b",
     ),
     CodeEntry(
         "SPT1031",
@@ -291,7 +291,7 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Module body -- unsupported top-level statement",
         "a contract module's top level may only contain imports, module-level chain "
         "constants, and decorated classes/helpers",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT1032",
@@ -299,7 +299,7 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Call -- <Event instance>.publish(env)",
         "superseded by M1-E: `<Event instance>.publish(env)` is supported and lowers to "
         "the same contract_event call env.events().publish(topics, data) does",
-        "Task 7a",
+        "M1-C Task 7a",
     ),
     CodeEntry(
         "SPT1033",
@@ -307,7 +307,7 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Recognized Env/host surface not lowerable in M1 (logs, call/try_call, crypto, "
         "PRNG, current_contract_address, ledger_version, network_id, deployer)",
         "this Env surface is recognized but not yet supported; it lands in M2",
-        "Task 7a",
+        "M1-C Task 7a",
     ),
     # Wording fixed in Task 7b's review fix round (sanctioned, wording only --
     # no renumber, no meaning change): the example used to read
@@ -323,7 +323,7 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "host container operations are functional; mutate only a local this method owns, "
         "on a statement of its own -- `v.push_back(x)` -- and C rebinds it "
         "(v = vec_push_back(v, x))",
-        "Task 7b",
+        "M1-C Task 7b",
     ),
     CodeEntry(
         "SPT1035",
@@ -331,14 +331,14 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Call -- keyword argument outside the recognition table / @contracttype / event "
         "construction",
         "keyword arguments are only accepted where the recognized API names the parameter",
-        "Task 7a/7b",
+        "M1-C Task 7a/7b",
     ),
     CodeEntry(
         "SPT1036",
         "SPT1xxx",
         "AnnAssign in a function body with no value",
         "uninitialized locals are not supported; give x: T a value",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT1037",
@@ -346,7 +346,7 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Any AST node kind not covered by the rows above -- the NODE_KIND_CODES "
         "exhaustive-dispatch default branch (MJ-11)",
         "this construct is not supported by the serpent subset",
-        "Task 5",
+        "M1-C Task 5",
     ),
     # Added in Task 7a's review fix round (controller ruling). A recognized
     # Env-API attribute referenced without being called/chained at all
@@ -365,7 +365,7 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "`()`), or a structurally malformed recognized call that is not an arity or type "
         "error (e.g. an empty event-topics tuple)",
         "env API used with an unsupported call shape",
-        "Task 7a",
+        "M1-C Task 7a",
     ),
     # Added in Task 7b's review fix round (controller ruling). A `Map(K, V,
     # [...])` literal with two keys that compare EQUAL under `val_cmp` had no
@@ -384,7 +384,7 @@ _SPT1XXX: tuple[CodeEntry, ...] = (
         "Map literal with duplicate keys (two literal keys equal under val_cmp, the Bytes "
         "family's payload equality included -- D5)",
         "a map literal may not repeat a key",
-        "Task 7b",
+        "M1-C Task 7b",
     ),
 )
 
@@ -395,42 +395,42 @@ _SPT2XXX: tuple[CodeEntry, ...] = (
         "SPT2xxx",
         "Name -- unresolved",
         "name is not defined",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT2002",
         "SPT2xxx",
         "Name -- `self` used as a value",
         "contract state lives in storage, not on self",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT2003",
         "SPT2xxx",
         "Annotation resolution -- unresolvable name (NameError)",
         "annotation refers to a name that is not defined",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT2004",
         "SPT2xxx",
         "Local/param shadows a param, module constant, import, or type name",
         "name shadows an existing declaration",
-        "Task 4",
+        "M1-C Task 4",
     ),
     CodeEntry(
         "SPT2005",
         "SPT2xxx",
         "Import / ImportFrom -- non-serpent module",
         "a contract may only import from serpent",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT2006",
         "SPT2xxx",
         "Attribute -- unknown name on Env",
         "unknown Env attribute",
-        "Task 7a",
+        "M1-C Task 7a",
     ),
 )
 
@@ -441,28 +441,28 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "SPT3xxx",
         "Return / annotation -- Error as a return type",
         "Error is never a returnable value (S8)",
-        "Task 4/6",
+        "M1-C Task 4/6",
     ),
     CodeEntry(
         "SPT3002",
         "SPT3xxx",
         "Attribute -- ErrorEnum.Member outside a raise statement",
         "an error case is not a value; it may only appear in raise <ErrorEnum>.<Member>",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3003",
         "SPT3xxx",
         "BinOp/Compare -- cross-width or cross-signedness operands (T1)",
         "operands must share the same chain-integer type",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3004",
         "SPT3xxx",
         "Constant -- out-of-range literal coercion",
         "literal is out of range for the target type",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3005",
@@ -470,56 +470,56 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "BinOp -- omitted operator (** @ & | ^ << >>); also covers the AugAssign forms "
         "(**=, &=, |=, ^=, <<=, >>=), which desugar to this BinOp before typing (A5/D2)",
         "this operator is not supported",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3006",
         "SPT3xxx",
         "BinOp -- true divide (/)",
         "there are no floats on chain; use // for truncating integer division",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3007",
         "SPT3xxx",
         "UnaryOp -- omitted operator (+ / ~)",
         "this unary operator is not supported",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3008",
         "SPT3xxx",
         "Constant -- bare literal with no chain type in scope",
         "wrap the literal in a chain type, e.g. U32(5)",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3009",
         "SPT3xxx",
         "Call -- len() on Symbol/String (MJ-1 ruling)",
         "len() is only supported on Vec, Map, and Bytes",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3010",
         "SPT3xxx",
         "IfExp -- arm type mismatch",
         "both branches of a conditional expression must have the same type",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3011",
         "SPT3xxx",
         "Subscript -- negative literal index (D6)",
         "negative indices are not representable on chain",
-        "Task 7b",
+        "M1-C Task 7b",
     ),
     CodeEntry(
         "SPT3012",
         "SPT3xxx",
         "BoolOp -- non-Bool/non-comparison operand (E9)",
         "and/or are restricted to Bool-typed and comparison operands",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3013",
@@ -529,15 +529,17 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "Env outside the leading param, None outside a return, Event/@contracterror/"
         "@contract used as a type, any other parameterized generic)",
         "this annotation cannot be expressed in the contract spec",
-        "Task 4",
+        "M1-C Task 4",
     ),
     CodeEntry(
         "SPT3014",
         "SPT3xxx",
         "Subscript -- annotation-only generic form (Vec[T]/Map[K,V]/Optional[X]) used in "
-        "a value position",
+        "a value position; also a bare type name used as a value (`U32`, a "
+        "`@contracttype` class) and the annotation-only `bytes_n(N)` form in a value "
+        "position",
         "this is an annotation-only form; it cannot appear as a value",
-        "Task 4/5",
+        "M1-C Task 4/5",
     ),
     CodeEntry(
         "SPT3015",
@@ -545,21 +547,21 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "If/While condition -- truthiness of a non-numeric chain value (E10)",
         "truthiness is only defined for numeric chain types and Bool; write the explicit "
         "test, e.g. len(v) > U32(0) or storage.has(k)",
-        "Task 5/6",
+        "M1-C Task 5/6",
     ),
     CodeEntry(
         "SPT3016",
         "SPT3xxx",
         "Compare -- chain value vs. raw str/bytes literal via == (E13/T4)",
         "compare against the chain type's constructor, e.g. Symbol('abc'), not the raw literal",
-        "Task 5",
+        "M1-C Task 5",
     ),
     CodeEntry(
         "SPT3017",
         "SPT3xxx",
         "Local rebound at a different type than its first binding (SS C.3 rule 1)",
         "a local's type is fixed by its first binding",
-        "Task 4",
+        "M1-C Task 4",
     ),
     CodeEntry(
         "SPT3018",
@@ -568,14 +570,14 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "annotation, Return disagreeing with a non-None return annotation, or a call "
         "argument disagreeing with an InternalCall/recognized-API parameter type",
         "value's type does not match the declared/expected type",
-        "Task 4/6/7a/7b",
+        "M1-C Task 4/6/7a/7b",
     ),
     CodeEntry(
         "SPT3019",
         "SPT3xxx",
         "events().publish(topics, data) -- topics[0] is not a Symbol (S11)",
         "the first event topic must be a Symbol naming the event",
-        "Task 7a",
+        "M1-C Task 7a",
     ),
     # Added in Task 5's review fix round (controller ruling). A chain-type
     # constructor takes exactly one payload argument, and `U32()` / `U32(1, 2)`
@@ -605,9 +607,11 @@ _SPT3XXX: tuple[CodeEntry, ...] = (
         "SPT3xxx",
         "Call -- a chain-type constructor or a recognized API call with the wrong "
         "arguments (wrong arity, a missing required argument, or a duplicate keyword) -- "
-        "`U32()`, `U32(1, 2)`, `<bucket>.set(k)`, `addr.require_auth_for_args(a, b)`",
+        "`U32()`, `U32(1, 2)`, `<bucket>.set(k)`, `addr.require_auth_for_args(a, b)`, "
+        "a variant call with the wrong arity (`Circle(1, 2)` on a one-payload "
+        "variant), positional struct arguments",
         "call has the wrong arguments (missing, extra, or duplicate keyword)",
-        "Task 5/7a",
+        "M1-C Task 5/7a",
     ),
     # Added in M1-E2 (tagged unions and int enums). `s.payload(index, T)` reads
     # one payload slot of a union whose VARIANT is not known at the call site
@@ -659,7 +663,7 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "SPT4xxx",
         "FunctionDef -- self is not the first parameter",
         "contract methods must take self first",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4002",
@@ -667,77 +671,78 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "FunctionDef -- *args/**kwargs, or a keyword-only parameter, on a contract function",
         "contract functions have a fixed, positional arity; *args/**kwargs and "
         "keyword-only parameters are not supported",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4003",
         "SPT4xxx",
         "FunctionDef -- default parameter value",
         "default parameter values are not supported on a contract function",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4004",
         "SPT4xxx",
         "FunctionDef -- missing parameter annotation",
         "every parameter needs a chain-type annotation",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4005",
         "SPT4xxx",
         "FunctionDef -- missing return annotation",
         "a contract function needs a return annotation",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4006",
         "SPT4xxx",
         "__init__ -- not annotated -> None",
         "__init__ compiles to the constructor and must return None",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4007",
         "SPT4xxx",
         "FunctionDef -- staticmethod/classmethod (D7)",
         "@contract methods may not be static or class methods",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4008",
         "SPT4xxx",
         "@contracterror member -- bare int, not errorcode(N) (S10)",
         "error members must be declared NAME = errorcode(N)",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4009",
         "SPT4xxx",
         "@contracterror member -- code out of [0, 0xFFFFFF00) (A9)",
         "error code is out of the allowed range",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4010",
         "SPT4xxx",
         "@contracterror -- duplicate error code",
         "error codes must be unique within the enum",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4011",
         "SPT4xxx",
         "@contracterror -- empty error enum",
         "an error enum must declare at least one member",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4012",
         "SPT4xxx",
-        "@contracttype -- non-chain field annotation",
-        "struct fields need a chain-type annotation",
-        "Task 3",
+        "@contracttype/@contractevent field or @contractunion variant payload -- "
+        "non-chain annotation",
+        "fields and variant payloads need a chain-type annotation",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4013",
@@ -745,14 +750,14 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "ClassDef -- re-decoration (more than one of @contract/@contracttype/"
         "@contracterror/@contractevent)",
         "a class may carry exactly one serpent decorator",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4014",
         "SPT4xxx",
         "@contractevent -- class does not inherit serpent.Event (D8)",
         "event classes must inherit from serpent.Event",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4015",
@@ -760,21 +765,21 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "ClassDef -- undecorated class, or a class with no recognized serpent decorator",
         "every top-level class needs exactly one of @contract/@contracttype/"
         "@contracterror/@contractevent/@contractunion/@contractenum",
-        "Task 3",
+        "M1-C Task 3",
     ),
     CodeEntry(
         "SPT4016",
         "SPT4xxx",
         "Assign -- attribute target on a @contracttype value",
         "@contracttype values are immutable; build a new one instead",
-        "Task 5/6",
+        "M1-C Task 5/6",
     ),
     CodeEntry(
         "SPT4017",
         "SPT4xxx",
         "Return -- a value in a method annotated -> None",
         "a method returning None may not return a value",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT4018",
@@ -782,7 +787,7 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "Call -- @contracttype construction with positional args "
         "(superseded by SPT3020; retained append-only, not emitted)",
         "struct construction takes keyword arguments only",
-        "Task 7b",
+        "M1-C Task 7b",
     ),
     # Added in Task 3's review fix round (controller ruling): SS C.3 names
     # "expected exactly one @contract class" as the worked example of a
@@ -795,7 +800,7 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "Module -- not exactly one @contract class (SS C.3's module-scope fact): zero "
         "(WHOLE_FILE) or more than one (each extra class's Loc)",
         "expected exactly one @contract class per module",
-        "Task 3",
+        "M1-C Task 3",
     ),
     # Added in the same round: a serpent-decorated class body admits only the
     # declaration form its KIND declares -- methods in a @contract class,
@@ -814,7 +819,7 @@ _SPT4XXX: tuple[CodeEntry, ...] = (
         "error enum, a plain `x = y` in a struct), or a statement that declares nothing "
         "at all (SS C.3)",
         "this member is not valid in this kind of serpent-decorated class body",
-        "Task 3",
+        "M1-C Task 3",
     ),
     # Appended by M1-E2 (tagged unions and int enums) under the sub-plan's
     # CONTROLLER-SANCTIONED enumeration and the append-only rule (D9). One row
@@ -893,7 +898,7 @@ _SPT5XXX: tuple[CodeEntry, ...] = (
         "covers __constructor's name and every parameter name, which decorators.py never "
         "checks at all (B11)",
         "name is too long (> 30) or uses characters outside [a-zA-Z0-9_]",
-        "Task 9",
+        "M1-C Task 9",
     ),
     # Widened in M1-E2 (controller ruling, plan-review B1). `limits.py` runs
     # SPT5002 over every `decorated_types_in_order` entry, so the two new
@@ -909,7 +914,7 @@ _SPT5XXX: tuple[CodeEntry, ...] = (
         "representable as a Python identifier but not as the Rust identifier every Soroban "
         "tool renders it as)",
         "type name is too long (> 60) or uses characters outside [a-zA-Z0-9_]",
-        "Task 9",
+        "M1-C Task 9",
     ),
     # Widened in M1-E2 too, and here the message intent HAD to change: ruling
     # E8 gives the three case-bearing kinds two different caps (32 for a union
@@ -925,21 +930,21 @@ _SPT5XXX: tuple[CodeEntry, ...] = (
         "runtime Symbol -- ruling E8) or non-Symbol charset (Task 9 fix round 1, same "
         "reasoning as SPT5002)",
         "a declared case name is too long, or uses characters outside [a-zA-Z0-9_]",
-        "Task 9",
+        "M1-C Task 9",
     ),
     CodeEntry(
         "SPT5004",
         "SPT5xxx",
         "docstring -- encoded length > 1024 bytes (B12)",
-        "docstring is too long (> 1024 encoded bytes)",
-        "Task 9",
+        "docstring is too long",
+        "M1-C Task 9",
     ),
     CodeEntry(
         "SPT5005",
         "SPT5xxx",
         "exported method -- more than 32 parameters (S23)",
-        "an exported method may have at most 32 parameters",
-        "Task 9",
+        "an exported method has too many parameters",
+        "M1-C Task 9",
     ),
     # M1-E2, same sanctioned enumeration as SPT4021-SPT4025. Banded SPT5xxx
     # rather than SPT4xxx because it is an ARITY cap on a declared shape, the
@@ -950,7 +955,7 @@ _SPT5XXX: tuple[CodeEntry, ...] = (
         "SPT5006",
         "SPT5xxx",
         "variant payload -- more than 12 values (S4's tuple arity, ruling E6)",
-        "a variant payload carries at most 12 values",
+        "a variant payload carries too many values",
         "M1-E2 Task 2",
     ),
 )
@@ -962,7 +967,7 @@ _SPT6XXX: tuple[CodeEntry, ...] = (
         "SPT6xxx",
         "Host function used above the declared/target protocol (B4/B5/S18)",
         "function is gated above the build's target protocol",
-        "Task 10",
+        "M1-C Task 10",
     ),
 )
 
@@ -973,28 +978,28 @@ _SPT7XXX: tuple[CodeEntry, ...] = (
         "SPT7xxx",
         "Non-Void method with a path that does not return (SS C.3 rule 3; P6/S17)",
         "not every path returns a value",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT7002",
         "SPT7xxx",
         "Local read before it is definitely assigned on every path (SS C.3 rule 2)",
         "local may be used before it is assigned",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT7003",
         "SPT7xxx",
         "Break / Continue outside a loop",
         "break/continue must be inside a while or for loop",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT7004",
         "SPT7xxx",
         "Statement unreachable after a terminal return/raise",
         "unreachable code after a return or raise",
-        "Task 6",
+        "M1-C Task 6",
     ),
     CodeEntry(
         "SPT7005",
@@ -1002,7 +1007,7 @@ _SPT7XXX: tuple[CodeEntry, ...] = (
         "Call-graph cycle among module-level helpers / private methods (InternalCall) -- "
         "recursion is rejected (E8)",
         "recursive and mutually-recursive calls are not supported",
-        "Task 8",
+        "M1-C Task 8",
     ),
 )
 
@@ -1022,21 +1027,21 @@ _SPT8XXX: tuple[CodeEntry, ...] = (
         "SPT8001",
         "SPT8xxx",
         "module size",
-        "the compiled module exceeds the network's 131072-byte contract size limit",
+        "the compiled module exceeds the network's contract size limit",
         "M1-D Task 10",
     ),
     CodeEntry(
         "SPT8002",
         "SPT8xxx",
         "literal pool",
-        "the literal pool overflows into the scratch region at 0x1000",
+        "the literal pool overflows into the scratch region",
         "M1-D Task 10",
     ),
     CodeEntry(
         "SPT8003",
         "SPT8xxx",
         "scratch region",
-        "the scratch region exceeds the module's single 64 KiB memory page",
+        "the scratch region exceeds the module's single memory page",
         "M1-D Task 10",
     ),
     CodeEntry(

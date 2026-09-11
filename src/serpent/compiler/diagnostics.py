@@ -178,6 +178,19 @@ class Diagnostics:
                 f"{code}: SPT1xxx (unsupported construct) diagnostics must carry a non-empty "
                 "`help` rewrite (dossier F.2.11)"
             )
+        # Every SPT1xxx ("unsupported construct") diagnostic points the author
+        # at the generated subset doc's own entry for the code (O-HYG7). The
+        # anchor is the CODE, matching `_render_docs`'s `#### SPTxxxx`
+        # headings. `NO_FIXTURE_ALLOWLIST` codes are skipped: they have no
+        # heading in `docs/subset.md`, so their anchor would be dead. A
+        # diagnostic that already cites the doc (with a semantic anchor, say)
+        # keeps the note it chose.
+        if (
+            code.startswith("SPT1")
+            and code not in codes.NO_FIXTURE_ALLOWLIST
+            and not any("docs/subset.md" in note for note in notes)
+        ):
+            notes = (*notes, f"the supported subset is documented at docs/subset.md#{code.lower()}")
         self._diagnostics.append(
             Diagnostic(code=code, loc=loc, message=message, help=help, notes=notes)
         )

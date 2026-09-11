@@ -30,6 +30,8 @@ from serpent.spec.sections import (
     build_env_meta,
     build_meta,
     build_spec_entries,
+    class_doc,
+    own_doc,
 )
 from serpent.spec.typemap import SpecTypeError, to_spec_type
 
@@ -40,9 +42,11 @@ __all__ = [
     "build_env_meta",
     "build_meta",
     "build_spec_entries",
+    "class_doc",
     "decode_env_meta",
     "decode_meta",
     "decode_spec_entries",
+    "own_doc",
     "spec_entry_names_by_kind",
     "to_spec_type",
 ]

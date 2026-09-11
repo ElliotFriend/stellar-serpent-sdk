@@ -30,7 +30,7 @@ Nothing here re-derives what another module already owns:
 `decorators._annotations_of` resolves annotations (so a PEP 563 module and its
 non-PEP-563 twin behave identically, E4), `types_.resolve_annotation` maps an
 annotation to a `Ty` (so B7's unmappable set is decided in exactly one place),
-`spec.sections._own_doc`/`_class_doc`/`CONSTRUCTOR_NAME` supply the doc text
+`spec.sections.own_doc`/`class_doc`/`CONSTRUCTOR_NAME` supply the doc text
 and the reserved constructor name, and `loader.py` has already cross-checked
 the metadata and AST inventories against each other (F.1.14).
 
@@ -73,7 +73,7 @@ from serpent.compiler.loader import DecoratedDecl, LoadedModule
 from serpent.compiler.types_ import Ty, TyTag, resolve_annotation
 from serpent.decorators import _annotations_of
 from serpent.env import Env
-from serpent.spec.sections import CONSTRUCTOR_NAME, _class_doc, _own_doc
+from serpent.spec.sections import CONSTRUCTOR_NAME, class_doc, own_doc
 
 __all__ = [
     "Declarations",
@@ -287,7 +287,7 @@ def _struct_decl(decl: DecoratedDecl, loaded: LoadedModule, sink: Diagnostics) -
     return StructDecl(
         loc=Loc.from_node(loaded.path, decl.node),
         name=decl.name,
-        doc=_class_doc(decl.cls),
+        doc=class_doc(decl.cls),
         fields=fields,
     )
 
@@ -299,7 +299,7 @@ def _event_decl(decl: DecoratedDecl, loaded: LoadedModule, sink: Diagnostics) ->
     return EventDecl(
         loc=Loc.from_node(loaded.path, decl.node),
         name=decl.name,
-        doc=_class_doc(decl.cls),
+        doc=class_doc(decl.cls),
         fields=fields,
     )
 
@@ -338,10 +338,10 @@ def _error_enum_decl(decl: DecoratedDecl, loaded: LoadedModule) -> ErrorEnumDecl
     return ErrorEnumDecl(
         loc=Loc.from_node(loaded.path, decl.node),
         name=decl.name,
-        # `_class_doc`, not `_own_doc`: `sections._enum_entry` reads an error
+        # `class_doc`, not `own_doc`: `sections._enum_entry` reads an error
         # enum's doc exactly that way, and the IR must not disagree with the
         # spec about the same text (F.2.7's cross-check compares the two).
-        doc=_class_doc(decl.cls),
+        doc=class_doc(decl.cls),
         cases=tuple((name, code, "") for name, code in cases),
     )
 
@@ -650,7 +650,7 @@ def _resolve_signature(
         kind=kind,
         params=tuple(params),
         ret=ret,
-        doc=_own_doc(func),
+        doc=own_doc(func),
         loc=loc,
         node=node,
         takes_env=takes_env,

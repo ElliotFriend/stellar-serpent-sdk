@@ -1220,9 +1220,11 @@ def test_spec_package_exports_the_builders_and_errors() -> None:
         "build_env_meta",
         "build_meta",
         "build_spec_entries",
+        "class_doc",
         "decode_env_meta",
         "decode_meta",
         "decode_spec_entries",
+        "own_doc",
         "spec_entry_names_by_kind",
         "to_spec_type",
     ]

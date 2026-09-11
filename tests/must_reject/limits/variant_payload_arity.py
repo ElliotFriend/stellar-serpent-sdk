@@ -1,6 +1,6 @@
 # serpent:reject SPT5006
 # serpent:at HERE
-# serpent:message a variant payload carries at most 12 values
+# serpent:message a variant payload carries too many values
 # serpent:doc-title variant payload wider than 12 values
 # The refusal comes from `variant()` itself, in the class body, before the
 # decorator runs -- so its message names no member and the diagnostic lands on

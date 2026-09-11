@@ -82,6 +82,8 @@ __all__ = [
     "build_env_meta",
     "build_meta",
     "build_spec_entries",
+    "class_doc",
+    "own_doc",
 ]
 
 #: `SCSpecTypeUDT.name` is a `string<60>`: a type whose name is longer could be
@@ -333,7 +335,7 @@ def _function_entry(
         kind=xdr.SCSpecEntryKind.SC_SPEC_ENTRY_FUNCTION_V0,
         function_v0=xdr.SCSpecFunctionV0(
             doc=_doc_bytes(
-                _own_doc(vars(contract_cls).get(name)), f"{contract_cls.__name__}.{name}"
+                own_doc(vars(contract_cls).get(name)), f"{contract_cls.__name__}.{name}"
             ),
             name=xdr.SCSymbol(emitted.encode("utf-8")),
             inputs=inputs,
@@ -353,7 +355,7 @@ def _struct_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntr
             # so the 348-byte byte-identity check passes whatever this line
             # does. Validating it needs a Rust-artifact comparison of a
             # DOCUMENTED struct -- banked for sub-plan D.
-            doc=_doc_bytes(_class_doc(declared), declared.__name__),
+            doc=_doc_bytes(class_doc(declared), declared.__name__),
             # `lib` names the foreign crate a type was imported from; serpent
             # has no cross-module type references, so it is always empty.
             lib=b"",
@@ -387,7 +389,7 @@ def _union_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntry
         udt_union_v0=xdr.SCSpecUDTUnionV0(
             # NOT COVERED BY THE ON-CHAIN ANCHOR, exactly as for a struct's doc
             # above -- M1-E2 has no deployed artifact to compare against.
-            doc=_doc_bytes(_class_doc(declared), declared.__name__),
+            doc=_doc_bytes(class_doc(declared), declared.__name__),
             lib=b"",
             name=name.encode("utf-8"),
             cases=[_union_case(declared, case_name, payload) for case_name, payload in cases],
@@ -438,7 +440,7 @@ def _int_enum_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEn
         udt_enum_v0=xdr.SCSpecUDTEnumV0(
             # NOT COVERED BY THE ON-CHAIN ANCHOR, exactly as for a struct's doc
             # above -- M1-E2 has no deployed artifact to compare against.
-            doc=_doc_bytes(_class_doc(declared), declared.__name__),
+            doc=_doc_bytes(class_doc(declared), declared.__name__),
             lib=b"",
             name=name.encode("utf-8"),
             cases=[
@@ -465,7 +467,7 @@ def _enum_entry(declared: type, metadata: Mapping[str, Any]) -> xdr.SCSpecEntry:
             # above: spike1's `Error` enum has no docstring either, so
             # byte-identity says nothing about this choice. Needs a
             # Rust-artifact comparison of a documented enum -- sub-plan D.
-            doc=_doc_bytes(_class_doc(declared), declared.__name__),
+            doc=_doc_bytes(class_doc(declared), declared.__name__),
             lib=b"",
             name=name.encode("utf-8"),
             cases=[
@@ -555,7 +557,7 @@ def _event_entry(declared: type) -> xdr.SCSpecEntry:
             # As for a struct and an error enum: emitting the class docstring is
             # serpent's own choice, and NOT covered by the on-chain anchor
             # (spike1 declares no event at all).
-            doc=_doc_bytes(_class_doc(declared), declared.__name__),
+            doc=_doc_bytes(class_doc(declared), declared.__name__),
             lib=b"",
             name=xdr.SCSymbol(name.encode("utf-8")),
             prefix_topics=[
@@ -720,7 +722,7 @@ def _check_type_name(declared: type) -> str:
     return _check_name(declared.__name__, declared, "type", TYPE_NAME_LIMIT)
 
 
-def _own_doc(owner: object) -> str:
+def own_doc(owner: object) -> str:
     """The object's own docstring, cleandoc'd -- never an inherited one.
 
     `inspect.getdoc` falls back to the base class's docstring, which for a
@@ -734,7 +736,7 @@ def _own_doc(owner: object) -> str:
     return inspect.getdoc(owner) or ""
 
 
-def _class_doc(declared: type) -> str:
+def class_doc(declared: type) -> str:
     """A decorated class's docstring, minus the one `dataclasses` synthesizes.
 
     `@contracttype` applies `dataclasses.dataclass`, which sets
@@ -750,7 +752,7 @@ def _class_doc(declared: type) -> str:
     thing the on-chain anchor cannot validate, since spike1's types carry no
     docstrings (see the markers at the two emission sites).
     """
-    doc = _own_doc(declared)
+    doc = own_doc(declared)
     return "" if doc and doc == _synthetic_dataclass_doc(declared) else doc
 
 
