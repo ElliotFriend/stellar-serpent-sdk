@@ -1337,3 +1337,88 @@ entry.
 - Reversal cost: the roadmap is prose until B's dossier is written; moving
   an item between sub-plans is a table edit. The signing mechanics are two
   git-local settings.
+
+## 2026-09-11 M2-A rulings (dossier E1-E13, all recommendations adopted, four sharpened)
+- Context: the M2-A inputs dossier
+  (`docs/superpowers/specs/2026-09-11-m2a-inputs-dossier.md`, Opus, 1559
+  lines, every host fact read from the pinned soroban-env-host 28.0.2 source
+  and the PRNG model proven against soroban-sdk's three doctest vectors)
+  closed with thirteen open questions, recommendation first. Rulings:
+- E1 ADOPTED: the four non-stdlib primitives (keccak-f[1600], ed25519
+  `verify_strict`, secp256k1 recovery, P-256 verify) are pure Python in the
+  private core module `serpent/_crypto.py`, shared by tier 1 and the mini
+  host; sha256/HMAC via `hashlib`/`hmac`. No extra, no stub. Measured 0.3-6.5
+  ms per operation, ~325 lines, every host vector reproduced.
+- E2 ADOPTED: `serpent/_prng.py` models the host EXACTLY after a reseed
+  (HMAC-SHA256 unbias with the protocol salt, ChaCha20, rand 0.8.8's two
+  sampler arms, Fisher-Yates); before any reseed tier 1 uses a documented
+  constant seed and NO tier pins an unseeded draw. The frame PRNG resets at
+  frame entry.
+- E3 ADOPTED, sharpened: Rust SDK names (`env.crypto().sha256/keccak256/
+  ed25519_verify/secp256k1_recover/secp256r1_verify`, `env.prng().seed/
+  bytes_new/u64_in_range/shuffle`, `env.ledger().version/network_id/
+  max_live_until_ledger`, `env.current_contract_address()`,
+  `env.logs().add(msg, *vals)`); hashes return `Bytes32` (no `Hash` newtype;
+  the hazmat warning goes in the docstring). The two verifies return None
+  and a failure at tier 1 raises a NEW plain `CryptoTrap(RuntimeError)`,
+  sibling of `StorageTrap` with the same no-reserved-code rationale; the two
+  PRNG refusals (`seed` not 32 bytes; `lo > hi`) raise a NEW `PrngTrap
+  (RuntimeError)` likewise. Never `Bool(False)`, never a `ContractError`.
+  Recoverability through B's `try_call` is B's first probe.
+- E4 ADOPTED: a real `Bytes65(Bytes)` class beside `Bytes32`/`Bytes64`,
+  exported from `serpent.__all__` (41 names; `test_public_api.py`'s pin
+  moves in the same commit). The stale `bytes_n` docstring sentence is
+  corrected in passing.
+- E5 ADOPTED: `DEFAULT_NETWORK_ID`, `DEFAULT_MAX_ENTRY_TTL`,
+  `DEFAULT_PROTOCOL_VERSION`, `DEFAULT_CONTRACT_ADDRESS` live in
+  `serpent/env.py` beside the two existing ledger defaults; `Env.__init__`
+  gains matching keyword arguments; `serpent.testing._real` imports the
+  first three instead of redeclaring them. The differential asserts the
+  address INVARIANT (equals the deploy address), never a literal.
+- E6 ADOPTED: `env.logs().add(msg, *vals)`; `msg` must be a string literal
+  (compile-time check, sanctioned code below); the lowering interns the
+  message and writes `8 * n` scratch bytes; tier 1 and the mini host record
+  logs and NEVER trap on one (the host swallows every log error).
+- E7 ADOPTED: `network_id() -> Bytes32`; tier-1 `bytes_to_string` decodes
+  with `surrogateescape` so the round trip is exact, pinned by a tier-1
+  test and a real-host row over `bytes(range(256))`.
+- E8 ADOPTED: no protocol gate fires (highest import floor is 23 under a
+  target of 27); a regression test proves it and `inspect` gets its first
+  non-trivial declared-floor input. SANCTIONED wording-only edit:
+  `NO_FIXTURE_REASONS["SPT6001"]` names the two protocol-23 imports and
+  restates why the allowlisting holds.
+- E9 ADOPTED: `env.py` is NOT promoted in A (E's row); A's growth lives in
+  `_crypto.py`/`_prng.py` plus three thin facade classes.
+- E10 ADOPTED: A lands the `max_live_until_ledger` accessor
+  (`sequence + max_entry_ttl - 1`) and the constant only; clamp, trap, and
+  per-bucket floors stay in D; `host_facts.py`'s `_NO_MAXIMUM` reason string
+  is reworded to name M2-D. The roadmap rows A and D are amended to say so.
+- E11 ADOPTED: pin the reseeded stream across all three tiers, reseed
+  determinism, and the two error shapes; an `ENV_SCENARIOS` `host_diverges`
+  row DECLARES the unseeded divergence.
+- E12 SANCTIONED (registry, D2): attempt the two reductions first and
+  record the outcome in the ledger: a statically wrong-length fixed-Bytes
+  argument is SPT3018 through `Ty.bytes_n(n)`; a shuffle whose result is
+  discarded or whose receiver is not an owned local is SPT1034 with a
+  sanctioned construct-list widening naming `env.prng().shuffle`. Two NEW
+  codes are allocated: **SPT1040** "a log message must be a string literal;
+  it is interned into the module's data segment at build time" and
+  **SPT1041** "a log value must be a chain-typed expression; each is written
+  to linear memory as one 8-byte Val" (SPT1041 is used ONLY if the plan
+  shows the SPT3018 reduction is dishonest for an untyped literal; otherwise
+  it is allocated-unused and joins `NO_FIXTURE_ALLOWLIST` with a reason, or
+  is not added at all -- the plan states which). SPT1033 is NOT retired: its
+  construct list and intent are narrowed by sanctioned wording to B's three
+  names and its `must_reject` fixture is repointed off `env.logs()`.
+  `codes.py` is edited in ONE enumerated task only.
+- E13 ADOPTED: the ninth example is `examples/raffle.py`, the host authors'
+  own commit-reveal construction; the four signature/hash functions the
+  raffle does not use are covered by `ENV_SCENARIOS` rows and a
+  `tests/fixtures/` contract, not a tenth example.
+- Also ruled: the dossier's 11-task decomposition and seating (T1-T8 Opus,
+  T9-T11 Sonnet) are the plan's starting point; the plan review (Opus) is
+  asked to critique the M2 roadmap decomposition as well; the deployed-bytes
+  equality tests for shapes and bounty_board are an explicit gate line on
+  every emitter task, not only at close.
+- Reversal cost: the authoring names and the two codes are public once
+  documented (medium/high); everything else is internal or text.
