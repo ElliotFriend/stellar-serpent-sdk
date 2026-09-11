@@ -79,3 +79,132 @@ jobs:
       # type-table resolution) -- no separate CI step is needed for these.
       - name: Test (pytest)
         run: uv run --frozen pytest -q
+
+  real-host:
+    # M1-G Task 9 (dossier O-CI1; F's U2): the ONLY place the real-host suite
+    # is REQUIRED. `SERPENT_REQUIRE_REAL_HOST=1` fails the session if the
+    # extension is missing, so this job can never pass vacuously, and the
+    # collected-count step below refuses a run that selected too few
+    # real_host tests (dossier F.1.4). Python 3.11 only: the extension is
+    # abi3-py311 and the pure-Python matrix is the `test` job's.
+    name: real host (Rust gate + SERPENT_REQUIRE_REAL_HOST=1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09-03
+        with:
+          toolchain: "1.97.1"
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: host
+
+      # Ruling F-E5 / G-D10 order: sync FIRST (it would prune the extension),
+      # then build the extension INTO .venv, then never sync again.
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Build the host extension into .venv
+        run: VIRTUAL_ENV=$PWD/.venv uvx maturin develop --release --manifest-path host/Cargo.toml
+
+      - name: Rust gate
+        working-directory: host
+        run: cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+
+      - name: Install wasm-tools
+        env:
+          WASM_TOOLS_VERSION: "1.258.0"
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSfL -o wasm-tools.tar.gz \
+            "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz"
+          tar xzf wasm-tools.tar.gz
+          install "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
+          rm -rf wasm-tools.tar.gz "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux"
+
+      - name: The extension is importable from the suite's interpreter
+        run: uv run --no-sync python -c "import serpent_host; print(serpent_host.__file__)"
+
+      # The floor is the count measured at the end of M1-G Task 4 (223) less a
+      # small margin; bump it deliberately when a sub-plan adds real-host tests,
+      # never lower it [m10].
+      - name: Enough real-host tests are selected (never a vacuous run)
+        env:
+          REAL_HOST_FLOOR: "220"
+        run: |
+          output=$(uv run --no-sync pytest -q -m real_host --collect-only -p no:cacheprovider)
+          summary=$(echo "$output" | grep -Eo '[0-9]+/[0-9]+ tests collected' | tail -1)
+          echo "$summary"
+          collected=$(echo "$summary" | grep -Eo '^[0-9]+' || echo 0)
+          test "$collected" -ge "$REAL_HOST_FLOOR" || { echo "only $collected real_host tests collected (floor $REAL_HOST_FLOOR)"; exit 1; }
+
+      - name: Test with the real host REQUIRED
+        run: SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q
+
+  docs:
+    # The site builds strictly (ruling E5). Nothing here publishes: deploying
+    # to Pages is an outward action Elliot triggers by hand.
+    name: docs (mkdocs build --strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --all-groups
+      - run: uv run --no-sync mkdocs build --strict
+
+  cli-install:
+    # Dossier F.1.1 and F.1.7: the plugin must work OUTSIDE the repo venv, and
+    # the Stellar CLI must dispatch `stellar serpent` to it -- proven here on
+    # stellar-cli 28.0.0 (the plugin convention was probe-verified on 27.1.0).
+    name: cli (uv tool install + stellar-cli 28 dispatch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.11"
+      # The requirement spelling is UNVERIFIED locally on purpose (no tool
+      # installs outside the repo, M10); if uv refuses the direct-URL form, the
+      # documented fallback is `uv tool install ".[spec]"` -- a one-line
+      # workflow edit, not a product failure.
+      - name: Install the plugin as a tool, from this checkout
+        run: |
+          uv tool install "serpent[spec] @ file://${PWD}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install stellar-cli 28.0.0
+        env:
+          STELLAR_CLI_VERSION: "28.0.0"
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSfL -o stellar-cli.tar.gz \
+            "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          tar xzf stellar-cli.tar.gz
+          install stellar /usr/local/bin/stellar
+          stellar --version
+      - name: The plugin runs from outside the checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          stellar-serpent doctor
+          stellar-serpent build "$GITHUB_WORKSPACE/examples/counter.py" --out counter.wasm
+          stellar-serpent inspect counter.wasm
+          stellar contract info env-meta --wasm counter.wasm
+      # `plugin ls`'s listing format is verified on 27.1.0 only (four-space
+      # indented names); a format change on 28.0.0 is a workflow-only fix [m11].
+      - name: The Stellar CLI dispatches to it
+        run: |
+          stellar plugin ls | grep -Ex ' *serpent'
+          stellar serpent doctor
+          stellar serpent build examples/bounty_board.py --out /tmp/bb.wasm --quiet
