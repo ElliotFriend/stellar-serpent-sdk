@@ -193,6 +193,7 @@ touches the network again.
 | `soroban-sdk` | `28.0.0-rc.1` (the protocol-28 test `Env`) |
 | `soroban-env-host` | `28.0.2`, which must equal `src/serpent/_host/_codegen.py`'s `PINNED_TAG` (`v28.0.2`) -- that is the release serpent's own host-function table is generated from |
 | `pyo3` | `0.29`, `abi3-py311` |
+| `wasm-tools` | 1.258.0 (`src/serpent/_pins.py`) |
 
 Testnet moved to protocol 28 (core 28.0.1) before 2026-09-02; mainnet stayed
 on 27 (`docs/superpowers/specs/2026-08-26-serpent-python-soroban-sdk-design.md`
@@ -201,3 +202,24 @@ above is 28 and not 27. When protocol 29 lands, `soroban-sdk` and
 `soroban-env-host` move together, `PINNED_TAG` moves with them, and
 `tests/real_host/`'s own protocol-ceiling test is the tripwire that says the
 three have drifted apart if they ever do.
+
+## CI's jobs
+
+`test` runs the four gates on Python 3.11/3.12/3.13 without Rust (the
+real-host tests skip loudly there). `real-host` builds the extension with
+maturin, runs the cargo gates, refuses a run that collects too few
+`real_host` tests, and runs the whole suite with
+`SERPENT_REQUIRE_REAL_HOST=1`, so a missing extension fails the job instead
+of skipping. `docs` builds the site strictly; `cli-install` installs the
+plugin as a `uv tool` from the checkout and drives it through stellar-cli's
+plugin dispatch from outside the repository.
+
+## Bumping wasm-tools
+
+The pin lives in two places that a unit test keeps equal:
+`src/serpent/_pins.py` (`WASM_TOOLS_PIN`, what `stellar-serpent doctor`
+compares your local tool against) and `.github/workflows/ci.yml`
+(`WASM_TOOLS_VERSION`, what CI installs). To bump: check
+https://github.com/bytecodealliance/wasm-tools/releases, edit both, run
+`uv run --no-sync pytest -q tests/unit/test_pins.py`, and install the same
+version locally. Nothing polls for a newer release on purpose.

@@ -8,18 +8,31 @@ Write Soroban smart contracts in Python. Experimental.
 
 ## Status
 
-M1 (the compiler + host-interface milestone) is in progress; this repo has no
-release yet and no stable API. Phase 0 (the technical bet the project rests
-on -- that a WAT-assembled guest can round-trip through the real Soroban host
-and network) is testnet-proven: a hand-assembled counter contract deployed
-and invoked correctly on Stellar testnet, byte-identical to the equivalent
-Rust-SDK build where compared. See
-`docs/superpowers/specs/2026-08-26-phase0-findings.md` for the verified
-claims and evidence.
+**M1 is complete except for its closing testnet deployment, which is
+scheduled**: the compiler frontend and WASM emitter for the M1 type set, the
+tier-1 `Env` model, the embedded real host, seven examples, the
+`stellar-serpent` CLI plugin, and the docs site have all shipped. The
+deliberate, user-approved testnet deployment of the fixed `shapes` and the
+`bounty_board` examples is scheduled next; the contract ids will be recorded
+in `docs/deployments.md` when it lands. There is no PyPI release: install
+from this repository (below). Nothing here is production-ready or
+API-stable; M2 (cross-contract calls, crypto host functions, U256/I256, the
+model gaps named in `docs/testing.md`) is next.
 
-Nothing here should be treated as production-ready or API-stable. If you're
-evaluating serpent for a real contract, read the spec and findings docs
-below before writing anything you intend to keep.
+## Install and build
+
+```sh
+uv tool install "serpent[spec] @ git+https://github.com/ElliotFriend/stellar-serpent-sdk"
+stellar serpent doctor                      # or: stellar-serpent doctor
+stellar serpent build examples/counter.py   # writes examples/counter.wasm
+stellar serpent inspect examples/counter.wasm
+stellar contract deploy --wasm examples/counter.wasm --source alice --network testnet
+```
+
+`stellar serpent` is the Stellar CLI's plugin dispatch to the `stellar-serpent`
+console script; deploy, invoke, and bindings are the stock CLI's. The full
+walkthrough is `docs/getting-started.md`; the site is built with
+`uv run --group docs mkdocs serve`.
 
 ## Architecture at a glance
 
@@ -49,11 +62,11 @@ its own, and higher layers depend only on the ones below them:
   compiles and runs as WASM under `tests/harness`'s mini host, and
   `tests/unit/test_env_differential.py` checks the two agree on 62 stateful
   scenarios.
-- **Examples** (`examples/`) -- six complete contracts (a counter, error
+- **Examples** (`examples/`) -- seven complete contracts (a counter, error
   codes, structs, events, an allowance-style token, tagged unions and int
-  enums) exercising the authoring surface end to end; each one compiles,
-  builds to WASM, and runs both at tier 1 and under the mini host in
-  `tests/unit/test_examples.py`.
+  enums, and a bounty board that touches every M1 surface) exercising the
+  authoring surface end to end; each one compiles, builds to WASM, and runs
+  both at tier 1 and under the mini host in `tests/unit/test_examples.py`.
 - **`_host` bindings** (`serpent/_host/`) -- the pinned, code-generated table
   of all 199 Soroban host functions (from a pinned `env.json`), with export
   codes, arities, and the protocol-gate logic used to compute a build's
@@ -71,6 +84,10 @@ its own, and higher layers depend only on the ones below them:
   `serpent.emitter.printer.disassemble` renders any such module back to a
   reviewable, WAT-style text -- section headers, host calls by name -- for
   when a change to a lowering needs to be read rather than trusted.
+- **CLI** (`serpent/cli.py`) -- `stellar-serpent build|inspect|doctor`;
+  `build` wraps `build_file`, `inspect` reads a module's sections, imports
+  (with protocol gates), and declared-vs-recomputed protocol, `doctor`
+  checks the toolchain offline.
 
 **Honest boundary.** The tier-1 `Env` and the mini host are two models this
 repo wrote, not the chain: their agreement is self-consistency, not proof

@@ -13,6 +13,11 @@ from serpent._host.bindings import HOST_FUNCTIONS
 
 #: The gate-check ceiling `declared_protocol` uses when `requested` is
 #: omitted. NOT what an ungated contract declares -- see `declared_protocol`.
+#: 27 is MAINNET's protocol (testnet is 28 as of 2026-09): the target is an
+#: upper bound on what a module may use, so the default keeps a default build
+#: deployable on the lowest live network; `stellar serpent build
+#: --target-protocol 28` opts in (M1-G ruling E10). Revisit when mainnet
+#: moves.
 DEFAULT_TARGET_PROTOCOL = 27
 
 #: The protocol floor below which no pinned host function requires anything

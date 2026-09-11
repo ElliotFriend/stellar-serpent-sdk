@@ -10,3 +10,11 @@ under `tests/real_host/fixtures/testnet/`.
 | shapes (M1-E2 build) | testnet | `CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW` | `6a9dd13549bac20f2609ab3d74668963b5249a7943dc7f027cdf6c42bec86e33` | `examples/shapes.py` before M1-F Task 0 | `area` traps (the B1 small-Symbol compare); superseded by the M1-end redeploy |
 
 Task 11 appends the two M1-end rows.
+
+## Not yet done (M3)
+
+**PyPI**: no release; the name `serpent` is taken on PyPI (checked
+2026-09-10), while `stellar-serpent`, `serpent-sdk`, and `soroban-serpent`
+were free that day -- the distribution name is M3's decision. **Plugin
+registry**: the `stellar-plugin` GitHub topic that makes `stellar plugin
+search` find this repository is registered at publication (M3), not before.

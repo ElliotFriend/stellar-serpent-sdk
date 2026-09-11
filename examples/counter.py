@@ -19,9 +19,9 @@ serpent's authoring surface that a contract cannot avoid:
   the "nothing stored yet" case. Without a `default` a missing key is a trap
   carrying a reserved runtime code, which is a different contract.
 
-Compile it to wasm (the script prints the module's size, exports and imports):
+Build it to wasm (the CLI prints the module's size, sha256, and protocol):
 
-    uv run python sandbox/compile.py examples/counter.py
+    stellar serpent build examples/counter.py
 
 Run it two ways -- `tests/unit/test_examples.py` does both and asserts the two
 agree:
