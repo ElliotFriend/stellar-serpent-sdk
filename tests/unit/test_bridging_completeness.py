@@ -29,6 +29,7 @@ import ast
 import importlib
 import pathlib
 import re
+import textwrap
 from types import ModuleType
 
 import pytest
@@ -596,19 +597,54 @@ def _raises_outside_dunders(tree: ast.Module) -> list[ast.Raise]:
 
 
 def _body_string_literals(function: ast.FunctionDef) -> list[str]:
-    """Every string literal in `function`'s body, minus its docstring.
+    """Every non-empty string literal in `function`'s body, minus its docstring.
 
     The docstring is excluded on purpose: it is prose ABOUT the refusal, and
     letting it into the chunk list would let a needle match documentation
-    rather than a message a user ever sees.
+    rather than a message a user ever sees. So is the empty string: a
+    zero-length chunk would make `fragment in chunk` false and
+    `"" in chunk` true, i.e. noise on both sides of the comparison.
     """
     body = function.body[1:] if ast.get_docstring(function) else function.body
     return [
         literal.value
         for stmt in body
         for literal in ast.walk(stmt)
-        if isinstance(literal, ast.Constant) and isinstance(literal.value, str)
+        if isinstance(literal, ast.Constant) and isinstance(literal.value, str) and literal.value
     ]
+
+
+def _module_level_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    """The module's TOP-LEVEL functions by name.
+
+    `tree.body`, never `ast.walk`: a method sharing a module function's name
+    would otherwise substitute the wrong body (the walk is last-wins).
+    """
+    return {stmt.name: stmt for stmt in tree.body if isinstance(stmt, ast.FunctionDef)}
+
+
+def _module_only_names(tree: ast.Module) -> frozenset[str]:
+    """Names bound at module level (assigned or imported) and NEVER rebound
+    inside any function -- so reading one off the live module cannot be
+    mistaking a local variable for the module constant it shadows."""
+    module_level: set[str] = set()
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign):
+            module_level.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            module_level.add(stmt.target.id)
+        elif isinstance(stmt, ast.Import | ast.ImportFrom):
+            module_level.update(alias.asname or alias.name for alias in stmt.names)
+    rebound: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Assign):
+                rebound.update(t.id for t in inner.targets if isinstance(t, ast.Name))
+            elif isinstance(inner, ast.AnnAssign) and isinstance(inner.target, ast.Name):
+                rebound.add(inner.target.id)
+    return frozenset(module_level - rebound)
 
 
 def _indirect_message_chunks(raised: ast.Raise, tree: ast.Module, module: ModuleType) -> list[str]:
@@ -618,23 +654,34 @@ def _indirect_message_chunks(raised: ast.Raise, tree: ast.Module, module: Module
     `raise ValueError(_bad_prefix_topic(...))` and
     `raise NotImplementedError(_DEFERRED)` carry no literal chunk at all and
     were invisible to this gate -- a blind spot in the same family as the
-    hand-kept function list. Two hops close it, and they are the only two the
-    declaration layer uses: a call to a helper defined in the SAME module
-    (its own literal fragments), and a module-level string constant (its live
-    value, which may have been imported from elsewhere).
+    hand-kept function list. This resolves exactly the two shapes the
+    declaration layer uses, and NOTHING else:
+
+    * `raise Exc(<module-level function>(...))` -> that function's own
+      literals;
+    * `raise Exc(<module-level str constant>)` -> its live value (which may
+      have been imported from another module).
+
+    The exception's ONE top-level argument, never a nested node (fix round 1,
+    I1). An f-string interpolating a formatting helper --
+    `raise ValueError(f"... {_render(x)} ...")` -- is NOT resolved: walking
+    into it mixed an unrelated helper's literals into the message set, and the
+    day such a helper carried a needle-bearing literal an unbridged raise
+    would have read as bridged, which is precisely the blind spot this gate
+    exists to close. A raise whose message this cannot resolve stays visible
+    (it fails the gate until it is bridged or listed), which is the safe
+    direction to be wrong in.
     """
-    helpers = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
-    chunks: list[str] = []
-    for node in ast.walk(raised):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            helper = helpers.get(node.func.id)
-            if helper is not None:
-                chunks.extend(_body_string_literals(helper))
-        elif isinstance(node, ast.Name):
-            value = getattr(module, node.id, None)
-            if isinstance(value, str):
-                chunks.append(value)
-    return chunks
+    if not isinstance(raised.exc, ast.Call) or len(raised.exc.args) != 1 or raised.exc.keywords:
+        return []
+    argument = raised.exc.args[0]
+    if isinstance(argument, ast.Call) and isinstance(argument.func, ast.Name):
+        helper = _module_level_functions(tree).get(argument.func.id)
+        return [] if helper is None else _body_string_literals(helper)
+    if isinstance(argument, ast.Name) and argument.id in _module_only_names(tree):
+        value = getattr(module, argument.id, None)
+        return [value] if isinstance(value, str) and value else []
+    return []
 
 
 def _raise_message_chunks(node: ast.AST) -> list[str]:
@@ -710,6 +757,104 @@ def test_the_unbridged_lists_are_live_and_disjoint() -> None:
             )
         ]
         assert matches, (module_name, fragment)
+
+
+#: A synthetic declaration layer for the resolver's own teeth test. Four
+#: raise shapes, all four with a needle-bearing literal SOMEWHERE reachable
+#: from them, only two of which the resolver may ever read.
+_RESOLVER_PROBE = textwrap.dedent(
+    """
+    _CONSTANT = "a needle in a module constant"
+    _SHADOWED = "a needle in a shadowed constant"
+
+
+    def _render(value: object) -> str:
+        return "a needle in an unrelated formatting helper"
+
+
+    def _refusal(value: object) -> str:
+        return "a needle a bare helper call carries"
+
+
+    def nested_call(value: object) -> None:
+        raise ValueError(f"prefix {_render(value)} suffix")
+
+
+    def bare_helper_call(value: object) -> None:
+        raise ValueError(_refusal(value))
+
+
+    def bare_constant() -> None:
+        raise NotImplementedError(_CONSTANT)
+
+
+    def shadowing_local() -> None:
+        _SHADOWED = "a local that shadows the module constant"
+        raise ValueError(_SHADOWED)
+    """
+)
+
+
+def _probe_chunks() -> dict[str, list[str]]:
+    """`_RESOLVER_PROBE`'s raises, by enclosing function, with the literal AND
+    indirect chunks the gate would compare against a needle."""
+    tree = ast.parse(_RESOLVER_PROBE)
+    module = ModuleType("resolver_probe")
+    exec(compile(tree, "<resolver_probe>", "exec"), module.__dict__)  # noqa: S102
+    chunks: dict[str, list[str]] = {}
+    for function in tree.body:
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        for raised in (n for n in ast.walk(function) if isinstance(n, ast.Raise)):
+            chunks[function.name] = _raise_message_chunks(raised) + _indirect_message_chunks(
+                raised, tree, module
+            )
+    return chunks
+
+
+def test_the_indirect_resolver_reads_only_the_exceptions_top_level_argument() -> None:
+    """Fix round 1, I1: the resolver's teeth.
+
+    `raise ValueError(f"... {_render(x)} ...")` must NOT pick up `_render`'s
+    text. The earlier version walked every nested node, so a formatting helper
+    reached from inside an f-string contributed its literals to the message
+    set -- and the day such a helper carried a bridge needle, an unbridged
+    raise would have read as BRIDGED, which is the one failure mode this gate
+    exists to prevent. The two shapes that ARE resolved keep working.
+    """
+    chunks = _probe_chunks()
+
+    # The nested call is not followed: its own f-string literals are all the
+    # gate sees, so a needle living only in `_render` cannot bridge it.
+    assert "a needle in an unrelated formatting helper" not in chunks["nested_call"]
+    assert chunks["nested_call"] == ["prefix ", " suffix"]
+
+    # `raise Exc(<module function>(...))` resolves to the helper's own text.
+    assert "a needle a bare helper call carries" in chunks["bare_helper_call"]
+
+    # `raise Exc(<module str constant>)` resolves to its live value.
+    assert "a needle in a module constant" in chunks["bare_constant"]
+
+    # A LOCAL that merely shares a module constant's name is not resolved --
+    # the module-level value is not what this raise carries.
+    assert chunks["shadowing_local"] == []
+
+
+def test_the_indirect_resolver_drops_empty_chunks() -> None:
+    """A zero-length chunk matches every fragment on one side of `in` and no
+    fragment on the other, so it is noise the resolver must not emit. Both
+    real resolutions are checked for it, `_render`'s `''` separators being
+    where the earlier version picked them up."""
+    for name, chunks in _probe_chunks().items():
+        assert "" not in chunks, name
+    for module_name in _DECLARATION_LAYER_MODULES:
+        module = importlib.import_module(module_name)
+        tree = ast.parse(pathlib.Path(module.__file__ or "").read_text(encoding="utf-8"))
+        for raised in _raises_outside_dunders(tree):
+            assert "" not in _indirect_message_chunks(raised, tree, module), (
+                module_name,
+                raised.lineno,
+            )
 
 
 def test_every_bridge_rule_code_has_a_row() -> None:
