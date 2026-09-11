@@ -1,12 +1,15 @@
 """The promise-sweep gates: the tree makes no promise it has already kept.
 
-THREE nets. The first two (M1-E/M1-E2 Task 10) walk `src/` and `tests/`. The
+FOUR nets. The first two (M1-E/M1-E2 Task 10) walk `src/` and `tests/`. The
 first is about the phrase "sub-plan E": every mention has to be a deliberate
 historical record. The second is about the tagged-union / int-enum SURFACE: no
 docstring, comment or message may still say that surface is unavailable, now
 that `@contractunion` and `@contractenum` ship. The third (M1-F Task 10) is
 about "sub-plan F", "tier 2b"/"tier-2b" and the possessive "F's", walked over
 the WIDER `src/`, `tests/`, `examples/` and `docs/` (see `_WALKED_F` below).
+The fourth (M1-G Task 11c) mirrors the third exactly, for "sub-plan G" and the
+possessive "G's" (see `_WALKED_F`, reused rather than duplicated, just below
+the third net's section).
 
 Every docstring/message that once said "sub-plan E will..." has to be one of
 three things by the time the sub-plan closes: IMPLEMENTED (the promise is
@@ -470,3 +473,181 @@ def test_the_f_net_has_teeth() -> None:
     )
     assert _is_an_f_mention(forward_looking)
     assert not _is_an_f_mention(repointed)
+
+
+# --- the M1-G promise sweep -------------------------------------------------
+#
+# A FOURTH net (M1-G Task 11c), mirroring the M1-F net exactly: same walk
+# (`_WALKED_F`, reused rather than duplicated -- the M1-end deployment's own
+# obligations live in the same trees the F sweep already covers), same
+# `docs/superpowers/` exclusion, same shape of allowlist and teeth test. TWO
+# needle shapes, not three:
+#
+# * `"sub-plan g"`, case-INSENSITIVELY, exactly like the `"sub-plan e"` and
+#   `"sub-plan f"` needles above;
+# * the possessive `"G's"` as a WHOLE WORD, case-SENSITIVELY on the capital --
+#   the same reasoning as `_NEEDLE_FS_POSSESSIVE`.
+#
+# Deliberately NO `"m1-g"` needle: "M1-G Task N" provenance comments are this
+# repo's own convention for citing where a line came from, and this plan
+# alone writes about fifteen of them -- a needle on the sub-plan's own name
+# would allowlist nearly the whole tree instead of finding anything. The F
+# net above has no `"m1-f"` needle for the same reason. Also NO `"(g)"`
+# needle: it is regex-special (an unescaped `(g)` reads as a capture group to
+# anyone pattern-matching by hand) and would trip on innocent strkey/lettering
+# comments that happen to parenthesize a lowercase "g" -- the LITERAL forward
+# references this sub-plan actually wrote spelled the milestone as `(G)`
+# capitalized, and those are checked directly by
+# `test_the_m1_end_deployment_forward_references_are_gone` below instead of
+# through this net.
+#
+# Every mention has to be one of IMPLEMENTED (the M1-end deployment happened;
+# the text now states the fact and cites `docs/deployments.md`), REPOINTED,
+# REMOVED, or -- only for a genuine historical record -- allowlisted below.
+
+_NEEDLE_SUBPLAN_G = re.compile(r"sub-plan g", re.IGNORECASE)
+#: Case-sensitive on purpose, exactly like `_NEEDLE_FS_POSSESSIVE`: a lowercase
+#: "g's" is an ordinary possessive and not this sub-plan.
+_NEEDLE_GS_POSSESSIVE = re.compile(r"\bG's\b")
+
+
+def _is_a_g_mention(line: str) -> bool:
+    """Whether `line` trips either of the two M1-G needles."""
+    return bool(_NEEDLE_SUBPLAN_G.search(line) or _NEEDLE_GS_POSSESSIVE.search(line))
+
+
+#: `(relative path, exact line text stripped)` for every M1-G mention the
+#: sweep audited and chose to KEEP, with why in a trailing comment -- never a
+#: live promise.
+_ALLOWLIST_G: frozenset[tuple[str, str]] = frozenset(
+    {
+        # "the SHIPPED contracts (M1-E sub-plan G's wave 1)" -- past tense,
+        # naming which sub-plan's wave a fixture inventory belongs to, not a
+        # forward promise about what sub-plan G will do.
+        (
+            "tests/unit/test_emitter_end_to_end.py",
+            "#: `examples/` -- the SHIPPED contracts (M1-E sub-plan G's wave 1), which are",
+        ),
+        # "the three `examples/` contracts of sub-plan G's wave 1" -- same
+        # historical inventory note, in the fixtures-Task-13 module.
+        (
+            "tests/unit/test_harness_hostfns.py",
+            "#: the three `examples/` contracts of sub-plan G's wave 1, M1-E2 the sixth,",
+        ),
+        # "M1-G's `bounty_board.py` has an `__init__` ... and is listed" --
+        # present-tense fact about the shipped example's inventory membership,
+        # not a promise about work still to come.
+        (
+            "tests/unit/test_emitter_end_to_end.py",
+            "#: M1-G's `bounty_board.py` has an `__init__` (the admin is recorded at",
+        ),
+    }
+)
+
+
+def _mentions_g(root: Path) -> list[tuple[str, int, str]]:
+    """`(relative path, 1-based line number, line text)` for every line under
+    `root` tripping an M1-G needle, `__pycache__` and `docs/superpowers/`
+    excluded -- otherwise identical to `_mentions_f`."""
+    found: list[tuple[str, int, str]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or path.resolve() == _SELF:
+            continue
+        resolved = path.resolve()
+        if resolved == _EXCLUDED_DOCS_PREFIX or _EXCLUDED_DOCS_PREFIX in resolved.parents:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            continue
+        for lineno, line in enumerate(lines, start=1):
+            if _is_a_g_mention(line):
+                found.append((str(path.relative_to(_REPO_ROOT)), lineno, line.strip()))
+    return found
+
+
+def _all_mentions_g() -> list[tuple[str, int, str]]:
+    mentions: list[tuple[str, int, str]] = []
+    for root in _WALKED_F:
+        mentions.extend(_mentions_g(root))
+    return mentions
+
+
+def _keyed_g() -> set[tuple[str, str]]:
+    """Every M1-G mention as its allowlist key: `(relative path, stripped text)`."""
+    return {(path, line) for path, _lineno, line in _all_mentions_g()}
+
+
+def test_every_sub_plan_g_mention_is_an_allowlisted_historical_record() -> None:
+    unexpected = sorted(
+        (path, lineno, line)
+        for path, lineno, line in _all_mentions_g()
+        if (path, line) not in _ALLOWLIST_G
+    )
+    assert not unexpected, (
+        'unexpected M1-G mention(s) ("sub-plan G" or the possessive "G\'s") outside '
+        "the allowlist -- each one has to be IMPLEMENTED (state the fact and cite "
+        "`docs/deployments.md`), REPOINTED, REMOVED, or (only if it is a genuine "
+        f"historical record) added to _ALLOWLIST_G with why: {unexpected}"
+    )
+
+
+def test_the_g_allowlist_names_no_line_that_has_moved_or_changed() -> None:
+    """The other direction, mirroring the sub-plan F net above: an allowlisted
+    line that lost its needle text -- reworded, or deleted -- would silently
+    stop exempting anything and ALSO stop being verified, which is a bug in
+    this test rather than a pass."""
+    missing = sorted(set(_ALLOWLIST_G) - _keyed_g())
+    assert not missing, (
+        "allowlisted M1-G line(s) no longer appear with their needle text -- the "
+        "sentence was reworded or removed; re-audit it and update _ALLOWLIST_G: "
+        f"{missing}"
+    )
+
+
+def test_the_g_net_has_teeth() -> None:
+    """Both directions, pinned as samples, exactly like the F net's teeth test:
+    a forward-looking sentence naming sub-plan G must still trip the net, and
+    an honestly repointed one -- citing the deployment record directly, by
+    file, and naming no sub-plan -- must not."""
+    forward_looking = (
+        "the bounty board's fixtures do not exist yet; sub-plan G's deployment "
+        "is where they get recorded against the real chain."
+    )
+    repointed = (
+        "recorded against the real chain: docs/deployments.md's bounty_board (M1 close) row."
+    )
+    assert _is_a_g_mention(forward_looking)
+    assert not _is_a_g_mention(repointed)
+
+
+#: The literal forward-reference spellings the M1-end deployment retires: the
+#: two shapes said "the row retires at the next approved deployment (G)"
+#: before it happened, and "the assertion ... inverts when Elliot approves the
+#: M1-end deployment (G)" is the same promise from the test that has since
+#: been deleted. Checked directly (not through `_is_a_g_mention`, which would
+#: also have to catch a plain "(G)" and trip on unrelated lettering/strkey
+#: comments) because these are two EXACT phrases this sub-plan actually wrote,
+#: not a vocabulary the gate has to generalize over.
+_FORWARD_REF_NEEDLES = ("deployment (G)", "(G):")
+
+#: The three files that carried a live forward reference to the still-pending
+#: M1-end deployment before this task landed.
+_FORWARD_REF_FILES: tuple[Path, ...] = (
+    _REPO_ROOT / "tests" / "real_host" / "test_testnet_fixtures.py",
+    _REPO_ROOT / "tests" / "real_host" / "fixtures" / "testnet" / "README.md",
+    _REPO_ROOT / "docs" / "testing.md",
+)
+
+
+def test_the_m1_end_deployment_forward_references_are_gone() -> None:
+    """The deployment happened (`docs/deployments.md`), so none of the three
+    files that used to point forward at it -- "deployment (G)" or "(G):" --
+    may still say so. A hit here means 11c's rewrite missed a spot."""
+    hits = [
+        (str(path.relative_to(_REPO_ROOT)), lineno, line.strip())
+        for path in _FORWARD_REF_FILES
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if any(needle in line for needle in _FORWARD_REF_NEEDLES)
+    ]
+    assert not hits, f"live forward reference(s) to the M1-end deployment remain: {hits}"

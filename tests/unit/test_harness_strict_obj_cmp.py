@@ -3,20 +3,22 @@
 Until M1-G the mini host accepted `obj_cmp` on two small `Val`s and answered
 from tier-1 `val_cmp`, so the shipped small-Symbol compare bug (M1-F B1) was
 green at tier 2a and found only by the real host. The deployed shapes bytes
-(`tests/real_host/fixtures/testnet/shapes/deployed.wasm`) still carry that
-lowering, trap on chain and on the embedded host, and are therefore the
-regression fixture: under the default `FullHost` they must trap here too.
+(`tests/real_host/fixtures/testnet/shapes/deployed.wasm`) USED TO carry that
+lowering and trapped on chain and on the embedded host, which is what made
+them a convenient natural regression fixture for the strict mock at the time.
+The M1-end redeploy of 2026-09-11 (`docs/deployments.md`) shipped Task 0's fix
+in the deployed bytes too, so that specific artifact no longer trips
+`obj_cmp` at all -- `test_two_object_words_still_compare` and
+`test_mixed_small_and_object_still_compares` below are what still exercise the
+strict check directly, independent of any one deployed contract's history.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from serpent import U32, Symbol, val
 from tests.harness import engine
-from tests.harness.errors import HostTrap
 from tests.harness.hostfns import FullHost
 
 DEPLOYED_SHAPES = (
@@ -36,12 +38,16 @@ def _drawing(host: FullHost) -> engine.MiniHost:
     return mini
 
 
-def test_the_deployed_shapes_area_traps_under_the_default_mock() -> None:
+def test_the_deployed_shapes_area_no_longer_traps_under_the_default_mock() -> None:
+    """B1 retired: the redeployed bytes carry Task 0's fixed lowering, so
+    `area` answers under the strict (default) mock exactly as it does under
+    the lax one -- see `test_the_lax_mock_still_answers_for_archaeology`."""
     host = FullHost()
     assert host.strict_obj_cmp is True
     mini = _drawing(host)
-    with pytest.raises(HostTrap, match="two non-object args to obj_cmp"):
-        mini.invoke("area")
+    word = mini.invoke("area")
+    assert word is not None
+    assert host.chain_value(word) == U32(10)
 
 
 def test_the_lax_mock_still_answers_for_archaeology() -> None:

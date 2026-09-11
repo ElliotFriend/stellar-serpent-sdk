@@ -8,16 +8,14 @@ Write Soroban smart contracts in Python. Experimental.
 
 ## Status
 
-**M1 is complete except for its closing testnet deployment, which is
-scheduled**: the compiler frontend and WASM emitter for the M1 type set, the
-tier-1 `Env` model, the embedded real host, seven examples, the
-`stellar-serpent` CLI plugin, and the docs site have all shipped. The
-deliberate, user-approved testnet deployment of the fixed `shapes` and the
-`bounty_board` examples is scheduled next; the contract ids will be recorded
-in `docs/deployments.md` when it lands. There is no PyPI release: install
-from this repository (below). Nothing here is production-ready or
-API-stable; M2 (cross-contract calls, crypto host functions, U256/I256, the
-model gaps named in `docs/testing.md`) is next.
+**M1 is complete** (2026-09-11): the compiler frontend and WASM emitter for
+the M1 type set, the tier-1 `Env` model, the embedded real host, seven
+examples, the `stellar-serpent` CLI plugin, the docs site, and one deliberate,
+user-approved testnet deployment of the fixed `shapes` and the `bounty_board`
+examples (ids in `docs/deployments.md`) have all shipped. There is no PyPI
+release: install from this repository (below). Nothing here is
+production-ready or API-stable; M2 (cross-contract calls, crypto host
+functions, U256/I256, the model gaps named in `docs/testing.md`) is next.
 
 ## Install and build
 

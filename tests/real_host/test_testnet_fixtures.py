@@ -1,11 +1,12 @@
 """Tier 3: recorded testnet simulations replayed against tier 1 and the real host (U3/U5/K6).
 
 No network at all, ever: tier 3 is fixture-only until a deployment is approved
-(U3). Each fixture under `fixtures/testnet/shapes/` was recorded by
-`serpent.testing.testnet.record_fixture` (`SERPENT_TESTNET_RECORD=1`, ruling
-E14 as amended: `simulateTransaction` accepts a never-funded source, so the
-recording asked for no account and signed nothing) against the deployed shapes
-contract (U5). Replay seeds the fixture's footprint entries into a fresh
+(U3). Each fixture under `fixtures/testnet/<set>/` (`shapes`, `bounty_board`)
+was recorded by `serpent.testing.testnet.record_fixture`
+(`SERPENT_TESTNET_RECORD=1`, ruling E14 as amended: `simulateTransaction`
+accepts a never-funded source, so the recording asked for no account and
+signed nothing) against that set's deployed contract (U5). Replay seeds the
+fixture's footprint entries into a fresh
 `RealEnv` running the DEPLOYED bytes -- fetched from the chain and committed as
 `deployed.wasm` (K6) -- and into a tier-1 `Env` running HEAD's model, invokes,
 and compares the three answers.
@@ -33,8 +34,7 @@ import pytest
 from stellar_sdk.strkey import StrKey
 from stellar_sdk.xdr import SCVal
 
-from serpent import U32
-from serpent.emitter import build_file
+from serpent import Address
 from serpent.env import Env, deploy
 from serpent.testing import DEFAULT_PROTOCOL, RealContractError, RealEnv, RealHostError, testnet
 from serpent.testing._scval import decode_loose, from_xdr
@@ -60,7 +60,8 @@ class FixtureSet:
     deployed_sha256: str
     example: Path
     ctor: tuple[Any, ...]
-    #: Declared three-way divergences, `method -> tier-1 answer` (B1's `area`).
+    #: Declared three-way divergences, `method -> tier-1 answer` (B1's `area`,
+    #: retired by the M1-end redeploy -- empty for both sets now).
     divergences: dict[str, object]
 
     @property
@@ -91,28 +92,40 @@ _TESTNET = Path(__file__).parent / "fixtures" / "testnet"
 #: The deployed shapes contract: its recorded corpus, and the sha256 of the
 #: bytes it runs -- both read off the chain during recording and pinned here.
 #:
-#: The one declared three-way divergence, with its reason (B1). `area` lowers
-#: `shape.tag() == Symbol("Rect")` to an `obj_cmp` on two SMALL symbols in the
-#: DEPLOYED bytes, which the host refuses -- so the chain traps and so does the
-#: embedded host running those same bytes, while HEAD's model (Task 0 fixed the
-#: lowering) answers the area of the `Rect(5, 2)` the chain holds. The row
-#: retires at the next approved deployment (G): re-record, and this table goes
-#: empty.
+#: B1, retired: the deployed bytes USED TO lower `shape.tag() == Symbol("Rect")`
+#: to an `obj_cmp` on two SMALL symbols, which the host refused -- so the chain
+#: trapped and so did the embedded host running those same bytes, while HEAD's
+#: model (Task 0's fix) answered the area of the `Rect(5, 2)` the chain held.
+#: The M1-end redeploy of 2026-09-11 rebuilt and reseeded the contract, so the
+#: fixed lowering ships in the deployed bytes too, and `area` now agrees three
+#: ways: the divergence table below is empty.
 SHAPES = FixtureSet(
     name="shapes",
     directory=_TESTNET / "shapes",
-    contract_id="CDEU7Q4DYJVHL2NENDM263KNXOU73RHHWY2BUWBT2HZX6X4BF4FZ7GNW",
-    deployed_sha256="6a9dd13549bac20f2609ab3d74668963b5249a7943dc7f027cdf6c42bec86e33",
+    contract_id="CD3KZQVZSUIM6YDGZAC2VSXNN7COV7AR7U5J5N725BAMECARV4LENHYY",
+    deployed_sha256="7ba2afb0c81ac3cf05a1dd4edfa48b98bfefab6e51901ad7676a27230f84483e",
     example=EXAMPLE_SHAPES,
     ctor=(),
-    divergences={"area": U32(10)},
+    divergences={},
+)
+
+#: The deployed bounty board: constructed with the deployer's own address as
+#: `admin` (the identity that ran the M1-end deployment, `docs/deployments.md`),
+#: seeded with one posted bounty (id 1, reward 50, High priority). No declared
+#: divergence -- every recorded method agrees three ways.
+BOUNTY_BOARD = FixtureSet(
+    name="bounty_board",
+    directory=_TESTNET / "bounty_board",
+    contract_id="CBBIB2C6C3ULRHJTTPK7FPDU6RFHAJM2IQ5RHHWVDP4C7GXBZ5VF2FEW",
+    deployed_sha256="93477b8326f8e9f804355117f4b789d4bd806a5206f05493b7368557c86cfdfa",
+    example=EXAMPLE_BOUNTY_BOARD,
+    ctor=(Address("GCKJRYNE624USL4G4ICA2KQ4KF5ZHYOLTWWFLPIOAH45PP7AFTP4UKHB"),),
+    divergences={},
 )
 
 #: The recorded tier-3 corpus, one `FixtureSet` per deployed contract. The
-#: bounty board joins after the M1-end deployment (11c); until then this is a
-#: one-element tuple and the module behaves exactly as it did before the
-#: refactor.
-SETS: tuple[FixtureSet, ...] = (SHAPES,)
+#: bounty board joined the shapes corpus with the M1-end deployment (11c).
+SETS: tuple[FixtureSet, ...] = (SHAPES, BOUNTY_BOARD)
 
 real = pytest.mark.real_host  # per-test (M12); only the replay leg needs the host, and it says so
 
@@ -223,14 +236,6 @@ def test_the_fixtures_were_recorded_against_the_deployed_bytes(fixture_set: Fixt
         assert fixture.contract_id == fixture_set.contract_id
         assert fixture.wasm_sha256 == fixture_set.deployed_sha256
         assert fixture.protocol == DEFAULT_PROTOCOL
-
-
-def test_this_trees_shapes_build_differs_from_the_deployed_bytes_until_the_next_deploy() -> None:
-    """B1: Task 0 changed the Symbol-compare lowering, so HEAD's `shapes.py` no
-    longer builds the deployed bytes. This inverts when Elliot approves the
-    M1-end deployment (G): flip the assertion then and retire this docstring."""
-    built = build_file(EXAMPLE_SHAPES).wasm
-    assert hashlib.sha256(built).hexdigest() != SHAPES.deployed_sha256
 
 
 @pytest.mark.parametrize("fixture_set", SETS, ids=lambda s: s.name)
@@ -365,10 +370,12 @@ def test_the_real_host_and_tier_1_agree_with_testnet(
     """Three answers to one call, from three places, compared (U5, K6, K7).
 
     Same bytes on the two host legs' terms: the real leg deploys the DEPLOYED
-    wasm rather than HEAD's build, because Task 0's B1 fix changed what
-    `shapes.py` compiles to and the fixture was recorded against the older
-    module. Tier 1 runs HEAD's model, which is the leg that is allowed to
-    differ and does, for exactly one method (`fixture_set.divergences`).
+    wasm rather than HEAD's build, since a fixture is recorded against one
+    specific chain instance and HEAD is free to diverge from it -- Task 0's B1
+    fix once did, until the M1-end redeploy of 2026-09-11 rebuilt the deployed
+    bytes to match. Tier 1 runs HEAD's model, which is the leg allowed to
+    differ, for whatever methods a fixture set declares in
+    `fixture_set.divergences` (none, for either set, now that B1 is retired).
 
     Seeding puts both hosts into the ledger state the simulation READ, entry by
     entry, keys and values decoded loosely -- the bare word the chain stores,

@@ -96,7 +96,9 @@ CONTRACT = "CDW6O3TM7MWE3PKT4PNHHA4QOYUV4TMP4G6G2KH4QW4H4RAY4OYSEOJI"
 OWNER = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
 SPENDER = "GAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPSABOV"
 
-#: The deployed shapes contract's id -- a real, decodable CONTRACT strkey.
+#: The deployed shapes contract's id -- a real, decodable CONTRACT strkey (the
+#: FIRST shapes deployment's id, kept as an opaque address after the M1-end
+#: redeploy).
 #: `_ADMIN` is built from THIS rather than from `ACCOUNT`, and that is the one
 #: value-level edit ruled into this frozen table (B2, 2026-09-02): the test
 #: host mocks an authorization by registering a `MockAuthContract` AT the

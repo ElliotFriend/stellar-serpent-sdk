@@ -1,0 +1,42 @@
+{
+  "contract_id": "CBBIB2C6C3ULRHJTTPK7FPDU6RFHAJM2IQ5RHHWVDP4C7GXBZ5VF2FEW",
+  "wasm_sha256": "93477b8326f8e9f804355117f4b789d4bd806a5206f05493b7368557c86cfdfa",
+  "protocol": 28,
+  "ledger": 4622864,
+  "rpc_version": "28.0.1-273f19e4fcb183b568948bd2b810abfe87150a9c",
+  "recorded_at": "2026-09-11T14:45:08+00:00",
+  "method": "open_ids",
+  "args_xdr": [],
+  "instance": [
+    [
+      "AAAADwAAAAVBRE1JTgAAAA==",
+      "AAAAEgAAAAAAAAAAlJjhpPa5SS+G4gQNKhxRe5Phy52sVb0OAfnXv+As38o="
+    ],
+    [
+      "AAAADwAAAAVDT1VOVAAAAA==",
+      "AAAAAwAAAAE="
+    ]
+  ],
+  "seeded": [
+    {
+      "durability": "persistent",
+      "key_xdr": "AAAAEQAAAAEAAAABAAAADwAAAAlib3VudHlfaWQAAAAAAAADAAAAAQ==",
+      "value_xdr": "AAAAEQAAAAEAAAAEAAAADwAAAAlwb3N0ZWRfYXQAAAAAAAADAEaJyAAAAA8AAAAGcG9zdGVyAAAAAAASAAAAAAAAAACUmOGk9rlJL4biBA0qHFF7k+HLnaxVvQ4B+de/4CzfygAAAA8AAAAIcHJpb3JpdHkAAAADAAAAAgAAAA8AAAAGcmV3YXJkAAAAAAADAAAAMg==",
+      "live_until": 4743751
+    },
+    {
+      "durability": "persistent",
+      "key_xdr": "AAAAEQAAAAEAAAABAAAADwAAAAlzdGF0dXNfb2YAAAAAAAADAAAAAQ==",
+      "value_xdr": "AAAAEAAAAAEAAAABAAAADwAAAARPcGVu",
+      "live_until": 4743751
+    }
+  ],
+  "result": {
+    "ok": true,
+    "value_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAE="
+  },
+  "events_xdr": [
+    "AAAAAQAAAAAAAAAAAAAAAgAAAAAAAAADAAAADwAAAAdmbl9jYWxsAAAAAA0AAAAgQoDoXhbouJ0zm9XyvHT0SnAlmkQ7E57VG/gvmuHPal0AAAAPAAAACG9wZW5faWRzAAAAAQ==",
+    "AAAAAQAAAAAAAAABQoDoXhbouJ0zm9XyvHT0SnAlmkQ7E57VG/gvmuHPal0AAAACAAAAAAAAAAIAAAAPAAAACWZuX3JldHVybgAAAAAAAA8AAAAIb3Blbl9pZHMAAAAQAAAAAQAAAAEAAAADAAAAAQ=="
+  ]
+}
