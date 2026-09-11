@@ -122,9 +122,9 @@ def _fetch_version_info(url: str) -> dict[str, Any]:
     """One read-only `getVersionInfo` JSON-RPC call (ruling E4's `--network`)."""
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getVersionInfo"}).encode()
     request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(
-        request, timeout=20
-    ) as response:  # fixed https hosts, not user input
+    # testnet/mainnet map to fixed hosts; a URL is the user's own choice,
+    # POSTed as JSON-RPC.
+    with urllib.request.urlopen(request, timeout=20) as response:
         payload: dict[str, Any] = json.loads(response.read().decode("utf-8"))
     result: dict[str, Any] = payload.get("result", {})
     return result
@@ -418,6 +418,7 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
             "declared_protocol": art.declared_protocol,
             "recomputed_protocol": art.recomputed_protocol,
             "protocol_mismatch": art.protocol_mismatch,
+            "declared_above_floor": art.declared_above_floor,
             "spec": art.spec,
             "meta": art.meta,
         }
@@ -429,11 +430,18 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     print(f"{path}  ({art.size} bytes)")
     print(f"  sha256             : {art.sha256}  (the on-chain wasm hash)")
     declared = "absent" if art.declared_protocol is None else str(art.declared_protocol)
-    flag = (
-        "  MISMATCH: the declared protocol is not the floor the imports require"
-        if art.protocol_mismatch
-        else ""
-    )
+    # The two directions read differently (ruling: final review I1). BELOW the
+    # floor is the dishonest declaration -- it could deploy and never run --
+    # and keeps the shouted marker; ABOVE is what `--target-protocol N` builds
+    # on purpose, so it gets an informational note instead.
+    if art.protocol_mismatch:
+        flag = "  MISMATCH: the declared protocol is BELOW the floor its imports require"
+    elif art.declared_above_floor:
+        flag = (
+            "  declared above the import floor (a --target-protocol build, or a stale declaration)"
+        )
+    else:
+        flag = ""
     constructor_note = (
         f" (constructor gate {CONSTRUCTOR_MIN_PROTOCOL} applied)" if art.has_constructor else ""
     )
@@ -507,7 +515,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--target-protocol",
         type=int,
         metavar="N",
-        help="declare exactly protocol N; a host function gated above N is a compile error",
+        help=(
+            "declare exactly protocol N; a host function gated above N is a compile error. "
+            "N above the imports' floor is deliberate, and `inspect` notes it rather than "
+            "calling it a mismatch"
+        ),
     )
     # One tri-state flag rather than a mutually-exclusive pair: argparse wraps a
     # mutually-exclusive group differently on Python 3.13, which would make the

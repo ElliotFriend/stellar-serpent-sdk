@@ -16,7 +16,9 @@ options:
   --version STR         the contract's own `version` meta entry (not serpent's
                         version)
   --target-protocol N   declare exactly protocol N; a host function gated above
-                        N is a compile error
+                        N is a compile error. N above the imports' floor is
+                        deliberate, and `inspect` notes it rather than calling
+                        it a mismatch
   --external-validate {auto,require,skip}
                         wasm-tools: auto = run it when installed (default);
                         require = fail if absent; skip = never

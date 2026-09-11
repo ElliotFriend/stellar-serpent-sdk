@@ -46,9 +46,13 @@ installs `stellar-serpent`, which the Stellar CLI discovers on PATH as the
 The stock CLI renders the `contractspecv0` interface; `inspect` reads facts
 the interface does not carry:
 
-- the **declared** protocol (the module's own `contractmetav0`/target)
-  against the **floor recomputed** from the host functions the module
-  actually imports, so a stale declaration is visible rather than trusted;
+- the **declared** protocol (the module's own `contractenvmetav0`, which the
+  stock CLI reads with `stellar contract info env-meta`) against the **floor
+  recomputed** from the host functions the module actually imports. A
+  declaration **below** that floor is a `MISMATCH`: the module claims a
+  protocol its own imports contradict, so it could deploy and never run. A
+  declaration **above** the floor is only a note, because that is exactly what
+  `build --target-protocol N` produces;
 - every host-function **import with its protocol gate**, not just the
   interface's functions;
 - the artifact's **sha256**, the same bytes `stellar contract deploy` would

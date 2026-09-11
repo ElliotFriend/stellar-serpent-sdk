@@ -102,7 +102,12 @@ def test_a_gated_import_recomputes_its_gate() -> None:
 
 
 def test_a_mismatch_is_reported() -> None:
-    """The same module, with a contractenvmetav0 declaring 20 spliced in."""
+    """The same module, with a contractenvmetav0 declaring 20 spliced in.
+
+    20 is BELOW the 21+ gate the single import carries, which is the direction
+    `protocol_mismatch` reports (ruling: final review I1): the module claims a
+    protocol its own imports contradict.
+    """
     from serpent.spec import build_env_meta
 
     gated = _gated_witness()
@@ -115,6 +120,27 @@ def test_a_mismatch_is_reported() -> None:
     art = inspect_artifact(wasm)
     assert art.declared_protocol == 20 and art.recomputed_protocol == gated.min_protocol
     assert art.protocol_mismatch
+    assert not art.declared_above_floor
+
+
+def test_a_declaration_above_the_floor_is_not_a_mismatch() -> None:
+    """An UNGATED import floors at BASE_PROTOCOL (20); a contractenvmetav0
+    declaring 28 over it is what `build --target-protocol 28` produces, so it
+    is `declared_above_floor` and NOT `protocol_mismatch` (final review I1)."""
+    from serpent._host import BASE_PROTOCOL
+    from serpent.spec import build_env_meta
+
+    ungated = next(fn for fn in HOST_FUNCTIONS if fn.min_protocol is None)
+    wasm = _module_importing(
+        ungated.module,
+        ungated.export,
+        params=len(ungated.arg_types),
+        env_meta=build_env_meta(28),
+    )
+    art = inspect_artifact(wasm)
+    assert art.declared_protocol == 28 and art.recomputed_protocol == BASE_PROTOCOL == 20
+    assert art.declared_above_floor
+    assert not art.protocol_mismatch
 
 
 def test_not_a_wasm_module_is_malformed() -> None:

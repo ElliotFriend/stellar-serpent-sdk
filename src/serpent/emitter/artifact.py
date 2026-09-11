@@ -4,7 +4,8 @@ The facts `stellar contract info` cannot know, because they are serpent's:
 the host-function IMPORTS resolved to their pinned names and protocol gates,
 the DECLARED protocol (out of `contractenvmetav0`) beside the floor RECOMPUTED
 from those imports plus the constructor gate (rulings D6/D9) -- the
-honest-declaration check -- and the spec/meta entries by name. The interface
+honest-declaration check, which shouts only when the declaration is BELOW
+that floor -- and the spec/meta entries by name. The interface
 itself is deliberately NOT rendered here; the stock CLI already does that
 from the same section (spec §10's drift rule).
 
@@ -68,6 +69,16 @@ class Import:
 
 @dataclass(frozen=True)
 class Artifact:
+    """What one built module says about itself.
+
+    The two protocol predicates are DIRECTIONAL (ruling: final review I1,
+    amending dossier E3). `protocol_mismatch` is the below-floor check -- the
+    artifact declares a protocol its own imports contradict, which is the
+    dishonest declaration worth shouting about. `declared_above_floor` is the
+    other direction, which `build --target-protocol N` produces by design, so
+    it is informational rather than an error.
+    """
+
     sha256: str
     size: int
     sections: tuple[Section, ...]
@@ -81,9 +92,19 @@ class Artifact:
 
     @property
     def protocol_mismatch(self) -> bool:
+        """The artifact declares a protocol BELOW the floor its own imports
+        require -- an under-declaration that could deploy and never run."""
         return (
-            self.declared_protocol is not None
-            and self.declared_protocol != self.recomputed_protocol
+            self.declared_protocol is not None and self.declared_protocol < self.recomputed_protocol
+        )
+
+    @property
+    def declared_above_floor(self) -> bool:
+        """The artifact declares a protocol ABOVE the floor its own imports
+        require -- what `build --target-protocol N` produces by design, or a
+        stale declaration. Informational, never an error."""
+        return (
+            self.declared_protocol is not None and self.declared_protocol > self.recomputed_protocol
         )
 
     @property

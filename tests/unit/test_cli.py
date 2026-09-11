@@ -463,7 +463,69 @@ def test_inspect_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
     facts = json.loads(capsys.readouterr().out)
     assert facts["declared_protocol"] == facts["recomputed_protocol"] == 20
     assert facts["protocol_mismatch"] is False
+    assert facts["declared_above_floor"] is False
     assert isinstance(facts["imports"], list) and facts["imports"][0]["host_fn"]
+
+
+def test_inspect_prints_the_mismatch_marker_for_a_below_floor_declaration(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The marker rendered through `main`, not just the predicate (T3-1).
+
+    The artifact is hand-made: one 21+-gated import under a contractenvmetav0
+    declaring 20, which no `build` can produce -- the compiler raises the floor
+    instead. `inspect` must shout, because such a module would deploy and then
+    fail on a host that honours the declaration.
+    """
+    from serpent.spec import build_env_meta
+    from tests.unit.test_artifact import _gated_witness, _module_importing
+
+    gated = _gated_witness()
+    art = tmp_path / "under.wasm"
+    art.write_bytes(
+        _module_importing(
+            gated.module,
+            gated.export,
+            params=len(gated.arg_types),
+            env_meta=build_env_meta(20),
+        )
+    )
+    assert cli.main(["inspect", str(art)]) == cli.EXIT_OK
+    text = capsys.readouterr().out
+    assert "MISMATCH: the declared protocol is BELOW the floor its imports require" in text
+    assert "declared protocol  : 20" in text
+
+
+def test_inspect_notes_a_target_protocol_build_instead_of_shouting(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--target-protocol 28` declares above the import floor ON PURPOSE, so
+    `inspect` prints an informational note and never the word MISMATCH (final
+    review I1). Both booleans are carried in `--json`."""
+    out = tmp_path / "c28.wasm"
+    build = [
+        "build",
+        str(EXAMPLES / "counter.py"),
+        "--out",
+        str(out),
+        "--target-protocol",
+        "28",
+        "--quiet",
+    ]
+    assert cli.main(build) == cli.EXIT_OK
+    assert cli.main(["inspect", str(out)]) == cli.EXIT_OK
+    text = capsys.readouterr().out
+    assert "MISMATCH" not in text
+    assert "declared protocol  : 28" in text
+    assert (
+        "declared above the import floor (a --target-protocol build, or a stale declaration)"
+        in text
+    )
+
+    assert cli.main(["inspect", str(out), "--json"]) == cli.EXIT_OK
+    facts = json.loads(capsys.readouterr().out)
+    assert facts["protocol_mismatch"] is False
+    assert facts["declared_above_floor"] is True
 
 
 def test_inspect_wat_appends_a_disassembly(
