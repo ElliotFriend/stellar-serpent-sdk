@@ -12,7 +12,9 @@ wrong mini host would make a green emitter suite meaningless:
   hand-written expectation, so the harness cannot quietly disagree with the
   oracle the compiler is proven against (A9: extending the supported set
   extends these tests, which is why the rank matrix is generated from one
-  table).
+  table). Since M1-G (ruling E8) the BINDING refuses two non-object words as
+  the real host does, so the ladder differential is proven on the store's
+  `compare` -- what `obj_cmp` delegates to once an operand is an object word.
 * **Small-vs-object forms.** An `obj_cmp` argument is any `Val` word: a small
   symbol, a small integer, or an object handle. Decoding the small forms is the
   whole content of the callback, and every mixed pair below would pass if the
@@ -155,8 +157,8 @@ def test_val_word_uses_the_small_form_when_the_value_fits() -> None:
 # --- obj_cmp -----------------------------------------------------------------
 
 
-def test_obj_cmp_agrees_with_val_cmp_on_every_supported_rank_pair() -> None:
-    """A9: `obj_cmp` IS `val_cmp` over decoded operands, at every rank pair.
+def test_compare_agrees_with_val_cmp_on_every_supported_rank_pair() -> None:
+    """A9: the delegation IS `val_cmp` over decoded operands, at every rank pair.
 
     Every expectation is computed by the oracle, never written out, so this
     test grows with `_LADDER` -- which is what "extending the supported set
@@ -168,7 +170,7 @@ def test_obj_cmp_agrees_with_val_cmp_on_every_supported_rank_pair() -> None:
     disagreements = []
     for left in _EVERY_REPRESENTATIVE:
         for right in _EVERY_REPRESENTATIVE:
-            answer = val.as_i64(store.obj_cmp(store.val_word(left), store.val_word(right)))
+            answer = store.compare(store.val_word(left), store.val_word(right))
             expected = _sign(val_cmp(left, right))
             if answer != expected:
                 disagreements.append((repr(left), repr(right), answer, expected))
@@ -180,15 +182,15 @@ def test_obj_cmp_agrees_with_val_cmp_on_every_supported_rank_pair() -> None:
     [(low, high) for low, high in _LADDER],
     ids=[type(low).__name__ for low, _high in _LADDER],
 )
-def test_obj_cmp_orders_within_each_rank(low: ChainValue, high: ChainValue) -> None:
+def test_compare_orders_within_each_rank(low: ChainValue, high: ChainValue) -> None:
     """The within-rank payload compare, stated as an ordering rather than as
     agreement -- a `val_cmp` that answered 0 for every pair would satisfy the
     agreement test above and nothing here."""
     store = FullHost()
     lo, hi = store.val_word(low), store.val_word(high)
-    assert val.as_i64(store.obj_cmp(lo, hi)) == -1
-    assert val.as_i64(store.obj_cmp(hi, lo)) == 1
-    assert val.as_i64(store.obj_cmp(lo, lo)) == 0
+    assert store.compare(lo, hi) == -1
+    assert store.compare(hi, lo) == 1
+    assert store.compare(lo, lo) == 0
 
 
 def test_obj_cmp_decodes_a_small_operand_against_an_object_operand() -> None:
@@ -221,7 +223,7 @@ def test_obj_cmp_compares_a_small_symbol_against_a_symbol_object() -> None:
     assert val.as_i64(store.obj_cmp(wide, small)) == -1
 
 
-def test_obj_cmp_gives_the_tier1_ascii_answer_for_underscore_versus_A() -> None:
+def test_compare_gives_the_tier1_ascii_answer_for_underscore_versus_A() -> None:
     """`Symbol("_") > Symbol("A")` -- the tier-1 ASCII pin, deliberately.
 
     THE top sub-plan D/F differential vector (dossier D.4,
@@ -241,8 +243,8 @@ def test_obj_cmp_gives_the_tier1_ascii_answer_for_underscore_versus_A() -> None:
     underscore = store.val_word(Symbol("_"))
     letter = store.val_word(Symbol("A"))
     assert val.symbol_char_code("_") < val.symbol_char_code("A")  # the 6-bit codes disagree
-    assert val.as_i64(store.obj_cmp(underscore, letter)) == 1
-    assert val.as_i64(store.obj_cmp(letter, underscore)) == -1
+    assert store.compare(underscore, letter) == 1
+    assert store.compare(letter, underscore) == -1
 
 
 def test_obj_cmp_orders_a_vec_against_a_scalar_by_rank_alone() -> None:
@@ -273,13 +275,13 @@ def test_obj_cmp_refuses_to_order_two_vecs() -> None:
     [val.VOID_VAL, val.error_val(7), val.pack_small_u64(1, val.TAG_U256_SMALL)],
     ids=["void", "error", "u256_small"],
 )
-def test_obj_cmp_names_a_tag_tier1_has_no_type_for(word: int) -> None:
+def test_compare_names_a_tag_tier1_has_no_type_for(word: int) -> None:
     """`Void`, `Error` and the 256-bit family have no `serpent.types` class, so
     there is no oracle answer to delegate to -- and the harness says so loudly
     instead of guessing (A9)."""
     store = FullHost()
     with pytest.raises(AssertionError, match="no tier-1 chain type"):
-        store.obj_cmp(word, word)
+        store.compare(word, word)
 
 
 # --- storage -----------------------------------------------------------------

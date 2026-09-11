@@ -102,11 +102,11 @@ side is an object and delegates every mixed pair to `obj_cmp`.
   the `then` arm of the object-tag guard, and the `else` arm is the guest-side
   answer -- `i64.ne` on the two words for `==`/`!=`, a call to the
   `symsmall_cmp` runtime part for the four orderings.
-* **Behaviourally**, under a `FullHost` subclass whose `obj_cmp` refuses two
-  non-object words the way the real host does. That host is defined HERE, not
-  in `tests/harness`: E1's mini host is a model of tier 1 on purpose, and
-  making it strict would change what every other tier-2a test is asserting.
-  Task 4's real-host leg is the proof that outranks all of this.
+* **Behaviourally**, under a host whose `obj_cmp` refuses two non-object words
+  the way the real host does. The mock is strict by default since M1-G (ruling
+  E8), so the behavioural pins run under plain `FullHost`; `RoutingProbeHost`
+  only adds the Void answer. Task 4's real-host leg is the proof that outranks
+  all of this.
 """
 
 from __future__ import annotations
@@ -122,7 +122,6 @@ from serpent.emitter import BuildResult, build_wasm, lower
 from serpent.emitter.printer import disassemble
 from serpent.types import Symbol
 from tests.harness import engine
-from tests.harness.errors import HostTrap
 from tests.harness.hostfns import FullHost
 
 # --- the contract under test -------------------------------------------------
@@ -172,35 +171,11 @@ def built() -> BuildResult:
     return build_wasm(compile_module(_SOURCE, "contracts/symbol_compare.py"))
 
 
-# --- the strict host: `obj_cmp` as the real host implements it ----------------
+# --- the host: `FullHost`, strict since M1-G (ruling E8) ----------------------
 
 
-class StrictObjCmpHost(FullHost):
-    """`FullHost`, except that `obj_cmp` refuses two non-object words.
-
-    That refusal IS the bug this module is about (review B1). The real host's
-    `obj_cmp` answers `Error(Value, UnexpectedType)` -- "two non-object args to
-    obj_cmp" -- which the VM turns into `Error(Context, InvalidAction)`, i.e. a
-    trap with no error `Val` a client could classify, which is why `HostTrap`
-    (`tests/harness/errors.py`: an env.json precondition violated) is the right
-    class here and `HostError` is not.
-
-    A subclass rather than a flag on `tests/harness`: the mini host models
-    tier 1 by construction (E1), and tightening it for everyone would change
-    what every other tier-2a assertion means.
-    """
-
-    def obj_cmp(self, left: int, right: int) -> int:
-        if not val.is_object(left) and not val.is_object(right):
-            raise HostTrap(
-                "obj_cmp: two non-object args -- the real host answers "
-                f"Error(Value, UnexpectedType) for ({left:#x}, {right:#x})"
-            )
-        return super().obj_cmp(left, right)
-
-
-class RoutingProbeHost(StrictObjCmpHost):
-    """`StrictObjCmpHost`, plus an answer for `object` against `Void`.
+class RoutingProbeHost(FullHost):
+    """`FullHost`, plus an answer for `object` against `Void`.
 
     Needed for one pin only: `Some(SymbolObject)` against `None` at type
     `Symbol | None`. The real host answers that from `ScValType` rank (`Void`
@@ -220,15 +195,15 @@ class RoutingProbeHost(StrictObjCmpHost):
         return super().obj_cmp(left, right)
 
 
-def _strict(built: BuildResult) -> tuple[StrictObjCmpHost, engine.MiniHost]:
-    """One instance of the contract, linked against the strict host."""
-    host = StrictObjCmpHost()
+def _strict(built: BuildResult) -> tuple[FullHost, engine.MiniHost]:
+    """One instance of the contract, linked against the strict (default) host."""
+    host = FullHost()
     mini = engine.MiniHost(built.wasm, imports=host.bindings())
     host.attach(mini)
     return host, mini
 
 
-def _call(host: StrictObjCmpHost, mini: engine.MiniHost, method: str, a: int, b: int) -> bool:
+def _call(host: FullHost, mini: engine.MiniHost, method: str, a: int, b: int) -> bool:
     """One invocation; asserts the answer is a Bool `Val` and that no `obj_cmp`
     happened -- the whole point, since the real host refuses that call for two
     non-object words."""
@@ -597,10 +572,10 @@ def test_a_mixed_pair_still_goes_to_the_host(built: BuildResult) -> None:
     So the guard's `then` arm is not a leftover: `Compare<Val>` delegates
     every pair with an object in it to `obj_cmp`, and so does this lowering.
     The strict host permits the call here (one side IS an object), which is
-    why this pin uses `FullHost` through the same subclass rather than
-    asserting `obj_cmp` was avoided.
+    why this pin counts the `obj_cmp` calls rather than asserting the callback
+    was avoided.
     """
-    host = StrictObjCmpHost()
+    host = FullHost()
     mini = engine.MiniHost(built.wasm, imports=host.bindings())
     host.attach(mini)
     small = val.symbol_small("ab")
@@ -614,7 +589,7 @@ def test_a_mixed_pair_still_goes_to_the_host(built: BuildResult) -> None:
 def test_a_long_symbol_is_unequal_to_a_short_one_through_the_host(built: BuildResult) -> None:
     """The brief's second equality pin: `Symbol("ab")` against an 11-character
     symbol, which has no small form at all."""
-    host = StrictObjCmpHost()
+    host = FullHost()
     mini = engine.MiniHost(built.wasm, imports=host.bindings())
     host.attach(mini)
     small = val.symbol_small("ab")
@@ -636,7 +611,7 @@ def test_two_object_symbols_go_to_the_host_and_agree_with_tier_one(
     could have been diverted to `symsmall_cmp` by a wrong guard and would then
     have decoded two object HANDLES as packed bodies.
     """
-    host = StrictObjCmpHost()
+    host = FullHost()
     mini = engine.MiniHost(built.wasm, imports=host.bindings())
     host.attach(mini)
     left, right = Symbol("abcdefghijk"), Symbol("abcdefghijkl")

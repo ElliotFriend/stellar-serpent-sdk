@@ -40,8 +40,10 @@ of its own: it is `ObjectStore.compare`, which decodes both operands with
 oracle the compiler is proven against. The codec and the delegation live in
 `objects.py` (the object table is what a handle has to be read through, and the
 map key order needs the same comparison); what this module owns is the binding
-and the pin's return convention. Three consequences worth stating where the
-callback is:
+and the pin's return convention. The ONE thing it decides is a REFUSAL: two
+non-object words trap under `strict_obj_cmp` (the default, M1-G ruling E8),
+because the real host answers `Error(Value, UnexpectedType)` there rather than
+an ordering. Three consequences worth stating where the callback is:
 
 * **Small forms are decoded first.** An `obj_cmp` argument is any `Val` word --
   a `SymbolSmall` immediate, a small integer, or an object handle -- so the
@@ -165,10 +167,18 @@ class FullHost(ObjectStore):
 
     Inspection surfaces for a test: `storage` (three buckets, from
     `ObjectStore`), `events`, `auths`, `calls`, `errors`.
+
+    `strict_obj_cmp` (default True, M1-G ruling E8): `obj_cmp` refuses two
+    non-object words with `HostTrap`, as the real host does (`Error(Value,
+    UnexpectedType)`, "two non-object args to obj_cmp"); `False` reproduces the
+    pre-M1-G lax model for archaeology only.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, strict_obj_cmp: bool = True) -> None:
         super().__init__()
+        #: Whether `obj_cmp` refuses two non-object words the way the real
+        #: host does (ruling E8). See the class docstring.
+        self.strict_obj_cmp = strict_obj_cmp
         #: Every `contract_event` call, as `(topics, data)` -- `topics` the
         #: tuple of `Val` words read out of the topics vec.
         self.events: list[tuple[tuple[int, ...], int]] = []
@@ -256,8 +266,22 @@ class FullHost(ObjectStore):
         `Val`, so it is returned as the unsigned word `engine._trampoline`
         converts back (P4 -- the mask is structural, and `-1` is exactly the
         value that shows whether it ran).
+
+        The ONE thing this callback decides for itself: two non-object words
+        are REFUSED when `strict_obj_cmp` (the default, ruling E8), because
+        that is what the real host answers. Everything else delegates. The VM
+        escalates the host's `Error(Value, UnexpectedType)` to `Error(Context,
+        InvalidAction)` -- a trap with no error `Val` a client could classify
+        -- so `HostTrap` (an env.json precondition violated) is the class here
+        and `HostError` is not.
         """
         self._log("obj_cmp", left, right)
+        if self.strict_obj_cmp and not val.is_object(left) and not val.is_object(right):
+            raise HostTrap(
+                "two non-object args to obj_cmp: the real host answers Error(Value, "
+                f"UnexpectedType) for ({left:#x}, {right:#x}); the emitter must compare "
+                "small words in the guest (M1-F Task 0's guard)"
+            )
         return val.as_u64(self.compare(left, right))
 
     # -- vectors --------------------------------------------------------------
