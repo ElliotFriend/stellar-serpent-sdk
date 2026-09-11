@@ -112,12 +112,19 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   first deployment's `area` trap) and bounty_board
   `CBBIB2C6C3ULRHJTTPK7FPDU6RFHAJM2IQ5RHHWVDP4C7GXBZ5VF2FEW`; tier-3
   fixtures re-recorded; HEAD's build of each example == its deployed bytes
-  (pinned). Suite 4742 passed / 7 skipped; real_host 223 collected; all gates + the Rust
-  gate + `mkdocs build --strict` green. Carried obligations live in
+  (pinned). Post-close (2026-09-11, main b1f5b1f, signed): the real host
+  runs Wasm constructors under recording auth with non-root allowed (a
+  constructor's `require_auth()` deploys; decisions.md 2026-09-11 post-M1),
+  `RealEnv.deploy_module` exists, and `examples/guestbook.py` (Elliot's
+  Ye Olde Guestbook port) is the EIGHTH example with tier-1 and real-host
+  test files. Suite 4792 passed / 7 skipped; all gates + the Rust gate +
+  `mkdocs build --strict` green. Carried obligations live in
   `.superpowers/sdd/2026-09-10-m1g-cli-and-ship/final-review-attention.md`
-  §5 and the final review's triage (kept, like C/D/E/E2/F's).
+  §5 and §7 (the guestbook work's M2 items) and the final review's triage
+  (kept, like C/D/E/E2/F's).
 - **NEXT: M2 (reach).** Start at step 1 of the loop with a dossier that
-  ingests the C/D/E/E2/F/G attention files' M2 items (cross-contract calls,
+  ingests the C/D/E/E2/F/G attention files' M2 items (G's §5 AND §7:
+  cross-contract calls,
   crypto host fns, PRNG, deployer, TTL helpers, SEP-41 token, U256/I256;
   the tier-1 model gaps: frame rollback, TTL floors, container ordering,
   account authorizers, footprint, archival; the event-convention registry

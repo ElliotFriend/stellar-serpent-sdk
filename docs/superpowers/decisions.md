@@ -1256,3 +1256,46 @@ entry.
 - Reversal cost: the MISMATCH semantics are one predicate + wording; the
   second emitter->spec seam is one allow-list entry; the historical fixture
   is a 4 KB artifact; the rest is prose.
+
+## 2026-09-11 Post-M1 rulings: constructor auth on the real host, `deploy_module`, the eighth example
+- Context: Elliot ported the Ye Olde Guestbook (Rust) to serpent in
+  `sandbox/`; its constructor calls `admin.require_auth()`, which the
+  embedded real host refused at deploy (Error(Auth, InvalidAction)) while
+  testnet accepted it. Root cause traced in the sdk source: a Wasm
+  constructor runs as a SUB-invocation of the CreateContractV2 host
+  function, so its authorization is non-root, and `mock_all_auths()` is
+  recording mode with non-root auth DISABLED (the native `register` path
+  runs the constructor as root, which is why the sdk docs' claim holds
+  only there).
+- RULING: `serpent_host.RealEnv.register` runs the constructor under its
+  own recording manager with non-root auth allowed and restores the
+  caller's manager afterwards (on a panic too); the facade's mock-all mode
+  is `mock_all_auths_allowing_non_root_auth` (the plain variant is kept on
+  the raw module). The allow-set therefore gates INVOKES, not the deploy,
+  which is exactly the sdk's own `register` semantics. Cost if wrong: a
+  test cannot observe a constructor REFUSING auth on the real host (M2
+  item: a deploy-from-frame path; attention file §7).
+- RULING: `auths()` straight after a deploy reports the constructor's own
+  authorization (with the constructor's argument list); the
+  `_for_sequence` accumulators start at the first `invoke`. Tier 1 records
+  the constructor's auth in `recorded_auths` -- reconciling the two is the
+  M2 differential runner's job, recorded rather than papered over.
+- RULING: `RealEnv.deploy_module(module, *args)` is added, and
+  `deploy(cls)` routes through it, because `deploy_source` loads its own
+  module and a decoded `@contracttype` from it can never equal the
+  caller's (dataclass equality is class-identical). `@contracttype`
+  equality stays identity-based; the fix is the API, not the value model.
+  The mixed-kind auth-args `Vec` a test spells uses
+  `serpent.types._ordering.ChainValue` as the element class, widened to
+  `type[Any]` for mypy (a Protocol is abstract to it).
+- RULING (Elliot, in session): the guestbook is promoted to the EIGHTH
+  example (`examples/guestbook.py`), tests moved to
+  `tests/unit/test_example_guestbook.py` and
+  `tests/real_host/test_example_guestbook_real.py` (per-test `real_host`
+  marks, M12), WAT golden added, docs page + nav + index row (declared
+  22), and every example inventory joined. `upgrade`/`claim_donations`
+  from the Rust original are left out until M2 has deployer and
+  cross-contract support. Google-style docstrings (Args/Returns/Raises,
+  `env`/`self` omitted) are the example convention from here.
+- Commits: 2f480b0, 028c40c, b1f5b1f (all signed). M2 items from this work:
+  `.superpowers/sdd/2026-09-10-m1g-cli-and-ship/final-review-attention.md` §7.
