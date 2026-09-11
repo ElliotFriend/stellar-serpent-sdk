@@ -11,19 +11,6 @@ One test per test in the Rust contract's `test.rs`, same names; the tier-1
 twin of this file is `test_tier1_guestbook.py`.
 
     uv run --no-sync pytest -q sandbox/test_tier2_guestbook.py
-
-## EXPECTED TO FAIL today, on purpose
-
-`RealEnv` deploys through the sdk test host's `register`, which runs the
-constructor as a SUB-invocation of the CreateContractV2 host function under
-recording auth with non-root authorization DISABLED. This constructor calls
-`admin.require_auth()`, so every deploy here traps with
-`Error(Auth, InvalidAction)` before the contract exists. The contract is fine
-(the same bytes deploy to testnet under real authorization); the gap is in
-serpent's embedded host and is journaled as an M2 item
-(`mock_all_auths_allowing_non_root_auth` in host/src/lib.rs). Every test in
-this file that deploys successfully is `xfail(strict=True)`: green would be a
-loud failure, which is the cue to delete the `constructor_auth_gap` marker.
 """
 
 from __future__ import annotations
@@ -32,24 +19,18 @@ import hashlib
 import importlib.util
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 from stellar_sdk.strkey import StrKey
 
-from serpent import U32, Address, String
+from serpent import U32, Address, String, Vec
 from serpent.env import DEFAULT_LEDGER_SEQUENCE
 from serpent.testing import RealContract, RealContractError, RealEnv, RealHostError
+from serpent.types._ordering import ChainValue
 
 pytestmark = pytest.mark.real_host
 
-#: Every test that DEPLOYS the guestbook successfully hits the gap described
-#: above, so each carries this marker; the two empty-constructor tests do not
-#: (their deploy fails on the contract's own check, before `require_auth`).
-constructor_auth_gap = pytest.mark.xfail(
-    strict=True,
-    raises=RealHostError,
-    reason="the embedded host cannot yet deploy a constructor that calls require_auth (M2)",
-)
 
 SOURCE = Path(__file__).with_name("guestbook.py")
 
@@ -88,10 +69,25 @@ LEDGER = U32(DEFAULT_LEDGER_SEQUENCE)
 def new_guestbook() -> tuple[RealEnv, RealContract]:
     """A fresh real host whose allow-set names the admin and one author, with
     the guestbook compiled from `guestbook.py`, deployed, and its constructor
-    run (message 1 is the welcome)."""
+    run (message 1 is the welcome).
+
+    `deploy_module` rather than `deploy_source`, so the `Message` values
+    `invoke` decodes are instances of THIS file's `Message` (a second load of
+    the same source would be a different class, and never compare equal)."""
     env = RealEnv(auths=(ADMIN, AUTHOR))
-    contract = env.deploy_source(SOURCE, ADMIN, HELLO_WORLD, LOREM_IPSUM)
+    contract = env.deploy_module(guestbook, ADMIN, HELLO_WORLD, LOREM_IPSUM)
     return env, contract
+
+
+#: The element class the facade gives a mixed-kind argument list. A Protocol,
+#: so mypy needs it widened before it will pass it as a `type[T]`.
+_MIXED: type[Any] = ChainValue
+
+
+def _auth(who: Address, *args: object) -> tuple[Address, Vec[Any]]:
+    """One recorded authorization: the real host records the invocation's own
+    argument list (tier 1 records `None` for a bare `require_auth()`)."""
+    return (who, Vec(_MIXED, list(args)))
 
 
 def _code(exc: pytest.ExceptionInfo[RealContractError]) -> int:
@@ -101,18 +97,16 @@ def _code(exc: pytest.ExceptionInfo[RealContractError]) -> int:
 # --- constructor -------------------------------------------------------------------
 
 
-@constructor_auth_gap
 def test_constructor() -> None:
     _env, contract = new_guestbook()
     welcome = contract.invoke("read_message", U32(1))
     assert welcome == Message(author=ADMIN, ledger=LEDGER, title=HELLO_WORLD, text=LOREM_IPSUM)
 
 
-@constructor_auth_gap
 def test_constructor_auth() -> None:
     """The host recorded the admin's authorization of the constructor call."""
     _env, contract = new_guestbook()
-    assert contract.auths() == ((ADMIN, None),)
+    assert contract.auths() == (_auth(ADMIN, ADMIN, HELLO_WORLD, LOREM_IPSUM),)
 
 
 def test_constructor_empty_title() -> None:
@@ -120,32 +114,29 @@ def test_constructor_empty_title() -> None:
     # contract code is only in the diagnostics. What a deployer sees is the trap.
     env = RealEnv(auths=(ADMIN,))
     with pytest.raises(RealHostError):
-        env.deploy_source(SOURCE, ADMIN, EMPTY, LOREM_IPSUM)
+        env.deploy_module(guestbook, ADMIN, EMPTY, LOREM_IPSUM)
 
 
 def test_constructor_empty_text() -> None:
     env = RealEnv(auths=(ADMIN,))
     with pytest.raises(RealHostError):
-        env.deploy_source(SOURCE, ADMIN, HELLO_WORLD, EMPTY)
+        env.deploy_module(guestbook, ADMIN, HELLO_WORLD, EMPTY)
 
 
 # --- write_message -----------------------------------------------------------------
 
 
-@constructor_auth_gap
 def test_write_message() -> None:
     _env, contract = new_guestbook()
     assert contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM) == U32(2)
 
 
-@constructor_auth_gap
 def test_write_message_auth() -> None:
     _env, contract = new_guestbook()
     contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
-    assert contract.auths() == ((AUTHOR, None),)  # this call's auth
+    assert contract.auths() == (_auth(AUTHOR, AUTHOR, HELLO_WORLD, LOREM_IPSUM),)  # this call's
 
 
-@constructor_auth_gap
 def test_write_message_unauthorized() -> None:
     """An address the allow-set does not name: a host trap, `Auth` class."""
     _env, contract = new_guestbook()
@@ -155,7 +146,6 @@ def test_write_message_unauthorized() -> None:
     assert exc.value.underlying is not None and exc.value.underlying[0] == "Auth"
 
 
-@constructor_auth_gap
 def test_write_message_empty_title() -> None:
     _env, contract = new_guestbook()
     with pytest.raises(RealContractError) as exc:
@@ -163,7 +153,6 @@ def test_write_message_empty_title() -> None:
     assert _code(exc) == 1  # InvalidMessage
 
 
-@constructor_auth_gap
 def test_write_message_empty_text() -> None:
     _env, contract = new_guestbook()
     with pytest.raises(RealContractError) as exc:
@@ -174,7 +163,6 @@ def test_write_message_empty_text() -> None:
 # --- read_message / read_latest -----------------------------------------------------
 
 
-@constructor_auth_gap
 def test_read_message() -> None:
     _env, contract = new_guestbook()
     contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
@@ -184,7 +172,6 @@ def test_read_message() -> None:
     assert second == Message(author=AUTHOR, ledger=LEDGER, title=HELLO_WORLD, text=LOREM_IPSUM)
 
 
-@constructor_auth_gap
 def test_read_message_non_existent_id() -> None:
     _env, contract = new_guestbook()
     with pytest.raises(RealContractError) as exc:
@@ -192,7 +179,6 @@ def test_read_message_non_existent_id() -> None:
     assert _code(exc) == 2  # NoSuchMessage
 
 
-@constructor_auth_gap
 def test_read_latest() -> None:
     _env, contract = new_guestbook()
     diff_title = String("A Different Title")
@@ -209,7 +195,6 @@ NEW_TITLE = String("Updated Hello World")
 NEW_TEXT = String("Lorem Ipsum STILL ain't got nothin' on me!")
 
 
-@constructor_auth_gap
 def test_edit_message() -> None:
     _env, contract = new_guestbook()
     message_id = contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
@@ -218,16 +203,15 @@ def test_edit_message() -> None:
     assert edited == Message(author=AUTHOR, ledger=LEDGER, title=NEW_TITLE, text=NEW_TEXT)
 
 
-@constructor_auth_gap
 def test_edit_message_auth() -> None:
     """`edit_message` requires the ORIGINAL author's auth (read back from storage)."""
     _env, contract = new_guestbook()
     message_id = contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
     contract.invoke("edit_message", message_id, NEW_TITLE, NEW_TEXT)
-    assert contract.auths() == ((AUTHOR, None),)  # the edit's auth (auths() is per call)
+    # The edit's auth, with the edit's args: auths() is per call.
+    assert contract.auths() == (_auth(AUTHOR, message_id, NEW_TITLE, NEW_TEXT),)
 
 
-@constructor_auth_gap
 def test_edit_message_bad_message_id() -> None:
     _env, contract = new_guestbook()
     with pytest.raises(RealContractError) as exc:
@@ -235,7 +219,6 @@ def test_edit_message_bad_message_id() -> None:
     assert _code(exc) == 2  # NoSuchMessage
 
 
-@constructor_auth_gap
 def test_edit_message_empty_title() -> None:
     """An empty title keeps the old title; only the text changes."""
     _env, contract = new_guestbook()
@@ -245,7 +228,6 @@ def test_edit_message_empty_title() -> None:
     assert edited == Message(author=AUTHOR, ledger=LEDGER, title=HELLO_WORLD, text=NEW_TEXT)
 
 
-@constructor_auth_gap
 def test_edit_message_empty_text() -> None:
     _env, contract = new_guestbook()
     message_id = contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
@@ -254,7 +236,6 @@ def test_edit_message_empty_text() -> None:
     assert edited == Message(author=AUTHOR, ledger=LEDGER, title=NEW_TITLE, text=LOREM_IPSUM)
 
 
-@constructor_auth_gap
 def test_edit_message_empty_title_and_text() -> None:
     _env, contract = new_guestbook()
     message_id = contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
