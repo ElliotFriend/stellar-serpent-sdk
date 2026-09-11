@@ -1,16 +1,23 @@
-"""Guestbook: Can we reinvent the wheel?"""
+"""Guestbook: Can we reinvent the wheel?
+
+A duplicate smart contract from the Ye Olde Guestbook demo project.
+
+Original source: https://github.com/ElliotFriend/ye-olde-guestbook
+"""
 
 from serpent import (
     U32,
     Address,
     Bool,
+    ContractUnion,
     Env,
     String,
-    Symbol,
     contract,
     contracterror,
     contracttype,
+    contractunion,
     errorcode,
+    variant,
 )
 
 
@@ -22,13 +29,13 @@ class Message:
     text: String
 
 
-@contracttype
-class MessageKey:
-    message: U32
+@contractunion
+class DataKey(ContractUnion):
+    """Storage keys"""
 
-
-ADMIN = Symbol("ADMIN")
-COUNT = Symbol("COUNT")
+    Admin = variant()
+    MessageCount = variant()
+    Message = variant(U32)
 
 
 @contracterror
@@ -40,17 +47,17 @@ class Error:
 
 
 def save_message(env: Env, message: Message) -> U32:
-    message_count = env.storage().instance().get(COUNT, U32, default=0)
+    message_count = env.storage().instance().get(DataKey.MessageCount, U32, default=0)
     message_count += U32(1)
 
-    env.storage().persistent().set(MessageKey(message=message_count), message)
-    env.storage().instance().set(COUNT, message_count)
+    env.storage().persistent().set(DataKey.Message(message_count), message)
+    env.storage().instance().set(DataKey.MessageCount, message_count)
 
     return message_count
 
 
 def get_message(env: Env, message_id: U32) -> Message:
-    message_key = MessageKey(message=message_id)
+    message_key = DataKey.Message(message_id)
     if env.storage().persistent().has(message_key) != Bool(True):
         raise Error.NoSuchMessage
 
@@ -76,7 +83,8 @@ class GuestbookContract:
         if title == String("") or text == String(""):
             raise Error.InvalidMessage
 
-        env.storage().instance().set(ADMIN, admin)
+        admin.require_auth()
+        env.storage().instance().set(DataKey.Admin, admin)
 
         first_message = Message(
             author=admin,
@@ -100,6 +108,7 @@ class GuestbookContract:
         """
         if title == String("") or text == String(""):
             raise Error.InvalidMessage
+        author.require_auth()
 
         new_message = Message(
             author=author,
@@ -136,7 +145,7 @@ class GuestbookContract:
             text=text if text != String("") else message.text,
         )
 
-        env.storage().persistent().set(MessageKey(message=message_id), mod_message)
+        env.storage().persistent().set(DataKey.Message(message_id), mod_message)
 
     def read_message(self, env: Env, message_id: U32) -> Message:
         """Read a specified message from the guestbook.
@@ -151,5 +160,5 @@ class GuestbookContract:
 
     def read_latest(self, env: Env) -> Message:
         """Read the latest message to be sent to the guestbook."""
-        latest_id = env.storage().instance().get(COUNT, U32)
+        latest_id = env.storage().instance().get(DataKey.MessageCount, U32)
         return get_message(env, latest_id)
