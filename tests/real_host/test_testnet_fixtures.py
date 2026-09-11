@@ -35,6 +35,7 @@ from stellar_sdk.strkey import StrKey
 from stellar_sdk.xdr import SCVal
 
 from serpent import Address
+from serpent.emitter import build_file
 from serpent.env import Env, deploy
 from serpent.testing import DEFAULT_PROTOCOL, RealContractError, RealEnv, RealHostError, testnet
 from serpent.testing._scval import decode_loose, from_xdr
@@ -426,3 +427,17 @@ def test_the_real_host_and_tier_1_agree_with_testnet(
         )
         assert real_answer == testnet_answer
         assert tier1_answer == fixture_set.divergences[fixture.method]
+
+
+@pytest.mark.parametrize("fixture_set", SETS, ids=lambda s: s.name)
+def test_this_trees_build_equals_the_deployed_bytes(fixture_set: FixtureSet) -> None:
+    """Retired B1: since the M1-end deployment (2026-09-11, docs/deployments.md)
+    HEAD's build of each deployed example IS the deployed artifact, byte for
+    byte -- Phase 0's fidelity rule, now for every fixture set. Written by the
+    controller AFTER the final review's fix wave so it pins the bytes that
+    actually ship; from here on, an edit that moves an emitted byte of
+    `examples/shapes.py` or `examples/bounty_board.py` fails here and is a
+    redeploy decision, not a fix."""
+    built = build_file(fixture_set.example).wasm
+    assert hashlib.sha256(built).hexdigest() == fixture_set.deployed_sha256
+    assert built == fixture_set.deployed.read_bytes()
