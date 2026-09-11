@@ -122,14 +122,23 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
   `.superpowers/sdd/2026-09-10-m1g-cli-and-ship/final-review-attention.md`
   §5 and §7 (the guestbook work's M2 items) and the final review's triage
   (kept, like C/D/E/E2/F's).
-- **NEXT: M2 (reach).** Start at step 1 of the loop with a dossier that
-  ingests the C/D/E/E2/F/G attention files' M2 items (G's §5 AND §7:
-  cross-contract calls,
-  crypto host fns, PRNG, deployer, TTL helpers, SEP-41 token, U256/I256;
-  the tier-1 model gaps: frame rollback, TTL floors, container ordering,
-  account authorizers, footprint, archival; the event-convention registry
-  item). M3 items (wheels, PyPI name, plugin topic, maturin pin) are
-  listed in decisions.md 2026-09-11.
+- **M2 (reach) STARTED 2026-09-11** under the extended autonomy grant
+  (decisions.md 2026-09-11 "M2 roadmap decomposition"). The decomposition
+  is `docs/superpowers/plans/2026-09-11-m2-roadmap.md`: A the leaf host
+  surface (current_contract_address, ledger accessors, the five non-ZK
+  crypto functions, PRNG, env.logs(), String/Bytes conversion, the ninth
+  example) -> B cross-contract calls + deployer + token client + tier-1
+  frame rollback + the SEP-41 example -> C U256/I256 + time algebra + typed
+  container reads -> D tier-1 fidelity + testing ergonomics -> E language
+  sugar + the registry pass + the env package promotion + docs, ending in
+  the user-approved M2 testnet deployment (hard stop). **M2-A is in
+  flight**: ledger `.superpowers/sdd/2026-09-11-m2a-env-reach/progress.md`
+  (dossier -> plan -> Opus plan review -> SDD -> Fable review -> merge).
+  M3 items (wheels, PyPI name, plugin topic, maturin pin) are listed in
+  decisions.md 2026-09-11. Signing during the M2 run: `commit.gpgsign` is
+  locally false and `.git/hooks/post-commit` logs every unsigned sha; the
+  M1-G run was NOT re-signed either, so the single re-sign base is still
+  11de4bd and v0.1.0 must be re-pointed afterwards.
 
 ## How each sub-plan runs (the loop that built A, B, C)
 
@@ -152,11 +161,13 @@ harness code). The M1 roadmap: `docs/superpowers/plans/*m1-roadmap*`.
    `final-review-attention.md` of accumulated risk-register items → one fix
    wave → local merge to main. No pushes to remotes unless Elliot asks.
 
-## Standing autonomy (granted by Elliot, in force through M1)
+## Standing autonomy (granted by Elliot, in force through M1; EXTENDED to M2 on 2026-09-11)
 
 "If things are progressing smoothly, keep going through the rest of the M1
 phases. If there's a judgment call to make, make a decision, but keep a
-record of those decisions for review later."
+record of those decisions for review later." Extended 2026-09-11: "begin the
+work on M2 capabilities ... the same kind of autonomy you were given for M1
+tasks. use subagents (properly scope the models), review phases, etc."
 
 - Judgment calls with lasting consequence →
   `docs/superpowers/decisions.md` (committed; entry format is in the file).

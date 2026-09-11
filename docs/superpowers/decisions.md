@@ -1299,3 +1299,41 @@ entry.
   `env`/`self` omitted) are the example convention from here.
 - Commits: 2f480b0, 028c40c, b1f5b1f (all signed). M2 items from this work:
   `.superpowers/sdd/2026-09-10-m1g-cli-and-ship/final-review-attention.md` §7.
+
+## 2026-09-11 M2 roadmap decomposition and the M2 run's mechanics
+- Context: Elliot extended the standing autonomy grant to M2 in session
+  ("begin the work on M2 capabilities ... the same kind of autonomy you were
+  given for M1 tasks. use subagents (properly scope the models), review
+  phases, etc."), stepping away with 1Password signing expected to be
+  unavailable. M2's inputs are spec §11's one-sentence definition plus the
+  M2 items every M1 attention file carried forward; nothing had decomposed
+  them into sub-plans.
+- Decision: M2 is five sub-plans, ordered A -> B -> C -> D -> E, recorded in
+  `docs/superpowers/plans/2026-09-11-m2-roadmap.md`: A the leaf host surface
+  (`current_contract_address`, the three ledger accessors, the five non-ZK
+  crypto functions, PRNG, `env.logs()`, String/Bytes conversion, the ninth
+  example); B cross-contract calls + deployer + token client + tier-1 frame
+  rollback + the SEP-41 example; C U256/I256 + time algebra + typed
+  container reads; D tier-1 fidelity + testing ergonomics; E language sugar
+  + the registry pass + the env package promotion + docs, ending in a
+  user-approved testnet deployment (hard stop). Frame rollback moves INTO B
+  (it is load-bearing for `try_call`), the ZK crypto families (bls12-381,
+  bn254, poseidon) are M3-or-later, and the M2-A plan review is asked to
+  critique the decomposition itself since Elliot is not here to approve it.
+- Also decided (run mechanics): `commit.gpgsign` is set `false` in the
+  repository's local git config for the run and `.git/hooks/post-commit`
+  appends every commit lacking a `gpgsig` header to
+  `.git/unsigned-commits.log`; both are removed at the end of the run
+  (`git config --local --unset commit.gpgsign && rm .git/hooks/post-commit`).
+  Implementers are still briefed to pass `--no-gpg-sign` (belt and braces).
+  The M1-G run was found NOT yet re-signed (903e16b..083c699 have no gpgsig;
+  v0.1.0 sits on 083c699), so the re-sign base stays 11de4bd and one rebase
+  covers M1-G and all of M2; v0.1.0 must be re-pointed afterwards.
+- Why: A before B because B consumes A's `current_contract_address` and
+  `sha256` and B is the headline risk; C independent of B (SEP-41 uses
+  I128); a leaf-surface sub-plan first repeats the A/B/D pattern that
+  worked in M1 (host inventory -> frontend -> emitter -> tier 1 -> real
+  host) on a bounded slice before the deep control-flow work.
+- Reversal cost: the roadmap is prose until B's dossier is written; moving
+  an item between sub-plans is a table edit. The signing mechanics are two
+  git-local settings.
