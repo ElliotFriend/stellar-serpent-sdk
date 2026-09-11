@@ -140,10 +140,10 @@ def test_every_example_compiles(path: Path) -> None:
 
     The declared protocol is the COMPUTED floor over both kinds of gate: no
     example reaches a gated host function, so the import floor is 20 for the
-    examples with no `__init__` -- but `errors.py`, `allowance_token.py`, and
-    `bounty_board.py` each have one, and `__constructor` is a capability the
-    host only honors from protocol 22 (spec SS 13 / CAP-0058), so those three
-    declare 22. The split is derived from the module's own IR rather than
+    examples with no `__init__` -- but `errors.py`, `allowance_token.py`,
+    `bounty_board.py`, and `guestbook.py` each have one, and `__constructor` is
+    a capability the host only honors from protocol 22 (spec SS 13 / CAP-0058),
+    so those four declare 22. The split is derived from the module's own IR rather than
     listed by name, so adding an `__init__` to an example cannot silently
     invalidate the pin.
     """
@@ -151,7 +151,9 @@ def test_every_example_compiles(path: Path) -> None:
     contract = compiled.ir.contract
     assert contract is not None
     has_constructor = any(m.kind is FuncKind.CONSTRUCTOR for m in contract.methods)
-    assert has_constructor == (path.stem in {"errors", "allowance_token", "bounty_board"}), (
+    assert has_constructor == (
+        path.stem in {"errors", "allowance_token", "bounty_board", "guestbook"}
+    ), (
         path.stem,
         has_constructor,
     )

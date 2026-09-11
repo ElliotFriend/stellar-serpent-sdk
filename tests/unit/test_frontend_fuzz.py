@@ -1057,7 +1057,8 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
     contract) -- each joined this corpus automatically, which is the intended
     behavior, and updating these lines is how it gets acknowledged. M1-G Task 4
     added `examples/bounty_board.py` (the seventh: every M1 surface in one
-    contract).
+    contract). `examples/guestbook.py` (the eighth, a port of the Ye Olde
+    Guestbook demo) was promoted from `sandbox/` after the M1 close.
     """
     must_reject = [name for name, _ in CORPUS if name.startswith("must_reject/")]
     fixtures = [name for name, _ in CORPUS if name.startswith("fixtures/")]
@@ -1080,6 +1081,7 @@ def test_the_corpus_is_the_whole_fixture_inventory() -> None:
         "examples/counter.py",
         "examples/errors.py",
         "examples/events.py",
+        "examples/guestbook.py",
         "examples/shapes.py",
         "examples/structs.py",
     ]

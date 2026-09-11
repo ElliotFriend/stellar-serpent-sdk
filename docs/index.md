@@ -31,7 +31,7 @@ floors, container ordering, account authorizers, archival -- are listed in
 
 | | |
 |---|---|
-| The seven examples | [Examples](examples/index.md), rendered from `examples/` |
+| The eight examples | [Examples](examples/index.md), rendered from `examples/` |
 | What compiles and what rejects | [The subset](subset.md), generated from the executable `must_reject/` spec |
 | The CLI | [CLI reference](cli.md) |
 | The public names | [API reference](api.md) |

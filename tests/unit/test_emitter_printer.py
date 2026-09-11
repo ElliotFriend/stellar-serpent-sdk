@@ -392,6 +392,7 @@ FIXTURE_SOURCES: tuple[tuple[str, str], ...] = (
     ("examples/allowance_token.py", "allowance_token"),
     ("examples/shapes.py", "shapes"),
     ("examples/bounty_board.py", "bounty_board"),
+    ("examples/guestbook.py", "guestbook"),
 )
 
 #: The golden stems, derived from the pairs above -- the name every test here

@@ -1,21 +1,19 @@
-"""Ye Olde Guestbook at tier 1: the contract's methods run as plain Python.
+"""Ye Olde Guestbook (`examples/guestbook.py`) at tier 1: the contract's
+methods run as plain Python.
 
 `serpent.env.Env` is an in-memory MODEL of the host (storage, ledger, auth
 recording); `deploy` runs `__init__` for real. No WASM is built or run here,
 so a green test is evidence about the model, not the chain -- the real-host
-twin of this file is `test_tier2_guestbook.py`.
+twin of this file is `tests/real_host/test_example_guestbook_real.py`.
 
-One test per test in the Rust contract's `test.rs`, same names.
+One test per test in the original Rust contract's `test.rs`, same names.
 
-    uv run --no-sync pytest -q sandbox/test_tier1_guestbook.py
+    uv run --no-sync pytest -q tests/unit/test_example_guestbook.py
 """
 
 from __future__ import annotations
 
 import hashlib
-import importlib.util
-from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -23,18 +21,10 @@ from stellar_sdk.strkey import StrKey
 
 from serpent import U32, Address, String
 from serpent.env import AuthorizationFailed, ConstructorFailed, Env, deploy
+from tests.unit.test_emitter_end_to_end import EXAMPLE_GUESTBOOK
+from tests.unit.test_examples import load_example
 
-
-def _load_guestbook() -> ModuleType:
-    source = Path(__file__).with_name("guestbook.py")
-    spec = importlib.util.spec_from_file_location("sandbox_guestbook", source)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-guestbook = _load_guestbook()
+guestbook = load_example(EXAMPLE_GUESTBOOK)
 Message = guestbook.Message
 Error = guestbook.Error
 

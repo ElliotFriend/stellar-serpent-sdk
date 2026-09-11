@@ -29,9 +29,10 @@ from serpent.env import Env, deploy
 
 A contract's methods run as plain Python against a tier-1 `Env`; the real host
 is one import away (`serpent.testing.RealEnv`, `docs/testing.md`). The worked
-contracts are `examples/` -- seven of them, each compiled, run at tier 1, under
+contracts are `examples/` -- eight of them, each compiled, run at tier 1, under
 the mini host, and on the real host by the test suite; `examples/bounty_board.py`
-is the one that touches every M1 surface, and it started life in this directory.
+is the one that touches every M1 surface, and it and `examples/guestbook.py`
+both started life in this directory.
 
 ## Notes
 

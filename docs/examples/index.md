@@ -1,6 +1,6 @@
 # Examples
 
-Seven contracts, each rendered here straight from its source under
+Eight contracts, each rendered here straight from its source under
 `examples/`: read the code on this site and you are reading exactly what
 `stellar serpent build` compiles and what the test suite runs.
 
@@ -13,10 +13,11 @@ Seven contracts, each rendered here straight from its source under
 | [Allowance token](allowance_token.md) | an allowance-style token, without cross-contract calls | 22 |
 | [Shapes](shapes.md) | tagged unions and int enums: one value that is one of several shapes | 20 |
 | [Bounty board](bounty_board.md) | one contract that touches every M1 authoring surface | 22 |
+| [Guestbook](guestbook.md) | a port of the Ye Olde Guestbook demo: constructor auth, per-author auth, a struct under a union key | 22 |
 
 The declared protocol is the computed floor, not a per-example setting: an
 example with an `__init__` compiles to a `__constructor`, a capability the
 host only honors from protocol 22 (spec S13, CAP-0058), so `errors`,
-`allowance_token`, and `bounty_board` declare 22 while the rest declare the
-base import floor, 20. `stellar serpent inspect` shows the same number as the
+`allowance_token`, `bounty_board`, and `guestbook` declare 22 while the rest
+declare the base import floor, 20. `stellar serpent inspect` shows the same number as the
 floor it recomputes from a built artifact's own imports.

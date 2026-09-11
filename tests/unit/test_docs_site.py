@@ -78,6 +78,7 @@ def test_the_site_builds_strictly(tmp_path: Path) -> None:
     assert done.returncode == 0, done.stderr
     assert (tmp_path / "site" / "index.html").is_file()
     assert (tmp_path / "site" / "examples" / "bounty_board" / "index.html").is_file()
+    assert (tmp_path / "site" / "examples" / "guestbook" / "index.html").is_file()
 
     # The API page is the one generated page whose COMPLETENESS nothing else
     # checks: mkdocstrings-python hides members it has no docstring for, which

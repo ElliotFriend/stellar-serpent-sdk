@@ -77,6 +77,7 @@ nav:
       - Allowance token: examples/allowance_token.md
       - Shapes: examples/shapes.md
       - Bounty board: examples/bounty_board.md
+      - Guestbook: examples/guestbook.md
   - Testing: testing.md
   - CLI reference: cli.md
   - API reference: api.md

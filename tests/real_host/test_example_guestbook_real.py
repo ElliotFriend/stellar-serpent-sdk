@@ -1,5 +1,6 @@
-"""Ye Olde Guestbook on the real host: the same source built to WASM and run by
-the embedded `soroban-env-host` (`serpent.testing.RealEnv`).
+"""Ye Olde Guestbook (`examples/guestbook.py`) on the real host: the same
+source built to WASM and run by the embedded `soroban-env-host`
+(`serpent.testing.RealEnv`).
 
 This is the first tier that is evidence about the CHAIN rather than about a
 model of it. `contract.invoke(method, *args)` decodes each result as the
@@ -7,18 +8,16 @@ method's own return annotation declares (a `Message` comes back as a
 `Message`), a contract error arrives as `RealContractError` with the member's
 `.code`, and a host refusal (an unauthorized address) as a `RealHostError`.
 
-One test per test in the Rust contract's `test.rs`, same names; the tier-1
-twin of this file is `test_tier1_guestbook.py`.
+One test per test in the original Rust contract's `test.rs`, same names; the
+tier-1 twin of this file is `tests/unit/test_example_guestbook.py`. Per-test
+`real_host` marks (M12), never a module-level `pytestmark`.
 
-    uv run --no-sync pytest -q sandbox/test_tier2_guestbook.py
+    SERPENT_REQUIRE_REAL_HOST=1 uv run --no-sync pytest -q tests/real_host/test_example_guestbook_real.py
 """
 
 from __future__ import annotations
 
 import hashlib
-import importlib.util
-from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -28,22 +27,10 @@ from serpent import U32, Address, String, Vec
 from serpent.env import DEFAULT_LEDGER_SEQUENCE
 from serpent.testing import RealContract, RealContractError, RealEnv, RealHostError
 from serpent.types._ordering import ChainValue
+from tests.unit.test_emitter_end_to_end import EXAMPLE_GUESTBOOK
+from tests.unit.test_examples import load_example
 
-pytestmark = pytest.mark.real_host
-
-
-SOURCE = Path(__file__).with_name("guestbook.py")
-
-
-def _load_guestbook() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("sandbox_guestbook", SOURCE)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-guestbook = _load_guestbook()
+guestbook = load_example(EXAMPLE_GUESTBOOK)
 Message = guestbook.Message
 
 
@@ -68,7 +55,7 @@ LEDGER = U32(DEFAULT_LEDGER_SEQUENCE)
 
 def new_guestbook() -> tuple[RealEnv, RealContract]:
     """A fresh real host whose allow-set names the admin and one author, with
-    the guestbook compiled from `guestbook.py`, deployed, and its constructor
+    the guestbook compiled from `examples/guestbook.py`, deployed, and its constructor
     run (message 1 is the welcome).
 
     `deploy_module` rather than `deploy_source`, so the `Message` values
@@ -97,18 +84,21 @@ def _code(exc: pytest.ExceptionInfo[RealContractError]) -> int:
 # --- constructor -------------------------------------------------------------------
 
 
+@pytest.mark.real_host
 def test_constructor() -> None:
     _env, contract = new_guestbook()
     welcome = contract.invoke("read_message", U32(1))
     assert welcome == Message(author=ADMIN, ledger=LEDGER, title=HELLO_WORLD, text=LOREM_IPSUM)
 
 
+@pytest.mark.real_host
 def test_constructor_auth() -> None:
     """The host recorded the admin's authorization of the constructor call."""
     _env, contract = new_guestbook()
     assert contract.auths() == (_auth(ADMIN, ADMIN, HELLO_WORLD, LOREM_IPSUM),)
 
 
+@pytest.mark.real_host
 def test_constructor_empty_title() -> None:
     # The host launders a constructor's error into a frame-level failure; the
     # contract code is only in the diagnostics. What a deployer sees is the trap.
@@ -117,6 +107,7 @@ def test_constructor_empty_title() -> None:
         env.deploy_module(guestbook, ADMIN, EMPTY, LOREM_IPSUM)
 
 
+@pytest.mark.real_host
 def test_constructor_empty_text() -> None:
     env = RealEnv(auths=(ADMIN,))
     with pytest.raises(RealHostError):
@@ -126,17 +117,20 @@ def test_constructor_empty_text() -> None:
 # --- write_message -----------------------------------------------------------------
 
 
+@pytest.mark.real_host
 def test_write_message() -> None:
     _env, contract = new_guestbook()
     assert contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM) == U32(2)
 
 
+@pytest.mark.real_host
 def test_write_message_auth() -> None:
     _env, contract = new_guestbook()
     contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
     assert contract.auths() == (_auth(AUTHOR, AUTHOR, HELLO_WORLD, LOREM_IPSUM),)  # this call's
 
 
+@pytest.mark.real_host
 def test_write_message_unauthorized() -> None:
     """An address the allow-set does not name: a host trap, `Auth` class."""
     _env, contract = new_guestbook()
@@ -146,6 +140,7 @@ def test_write_message_unauthorized() -> None:
     assert exc.value.underlying is not None and exc.value.underlying[0] == "Auth"
 
 
+@pytest.mark.real_host
 def test_write_message_empty_title() -> None:
     _env, contract = new_guestbook()
     with pytest.raises(RealContractError) as exc:
@@ -153,6 +148,7 @@ def test_write_message_empty_title() -> None:
     assert _code(exc) == 1  # InvalidMessage
 
 
+@pytest.mark.real_host
 def test_write_message_empty_text() -> None:
     _env, contract = new_guestbook()
     with pytest.raises(RealContractError) as exc:
@@ -163,6 +159,7 @@ def test_write_message_empty_text() -> None:
 # --- read_message / read_latest -----------------------------------------------------
 
 
+@pytest.mark.real_host
 def test_read_message() -> None:
     _env, contract = new_guestbook()
     contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
@@ -172,6 +169,7 @@ def test_read_message() -> None:
     assert second == Message(author=AUTHOR, ledger=LEDGER, title=HELLO_WORLD, text=LOREM_IPSUM)
 
 
+@pytest.mark.real_host
 def test_read_message_non_existent_id() -> None:
     _env, contract = new_guestbook()
     with pytest.raises(RealContractError) as exc:
@@ -179,6 +177,7 @@ def test_read_message_non_existent_id() -> None:
     assert _code(exc) == 2  # NoSuchMessage
 
 
+@pytest.mark.real_host
 def test_read_latest() -> None:
     _env, contract = new_guestbook()
     diff_title = String("A Different Title")
@@ -195,6 +194,7 @@ NEW_TITLE = String("Updated Hello World")
 NEW_TEXT = String("Lorem Ipsum STILL ain't got nothin' on me!")
 
 
+@pytest.mark.real_host
 def test_edit_message() -> None:
     _env, contract = new_guestbook()
     message_id = contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
@@ -203,6 +203,7 @@ def test_edit_message() -> None:
     assert edited == Message(author=AUTHOR, ledger=LEDGER, title=NEW_TITLE, text=NEW_TEXT)
 
 
+@pytest.mark.real_host
 def test_edit_message_auth() -> None:
     """`edit_message` requires the ORIGINAL author's auth (read back from storage)."""
     _env, contract = new_guestbook()
@@ -212,6 +213,7 @@ def test_edit_message_auth() -> None:
     assert contract.auths() == (_auth(AUTHOR, message_id, NEW_TITLE, NEW_TEXT),)
 
 
+@pytest.mark.real_host
 def test_edit_message_bad_message_id() -> None:
     _env, contract = new_guestbook()
     with pytest.raises(RealContractError) as exc:
@@ -219,6 +221,7 @@ def test_edit_message_bad_message_id() -> None:
     assert _code(exc) == 2  # NoSuchMessage
 
 
+@pytest.mark.real_host
 def test_edit_message_empty_title() -> None:
     """An empty title keeps the old title; only the text changes."""
     _env, contract = new_guestbook()
@@ -228,6 +231,7 @@ def test_edit_message_empty_title() -> None:
     assert edited == Message(author=AUTHOR, ledger=LEDGER, title=HELLO_WORLD, text=NEW_TEXT)
 
 
+@pytest.mark.real_host
 def test_edit_message_empty_text() -> None:
     _env, contract = new_guestbook()
     message_id = contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
@@ -236,6 +240,7 @@ def test_edit_message_empty_text() -> None:
     assert edited == Message(author=AUTHOR, ledger=LEDGER, title=NEW_TITLE, text=LOREM_IPSUM)
 
 
+@pytest.mark.real_host
 def test_edit_message_empty_title_and_text() -> None:
     _env, contract = new_guestbook()
     message_id = contract.invoke("write_message", AUTHOR, HELLO_WORLD, LOREM_IPSUM)
