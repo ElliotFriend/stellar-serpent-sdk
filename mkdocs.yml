@@ -1,0 +1,78 @@
+# serpent's docs site (M1-G Task 8, ruling E5). Every page that describes code
+# renders that code from its source: examples via pymdownx.snippets from
+# `examples/*.py`, the CLI reference from `tests/goldens/cli/*.help.txt`, the
+# subset page from the generated `docs/subset.md`, the API reference from the
+# package's own docstrings. `strict: true` fails the build on a broken link.
+# `docs/superpowers/` is the PLANNING record, never a page.
+site_name: serpent
+site_description: Write Soroban smart contracts in Python (experimental)
+site_url: https://elliotfriend.github.io/stellar-serpent-sdk/
+repo_url: https://github.com/ElliotFriend/stellar-serpent-sdk
+repo_name: ElliotFriend/stellar-serpent-sdk
+docs_dir: docs
+strict: true
+exclude_docs: |
+  superpowers/
+  gen_subset.py
+  __pycache__/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: teal
+      toggle:
+        icon: material/brightness-7
+        name: dark mode
+    - scheme: slate
+      primary: teal
+      toggle:
+        icon: material/brightness-4
+        name: light mode
+  features:
+    - navigation.sections
+    - navigation.footer
+    - content.code.copy
+    - toc.follow
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: false
+            show_root_heading: true
+            members_order: source
+            docstring_style: sphinx
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  # `base_path` resolves against the PROCESS working directory, not this
+  # file's location: run `mkdocs build`/`serve` from the repository root
+  # (CI and tests/unit/test_docs_site.py both do) [m19].
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - The subset: subset.md
+  - Examples:
+      - examples/index.md
+      - Counter: examples/counter.md
+      - Errors: examples/errors.md
+      - Structs: examples/structs.md
+      - Events: examples/events.md
+      - Allowance token: examples/allowance_token.md
+      - Shapes: examples/shapes.md
+      - Bounty board: examples/bounty_board.md
+  - Testing: testing.md
+  - CLI reference: cli.md
+  - API reference: api.md
+  - Deployments: deployments.md

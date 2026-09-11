@@ -28,7 +28,7 @@ so it cannot say something the compiler does not actually do.
 Every top-level class needs exactly one of @contract/@contracttype/@contracterror/@contractevent/@contractunion/@contractenum. A method's `self` must come
 first, every parameter and the return both need a chain-type
 annotation, and `__init__` compiles to the constructor. 26
-declaration-shape rules are enforced end to end; see [SPT4xxx](#spt4xxx----contract-shape-declarations) below
+declaration-shape rules are enforced end to end; see [SPT4xxx](#spt4xxx-contract-shape-declarations) below
 for the exact list.
 
 ### 1.2 Types
@@ -37,7 +37,7 @@ A bare literal with no chain type in scope is rejected (SPT3008):
 wrap the literal in a chain type, e.g. U32(5). Operators are restricted to
 same-width, same-signedness operands, and `==`/`<`/`<=`/`>`/`>=` are
 restricted to the types the on-chain value model can actually order.
-22 type rules are enforced end to end; see [SPT3xxx](#spt3xxx----types) below for the exact
+22 type rules are enforced end to end; see [SPT3xxx](#spt3xxx-types) below for the exact
 list.
 
 ### 1.3 Env API
@@ -146,7 +146,7 @@ rebind (`v = vec_push_back(v, x)`); anywhere else it is `SPT1034`.
 elsewhere: iterate a Map via map.keys()/map.values(); walk Bytes with a while loop indexed by bytes[i] up to len(b); tuples cannot be iterated; range() supports only range(stop) and range(start, stop).
 Every method proves it returns on every
 path and never reads a local before it is definitely assigned;
-5 flow rules are enforced end to end -- see [SPT1xxx](#spt1xxx----unsupported-construct) (statement/loop shape) and [SPT7xxx](#spt7xxx----flow-analysis) (return/definite-assignment/recursion) below for the exact lists.
+5 flow rules are enforced end to end -- see [SPT1xxx](#spt1xxx-unsupported-construct) (statement/loop shape) and [SPT7xxx](#spt7xxx-flow-analysis) (return/definite-assignment/recursion) below for the exact lists.
 
 ## 2. What rejects
 

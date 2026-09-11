@@ -440,21 +440,22 @@ def _band(registry: tuple[CodeEntry, ...], band: str) -> tuple[CodeEntry, ...]:
 
 
 def _anchor(band: str) -> str:
-    """GitHub-flavored-markdown heading anchor for a `### SPTNxxx -- <title>`.
+    """Heading anchor for a `### SPTNxxx -- <title>` heading.
 
-    GitHub's own slugifier lower-cases, drops everything but word characters/
-    spaces/hyphens, and replaces each space with a hyphen WITHOUT collapsing
-    the result -- so `"SPT4xxx -- contract shape (declarations)"` anchors at
-    `spt4xxx----contract-shape-declarations` (four hyphens: the space before
-    `--`, the two literal hyphens, and the space after), not at a
-    single-hyphen-collapsed guess. Matching that exactly, rather than a
-    cleaned-up approximation, is what makes the cross-reference links below
-    actually resolve when this file is viewed on GitHub.
+    `docs/subset.md` is built by `mkdocs build --strict` (M1-G Task 8), which
+    fails on any link whose target anchor does not exist; the anchor Python-
+    Markdown's `toc` extension assigns each heading is what this must match.
+    Its default `slugify` lower-cases, drops every character that is not a
+    word character, whitespace, or hyphen (so parentheses vanish with no
+    replacement), then collapses each run of the hyphens/whitespace left over
+    into a single hyphen -- so `"SPT4xxx -- contract shape (declarations)"`
+    anchors at `spt4xxx-contract-shape-declarations` (one hyphen throughout),
+    not at GitHub's own four-hyphens-uncollapsed rendering of the same title.
     """
     title = _BAND_TITLES[band]
     text = f"{band} -- {title}"
-    slug = re.sub(r"[^a-z0-9 -]", "", text.lower())
-    return slug.replace(" ", "-")
+    slug = re.sub(r"[^\w\s-]", "", text.lower()).strip()
+    return re.sub(r"[-\s]+", "-", slug)
 
 
 def _render_fixture_example(example: _FixtureExample) -> list[str]:

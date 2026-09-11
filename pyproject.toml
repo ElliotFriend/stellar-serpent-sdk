@@ -40,6 +40,13 @@ dev = [
     "stellar-sdk>=15,<16",
     "wasmtime==48.0.0",
 ]
+# The docs site (M1-G Task 8, ruling E5). A separate group so `uv sync
+# --all-groups` brings it and a plain `uv sync` does not; CI's docs job and
+# `tests/unit/test_docs_site.py` both build it with `mkdocs build --strict`.
+docs = [
+    "mkdocs-material>=9.7,<10",
+    "mkdocstrings-python>=2,<3",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
