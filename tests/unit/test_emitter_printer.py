@@ -452,9 +452,12 @@ def test_no_stale_or_missing_wasm_goldens() -> None:
 #: legitimately contains the byte 0x78 (ASCII `x`) as the low byte of the
 #: offset 120, which prints as `...\x00x\x00\x00\x00...`: the literal
 #: substring "0x" appears where an escaped `\x00` abuts that printable `x`,
-#: with no hex digit after it. `re.search` for `0x` immediately followed by a
-#: hex digit tells that data-byte coincidence apart from a real leak.
-_HEX_ADDRESS = re.compile(r"0x[0-9a-fA-F]")
+#: with no hex digit after it. `re.search` for `0x` followed by FOUR or more
+#: hex digits tells that data-byte coincidence apart from a real leak: no
+#: CPython address repr is that short (`id()` renders at least 12 hex digits on
+#: a 64-bit build), while one or two stray hex characters after an escaped byte
+#: are exactly what the data segment produces.
+_HEX_ADDRESS = re.compile(r"0x[0-9a-fA-F]{4,}")
 
 
 def test_the_wasm_goldens_have_no_identity_leaks() -> None:

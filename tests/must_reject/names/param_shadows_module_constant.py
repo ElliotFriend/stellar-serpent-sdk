@@ -2,7 +2,7 @@
 # serpent:at HERE
 # serpent:message name shadows an existing declaration
 # serpent:doc-title parameter shadows a module constant
-from serpent import Env, U32, Symbol, contract
+from serpent import Env, U32, contract
 
 LIMIT = U32(10)
 

@@ -97,10 +97,17 @@ class ContractError(Exception):
 
 
 class ArithmeticOverflow(ContractError):
+    """A checked integer operation left its type's range: the contract traps
+    rather than wrapping, so the invocation fails instead of writing a wrong
+    number."""
+
     code = CODE_ARITHMETIC_OVERFLOW
 
 
 class BadArgument(ContractError):
+    """A value handed to the host was not one the host would accept -- the
+    wrong `Val` tag, or out of range for the call. The invocation fails."""
+
     code = CODE_BAD_ARGUMENT
 
 

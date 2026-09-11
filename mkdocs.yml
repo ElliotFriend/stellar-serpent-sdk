@@ -45,6 +45,11 @@ plugins:
             show_root_heading: true
             members_order: source
             docstring_style: sphinx
+            # The public surface includes bare constants (DEFAULT_PROTOCOL,
+            # REAL_HOST_MARKER, REBUILD_COMMAND, __version__) that carry no
+            # docstring of their own; without this the API page silently drops
+            # them (final review I3).
+            show_if_no_docstring: true
 
 markdown_extensions:
   - admonition

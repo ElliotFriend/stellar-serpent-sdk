@@ -78,3 +78,22 @@ def test_the_site_builds_strictly(tmp_path: Path) -> None:
     assert done.returncode == 0, done.stderr
     assert (tmp_path / "site" / "index.html").is_file()
     assert (tmp_path / "site" / "examples" / "bounty_board" / "index.html").is_file()
+
+    # The API page is the one generated page whose COMPLETENESS nothing else
+    # checks: mkdocstrings-python hides members it has no docstring for, which
+    # once dropped six public names from a page that claims to render them all
+    # (final review I3). Assert the whole `__all__` of both public modules.
+    import re
+
+    import serpent
+    import serpent.testing
+
+    api = (tmp_path / "site" / "api" / "index.html").read_text(encoding="utf-8")
+    text = re.sub(r"<[^>]+>", " ", api)
+    missing = [
+        name
+        for module in (serpent, serpent.testing)
+        for name in module.__all__
+        if not re.search(rf"\b{re.escape(name)}\b", text)
+    ]
+    assert not missing, f"the API page renders none of: {missing}"

@@ -1153,7 +1153,7 @@ class Contract:
 #### parameter shadows a module constant (`names/param_shadows_module_constant.py`)
 
 ```python
-from serpent import Env, U32, Symbol, contract
+from serpent import Env, U32, contract
 
 LIMIT = U32(10)
 
