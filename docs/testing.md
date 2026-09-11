@@ -92,6 +92,12 @@ whatever the host's raw ScVal happens to look like. `env.deploy(cls, ...)` is
 the convenience form for a class already on `sys.modules`; `deploy_source` is
 the primary one, because an example loaded by path never is.
 
+`deploy_source` loads the module itself, so a `@contracttype` value it decodes
+is an instance of *that* load's class. A test that loaded the same file on its
+own (`load_example`) and wants `contract.invoke("read") == module.Record(...)`
+to hold deploys with `env.deploy_module(module, *constructor_args)` instead,
+which compiles `module.__file__` and decodes into the caller's classes.
+
 ## Building the extension
 
 From the repository root:

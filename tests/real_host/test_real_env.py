@@ -6,10 +6,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import pytest
 
-from serpent import U32, Address, Symbol
+from serpent import U32, Address, Symbol, Vec
 from serpent._host._codegen import PINNED_TAG
 from serpent.emitter import build_file
 from serpent.testing import (
@@ -29,6 +31,7 @@ from serpent.testing._marker import (
 )
 from serpent.testing._real import DEFAULT_MAX_ENTRY_TTL
 from serpent.testing._scval import from_xdr
+from serpent.types._ordering import ChainValue
 from tests.unit.test_emitter_end_to_end import EXAMPLE_COUNTER, EXAMPLE_ERRORS
 from tests.unit.test_examples import load_example
 
@@ -474,3 +477,85 @@ def test_a_module_with_two_contract_classes_is_refused(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="2 @contract classes"):
         RealEnv().deploy_source(two)
+
+
+# --- constructors that require auth, and whose classes a result decodes into ---
+
+_GUARDED_SOURCE = (
+    "from serpent import U32, Address, Env, Symbol, contract, contracttype\n"
+    "\n"
+    "@contracttype\n"
+    "class Record:\n"
+    "    who: Address\n"
+    "    n: U32\n"
+    "\n"
+    "@contract\n"
+    "class Guarded:\n"
+    "    def __init__(self, env: Env, admin: Address) -> None:\n"
+    "        admin.require_auth()\n"
+    '        env.storage().instance().set(Symbol("ADMIN"), admin)\n'
+    "\n"
+    "    def record(self, env: Env, who: Address) -> Record:\n"
+    "        return Record(who=who, n=U32(1))\n"
+)
+
+
+#: The element class `decode_loose` gives a MIXED-kind argument list. It is a
+#: Protocol, which mypy will not hand to `type[T]` directly (type-abstract).
+_MIXED: type[Any] = ChainValue
+
+
+def _guarded(tmp_path: Path) -> Path:
+    path = tmp_path / "guarded.py"
+    path.write_text(_GUARDED_SOURCE, encoding="utf-8")
+    return path
+
+
+@pytestmark_real
+@pytest.mark.parametrize("mode", ["mock_all", "allow_set"])
+def test_a_constructor_that_requires_auth_deploys_and_is_recorded(
+    tmp_path: Path, mode: str
+) -> None:
+    """A Wasm constructor runs as a SUB-invocation of the CreateContractV2 host
+    function, so its `require_auth()` is a non-root authorization; the sdk's
+    plain `mock_all_auths` refuses that with Error(Auth, InvalidAction) before
+    the contract exists. `register` runs the constructor under its own
+    recording manager (non-root allowed) in EITHER mode, and what the
+    constructor required is what `auths()` reports straight after the deploy:
+    the admin, with the constructor's own argument list."""
+    admin = Address(SHAPES_ID)
+    env = RealEnv() if mode == "mock_all" else RealEnv(auths=(admin,))
+    c = env.deploy_source(_guarded(tmp_path), admin)
+    assert c.auths() == ((admin, Vec(_MIXED, [admin])),)  # `Vec.__eq__` is element-wise
+    assert c.auths_for_sequence() == ()  # the sequence starts at the first invoke
+    c.invoke("record", admin)
+    assert c.auths() == ()  # `record` authorizes nothing; the constructor's is gone
+
+
+@pytestmark_real
+def test_deploy_module_decodes_into_the_callers_classes(tmp_path: Path) -> None:
+    """`deploy_source` loads the module itself, so a struct it decodes is an
+    instance of THAT load's class and can never equal the caller's (dataclass
+    equality is class-identical). `deploy_module` compiles the caller's module
+    and decodes into its classes."""
+    path = _guarded(tmp_path)
+    module = load_example(path)
+    admin = Address(SHAPES_ID)
+
+    expected = module.Record(who=admin, n=U32(1))
+
+    own = RealEnv().deploy_module(module, admin)
+    got = own.invoke("record", admin)
+    assert type(got) is type(expected)
+    assert got == expected
+
+    other = RealEnv().deploy_source(path, admin).invoke("record", admin)
+    assert type(other) is not type(expected)  # the same declaration, a different load
+    assert other != expected
+
+
+@pytestmark_real
+def test_deploy_module_needs_a_module_with_a_file() -> None:
+    module = ModuleType("in_memory")
+    with pytest.raises(ValueError, match="deploy_source"):
+        RealEnv().deploy_module(module)

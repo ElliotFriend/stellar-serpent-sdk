@@ -298,7 +298,33 @@ impl RealEnv {
             // sdk PANICS on (P3's `Env::register` row), which `contained`
             // turns into kind "panic" -- Task 1's Python test pins that a
             // garbage module is catchable.
-            let addr = self.env.register(wasm, args);
+            //
+            // A Wasm constructor runs as a SUB-invocation of the
+            // CreateContractV2 host function, so a constructor that calls
+            // `require_auth` is a NON-ROOT authorization. The sdk's own
+            // `register` inherits the current auth manager's non-root flag,
+            // which `mock_all_auths` sets to "disabled" -- and then refuses
+            // the constructor with Error(Auth, InvalidAction) before the
+            // contract exists (measured 2026-09-11 on the guestbook example).
+            // The sdk documents `register` as running constructors "with
+            // authorization mocked ... regardless of the authorization
+            // configured on the environment", which is what the native path
+            // does; this makes the Wasm path match: record, allow non-root,
+            // and restore the caller's manager afterwards -- on a panic too,
+            // or a failed deploy would leave the host in recording mode.
+            let host = self.env.host();
+            let prev = host
+                .snapshot_auth_manager()
+                .map_err(|e| failure("host", "", 0, format!("snapshot_auth_manager: {e:?}")))?;
+            host.switch_to_recording_auth(false)
+                .map_err(|e| failure("host", "", 0, format!("switch_to_recording_auth: {e:?}")))?;
+            let registered = catch_unwind(AssertUnwindSafe(|| self.env.register(wasm, args)));
+            host.set_auth_manager(prev)
+                .map_err(|e| failure("host", "", 0, format!("set_auth_manager: {e:?}")))?;
+            let addr = match registered {
+                Ok(addr) => addr,
+                Err(panic) => std::panic::resume_unwind(panic),
+            };
             Ok(addr.to_string().to_string())
         })
     }
@@ -340,9 +366,25 @@ impl RealEnv {
         })
     }
 
+    /// The sdk's plain mode: recording auth with non-root authorization
+    /// DISABLED. Kept for tests that want the strict form; `serpent.testing`
+    /// itself uses the variant below.
     fn mock_all_auths(&self) -> PyResult<()> {
         contained(|| {
             self.env.mock_all_auths();
+            Ok(())
+        })
+    }
+
+    /// Recording auth with NON-ROOT authorization allowed. The plain
+    /// `mock_all_auths` disables non-root auth, which refuses any
+    /// `require_auth` that is not the root of the invocation -- a Wasm
+    /// constructor's, always (see `register`). M1 has no cross-contract
+    /// calls, so the only non-root authorization a serpent contract can make
+    /// today is exactly that one.
+    fn mock_all_auths_allowing_non_root_auth(&self) -> PyResult<()> {
+        contained(|| {
+            self.env.mock_all_auths_allowing_non_root_auth();
             Ok(())
         })
     }

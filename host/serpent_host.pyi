@@ -66,7 +66,13 @@ class RealEnv:
     def invoke(self, contract: str, function: str, args_xdr: list[bytes]) -> bytes:
         """The result as ScVal XDR; every failure is a `HostFailure`."""
 
-    def mock_all_auths(self) -> None: ...
+    def mock_all_auths(self) -> None:
+        """The sdk's plain mode: recording auth with non-root authorization DISABLED."""
+
+    def mock_all_auths_allowing_non_root_auth(self) -> None:
+        """Recording auth with non-root authorization allowed (a Wasm constructor's
+        `require_auth` is always non-root, under the CreateContractV2 host function)."""
+
     def mock_auths(self, entries: list[tuple[str, str, str, list[bytes]]]) -> None:
         """`(authorizer CONTRACT strkey, contract strkey, function, args ScVal XDR)`.
 

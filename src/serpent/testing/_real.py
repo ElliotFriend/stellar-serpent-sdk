@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
-import inspect
 import sys
 import typing
 from pathlib import Path
@@ -122,6 +121,18 @@ class RealEnv:
 
         The allow-set is validated before the extension is required, so the B2
         fence is the same `ValueError` whether or not the host is built.
+
+        Mocking everything means the sdk's recording mode with NON-ROOT
+        authorization allowed: a Wasm constructor runs as a sub-invocation of
+        the CreateContractV2 host function, so a constructor that calls
+        `require_auth()` is a non-root authorization, and the sdk's plain
+        `mock_all_auths` refuses it at deploy. In either mode the constructor
+        itself runs under that recording manager (`register` arranges it, as
+        the sdk documents for its own `register`), so `deploy_source` of a
+        constructor that requires auth succeeds and the authorization it
+        required is what `auths_for_sequence()`/`auths()` report -- the
+        allow-set gates INVOKES, not the deploy, exactly as the sdk's
+        `register` cannot test a constructor's authorization either.
         """
         self._allow: tuple[Address, ...] | None = None if auths is None else tuple(auths)
         if self._allow is not None:
@@ -146,7 +157,7 @@ class RealEnv:
         )
         self._sequence = sequence
         if self._allow is None:
-            self._raw.mock_all_auths()
+            self._raw.mock_all_auths_allowing_non_root_auth()
 
     # --- the ledger -----------------------------------------------------------
 
@@ -220,32 +231,51 @@ class RealEnv:
         `sys.modules` -- and handed to the `RealContract`, which is what lets
         `RealContractError.member` and the return-type decode find declarations
         that no import statement could reach.
+
+        The load is this method's OWN: a `@contracttype` result `invoke` decodes
+        is an instance of the class in that module, which is a different object
+        from the same declaration in a module the caller loaded from the same
+        file (dataclass equality is class-identical, so the two never compare
+        equal). A test that holds its own module uses `deploy_module`.
         """
         module = _load_by_path(path)
-        cls = _the_contract_class(module, path)
-        return self._deploy(build_file(path).wasm, args, cls, module)
+        return self.deploy_module(module, *args)
+
+    def deploy_module(self, module: ModuleType, *args: object) -> RealContract:
+        """Deploy the one `@contract` declared in an already-loaded `module`.
+
+        The form for a caller that loaded the module itself -- by path, the
+        way `load_example` does -- and wants results decoded into THAT module's
+        classes, so `contract.invoke("read") == module.Record(...)` holds. The
+        source is recompiled from `module.__file__`; the class is discovered,
+        not named, by the same one-contract rule `deploy_source` applies.
+        """
+        path: str | None = getattr(module, "__file__", None)
+        if path is None:
+            raise ValueError(
+                f"{module!r} has no __file__, so its source cannot be compiled; use "
+                "RealEnv.deploy_source(path, ...) instead."
+            )
+        cls = _the_contract_class(module, Path(path))
+        return self._deploy(build_file(Path(path)).wasm, args, cls, module)
 
     def deploy(self, cls: type, *args: object) -> RealContract:
         """Convenience: deploy the module `cls` was declared in.
 
-        Resolves the source file the only two ways available and raises rather
-        than guessing, because a path-loaded class (B3) genuinely cannot be
-        traced back to its file this way and a silent wrong answer here would
-        compile some OTHER contract.
+        Resolves the module through `sys.modules` and raises rather than
+        guessing, because a path-loaded class (B3) genuinely cannot be traced
+        back to its file this way and a silent wrong answer here would compile
+        some OTHER contract. The caller's module is what gets deployed, so the
+        results decode into `cls`'s own companions, not a second load's.
         """
         module = sys.modules.get(cls.__module__)
-        path: str | None = getattr(module, "__file__", None)
-        if path is None:
-            try:
-                path = inspect.getsourcefile(cls)
-            except TypeError:
-                path = None
-        if path is None:
+        if module is None or getattr(module, "__file__", None) is None:
             raise ValueError(
                 f"{cls!r} was loaded by path, so its source file cannot be recovered from "
-                "the class; use RealEnv.deploy_source(path, ...) instead."
+                "the class; use RealEnv.deploy_source(path, ...) or "
+                "RealEnv.deploy_module(module, ...) instead."
             )
-        return self.deploy_source(Path(path), *args)
+        return self.deploy_module(module, *args)
 
     def deploy_wasm(self, wasm: bytes, *args: object) -> RealContract:
         """Deploy pre-built wasm with no Python class behind it.
@@ -291,9 +321,12 @@ class RealEnv:
         """Upload + instantiate, with failures typed.
 
         The `CreateContractV2HostFn` authorization the sdk records for this call
-        is skipped by the Rust layer (review M8), so a deploy needs no
-        `mock_auths` set even in allow-set mode -- and `auths()` accumulation
-        therefore starts after it, not with it.
+        is skipped by the Rust layer (review M8), and the constructor runs under
+        the Rust layer's own recording manager, so a deploy needs no
+        `mock_auths` set even in allow-set mode. A constructor's own
+        `require_auth()` IS recorded: `auths()` right after a deploy reports it,
+        with the constructor's argument list. The `_for_sequence` accumulators
+        start at the first `invoke`, not here.
         """
         try:
             return self._raw.register(wasm, [to_xdr(arg) for arg in args])
@@ -453,10 +486,11 @@ class RealContract:
         The quantity a scenario table pins (`tests/semantics/env_scenarios.py`
         pins `events` over a WHOLE sequence -- setup calls and the observable
         together), which `events()` cannot answer because the host reports one
-        invocation at a time. Accumulation starts at the deploy and never
-        includes it: `register` publishes nothing, and its own
+        invocation at a time. Accumulation starts at the first `invoke` and
+        never includes the deploy: `register` publishes nothing, its own
         `CreateContractV2HostFn` authorization is dropped one layer down
-        (review M8).
+        (review M8), and a constructor's `require_auth()` is `auths()`'s to
+        report, not this sequence's.
         """
         return tuple(self._sequence_events)
 
@@ -510,8 +544,10 @@ class RealContract:
         the two; flattening it here would destroy the evidence.
 
         `register`'s own `CreateContractV2HostFn` authorization never appears --
-        the Rust layer drops non-contract functions (review M8) -- so
-        accumulation starts after the deploy.
+        the Rust layer drops non-contract functions (review M8). What a
+        constructor's `require_auth()` recorded does: straight after a deploy
+        this answers `((admin, Vec[constructor args]),)`, until the first
+        `invoke` replaces it.
         """
         return tuple(
             (Address(who), _loose_vec(args))
